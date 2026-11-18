@@ -3898,7 +3898,8 @@ class ContractVerifier:
                 and node.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)):
             ovf_type = self._overflow_arith_fail_closed(node)
             return ovf_type is not None and not (
-                node.op == ast.BinOp.SUB and ovf_type == "Nat")
+                node.op == ast.BinOp.SUB
+                and ovf_type == "Nat")  # pragma: no mutate — equivalent: a subtraction of two operands the checker types `Nat` is `_is_guarded_nat_subtraction`'s, answered at `nat_sub` first, so this row is never asked of it
         if kind == "int_overflow" and isinstance(node, ast.UnaryExpr):
             # A negation is `0 - x` (#1875), by the table's own rule.
             return obligation_table.negation_obligated(
@@ -13690,7 +13691,7 @@ class ContractVerifier:
             for name, value in sorted(counterexample.items()):
                 if name != "@result":
                     ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = "\n  ".join(ce_lines)
 
         if isinstance(expr, ast.FnCall):
             op_word = "`abs`"

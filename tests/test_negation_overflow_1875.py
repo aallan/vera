@@ -157,6 +157,82 @@ def test_named_1875_a_refinement_declaration_obligates_its_negation() -> None:
     assert rows == [(1, "tier3"), (3, "verified")], verified.obligations
 
 
+#: A type no guard reads, one per operation a declaration takes by its own
+#: rule (`ContractVerifier._declaration_takes`), the line each stands on.
+_DECLARED = """\
+type IntSum = { @Int | @Int.0 + 1 > 0 };
+
+type NatSum = { @Nat | @Nat.0 + @Nat.0 >= 0 };
+
+type NatDiff = { @Nat | @Nat.0 - @Nat.0 == 0 };
+
+type NatNeg = { @Nat | -@Nat.0 <= 0 };
+
+type Magnitude = { @Int | abs(@Int.0) > 0 };
+
+type Truncated = { @Float64 | float_to_int(@Float64.0) > 0 };
+
+type Headed = { @Array<Int> | @Array<Int>.0[0] > 0 };
+
+type Asserted = { @Int | { assert(@Int.0 > 0); true } };
+
+type Called = { @Int | @Int.0 > 0 && positive(@Int.0) };
+
+type FloatSum = { @Float64 | @Float64.0 + 1.5 > 0.0 };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+type Wrapped = { @Int | takes(mk(@Int.0)) };
+
+private fn positive(@Int -> @Bool)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+
+private fn mk(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+private fn takes(@Option<Pos> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+"""
+
+
+def test_repro_1875_each_declaration_takes_its_operations_rows() -> None:
+    """Verified at its declaration, each predicate holds exactly the rows
+    of the operations it performs: an `Int` sum's and a `Nat` sum's range,
+    a `Nat` difference's sign (no range), an `abs`, a float truncation, an
+    index, an `assert` and a call's precondition.  A `Nat` negation and a
+    `Float64` sum have none, and a call's argument is not the declaration's
+    narrowing to take."""
+    verified = pipeline.verify(_DECLARED)
+    assert verified.ok, verified.diagnostics
+    rows = sorted((o.line, o.kind, o.status) for o in verified.obligations
+                  if o.line < 24)
+    assert rows == [
+        (1, "int_overflow", "tier3"),
+        (3, "int_overflow", "tier3"),
+        (5, "nat_sub", "verified"),
+        (9, "int_overflow", "tier3"),
+        (11, "float_to_int_domain", "tier3"),
+        (13, "index_bounds", "tier3"),
+        (15, "assert", "tier3"),
+        (17, "call_pre", "verified"),
+    ], verified.obligations
+
+
 # =====================================================================
 # The class: a negation at every position, against its `0 - x` twin
 # =====================================================================
@@ -338,3 +414,65 @@ def test_negated_literal_is_its_value(pos: str, magnitude: str) -> None:
     assert [s for k, s in obligations if k == "int_overflow"] == []
     expected = -lit if pos in ("body", "closure", "where") else 3
     assert _outcome(source, 3) == ("value", expected)
+
+
+# =====================================================================
+# E528 as written, for each operation it reports
+# =====================================================================
+
+_E528_RATIONALE = (
+    "@Int / @Nat arithmetic carries a Tier-1 proof obligation that the result "
+    "stays within the i64 range.  The SMT solver proved the result is always "
+    "out of range; `+`/`-`/`*`, negation and `abs` trap at runtime on "
+    "overflow (#798).")
+_E528_SPEC_REF = 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
+
+
+def _e528_fix(written: str) -> str:
+    return (f"Constrain the operands so `{written}` cannot overflow — add a "
+            "precondition bounding them, give an operand a refinement type "
+            "that bounds its range, or guard the operation with a path "
+            "condition the obligation can discharge.")
+
+
+def _refuted(params: str, requires: str, ret: str, body: str) -> str:
+    return (f"public fn f({params} -> {ret})\n  requires({requires})\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+#: Each operation `_report_overflow` names, refuted at line 6, column 3:
+#: (the program, the operation's word, the operation as written, the
+#: counterexample's lines).
+_E528_FORMS = {
+    "addition": (_refuted("@Int", "@Int.0 == 9223372036854775807", "@Int", "@Int.0 + 1"),
+                 "addition", "@Int.0 + 1", ["@Int.0 = 9223372036854775807"]),
+    "subtraction": (_refuted("@Int", "@Int.0 == -9223372036854775807", "@Int", "@Int.0 - 2"),
+                    "subtraction", "@Int.0 - 2", ["@Int.0 = -9223372036854775807"]),
+    "multiplication": (_refuted("@Int", "@Int.0 == 9223372036854775807", "@Int", "@Int.0 * 2"),
+                       "multiplication", "@Int.0 * 2", ["@Int.0 = 9223372036854775807"]),
+    "negation": (_refuted("@Int", "@Int.0 == -9223372036854775808", "@Int", "-@Int.0"),
+                 "negation", "-@Int.0", ["@Int.0 = -9223372036854775808"]),
+    "abs": (_refuted("@Int", "@Int.0 == -9223372036854775808", "@Nat", "abs(@Int.0)"),
+            "`abs`", "abs(@Int.0)", ["@Int.0 = -9223372036854775808"]),
+    "quotient": (_refuted("@Int, @Int", "@Int.1 == -9223372036854775808 && @Int.0 == -1",
+                          "@Int", "@Int.1 / @Int.0"),
+                 "operation", "@Int.1 / @Int.0",
+                 ["@Int.0 = -1", "@Int.1 = -9223372036854775808"]),
+}
+
+
+@pytest.mark.parametrize("form", list(_E528_FORMS))
+def test_repro_1875_e528_as_written(form: str) -> None:
+    """The refuted overflow's diagnostic, every field whole: the operation's
+    word, its counterexample, the rationale, the fix naming the operation
+    as written, the section, and where it stands."""
+    source, word, written, counterexample = _E528_FORMS[form]
+    verified = pipeline.verify(source)
+    found = [(d.description, d.rationale, d.fix, d.spec_ref, d.severity,
+              d.location.line, d.location.column)
+             for d in verified.diagnostics if d.error_code == "E528"]
+    description = (f"Integer {word} in 'f' provably overflows.\n"
+                   "  Counterexample:\n"
+                   + "\n".join(f"      {line}" for line in counterexample))
+    assert found == [(description, _E528_RATIONALE, _e528_fix(written),
+                      _E528_SPEC_REF, "error", 6, 3)]
