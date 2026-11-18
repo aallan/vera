@@ -200,6 +200,12 @@ def test_repro_a_destructure_of_a_hole_s_operand_draws_the_hole_alone(
     `match` did: a value typed `Unknown` is not judged."""
     source = _main("Int", "let Tuple<@Int, @Int> = ? + 1;\n@Int.0")
     assert _all_codes(source) == ["W001"]
+    # Nor is its head held to the value: a constructor of the wrong arity
+    # or a name nothing declares draws nothing beside the hole (E321 and
+    # E320 would restate what the hole leaves open).
+    for head in ("Some<@Int, @Int>", "Nope<@Int>"):
+        source = _main("Int", f"let {head} = ? + 1;\n0")
+        assert _all_codes(source) == ["W001"], head
 
 
 def test_repro_a_position_typed_unknown_inside_a_scrutinee_is_not_judged(
