@@ -94,6 +94,24 @@ def _dropped(source: str) -> list[str]:
             if d.error_code in ("E602", "E620")]
 
 
+@pytest.fixture(autouse=True)
+def _no_program_draws_an_internal_error_from_check(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The property behind every cell of this file: no program it checks,
+    compiles or runs draws an internal compiler error (E699) from check.
+    Each check goes through `pipeline.check`, which `pipeline.compile`
+    calls too, so one assertion here covers the whole instrument."""
+    original = pipeline.check
+
+    def checked(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)  # type: ignore[arg-type]
+        assert "E699" not in [d.error_code for d in result.diagnostics], [
+            d.format() for d in result.diagnostics if d.error_code == "E699"]
+        return result
+
+    monkeypatch.setattr(pipeline, "check", checked)
+
+
 # ---------------------------------------------------------------------
 # The issue's program and the two forms of 12 November
 # ---------------------------------------------------------------------
@@ -503,6 +521,54 @@ def test_repro_e189_names_an_alias_of_a_composite_cell_by_the_alias() -> None:
     assert _codes(source.replace("old(IO)", "old(State<MaybeInt>)")) == []
 
 
+#: Each kind of State cell a row can declare: the declarations it needs and
+#: the cell as the row writes it.  Every cell type has `Eq`, so the clause
+#: `form(cell) == form(cell)` checks once the cell is named.
+_CELL_KINDS: dict[str, tuple[str, str]] = {
+    "plain": ("", "State<Int>"),
+    "alias": ("type Deg = Float64;\n\n", "State<Deg>"),
+    "refinement_alias": (_POSITIVE, "State<Positive>"),
+    "alias_of_a_composite": ("type MaybeInt = Option<Int>;\n\n",
+                             "State<MaybeInt>"),
+    "composite": ("", "State<Option<Int>>"),
+    "refinement_comparison": ("", "State<{ @Int | @Int.0 > 0 }>"),
+    "refinement_conjunction": (
+        "", "State<{ @Int | @Int.0 > 0 && @Int.0 < 10 }>"),
+    "refinement_if": (
+        "", "State<{ @Int | if @Int.0 > 0 then { true } else { false } }>"),
+    "refinement_match_arm_block": (
+        "", "State<{ @Int | match @Int.0 {\n    0 -> { true },\n"
+            "    _ -> false\n  } }>"),
+    "refinement_match_arm_bare": (
+        "", "State<{ @Int | match @Int.0 {\n    0 -> true,\n"
+            "    _ -> false\n  } }>"),
+    "refinement_nested_in_a_composite": (
+        "", "State<Option<{ @Int | @Int.0 > 0 }>>"),
+}
+
+
+@pytest.mark.parametrize("form", ["old", "new"])
+@pytest.mark.parametrize("kind", list(_CELL_KINDS))
+def test_repro_e189_s_proposed_cell_reads_back_as_the_row_s_cell(
+        kind: str, form: str) -> None:
+    """The property behind E189's fix: the `old(...)` or `new(...)` it
+    proposes, pasted in place of the form, checks clean, so it names the
+    row's own cell (the row declares one State cell, and naming any other
+    is E177).  Round 2 wrote the cell in canonical form, which drops a match
+    arm's redundant block, `0 -> { true }` read back as `0 -> true`, a
+    different cell."""
+    decls, cell = _CELL_KINDS[kind]
+    source = decls + _ensures(f"{form}(IO) == {form}(IO)", f"<IO, {cell}>")
+    errors = _errors(source)
+    assert [e.error_code for e in errors] == ["E189", "E189"]
+    proposed = re.search(r"`(\w+\(State<.*\))` in place of", errors[0].fix,
+                         re.DOTALL)
+    assert proposed is not None, errors[0].fix
+    assert proposed.group(1).startswith(f"{form}(State<")
+    pasted = source.replace(f"{form}(IO)", proposed.group(1))
+    assert _all_codes(pasted) == [], (kind, proposed.group(1))
+
+
 def test_repro_e189_in_a_where_helper_names_the_helper_s_own_cell() -> None:
     """In a `where` helper the cell is the helper's row's, not its
     parent's."""
@@ -567,6 +633,98 @@ def test_e189_stands_in_place_of_the_row_s_e177() -> None:
     """An effect with no state the row does not declare is refused once,
     E189: the form names no cell whether the row declares it or not."""
     assert _codes(_ensures("old(IO) == 0", "pure")) == ["E189"]
+
+
+# Every place `old()` / `new()` can be written, with a function around it or
+# none.  {x} is the form, `old(IO)` or `new(IO)`; the expected codes put
+# the placement error first, {p}: E174 for `old`, E175 for `new`.
+_ROW = "<IO, State<Int>>"
+_MAIN_ONLY = (f"public fn main(@Unit -> @Unit)\n  requires(true)\n"
+              f"  ensures(true)\n  effects({_ROW})\n{{\n  ()\n}}\n")
+
+
+def _in_fn(params: str = "@Int", ret: str = "@Int", req: str = "true",
+           ens: str = "true", dec: str = "", body: str = "@Int.0",
+           where: str = "") -> str:
+    decreases = f"  decreases({dec})\n" if dec else ""
+    return (f"public fn f({params} -> {ret})\n  requires({req})\n"
+            f"  ensures({ens})\n{decreases}  effects({_ROW})\n"
+            f"{{\n  {body}\n}}\n{where}")
+
+
+_HELPER = ("where {{\n  fn g({params} -> @Int)\n    requires(true)\n"
+           "    ensures({ens})\n    effects(" + _ROW + ")\n"
+           "  {{\n    1\n  }}\n}}\n")
+
+_FORM_POSITIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    # No function around the form: a declaration's refinement or invariant.
+    "type_alias_predicate": (
+        "type Bad = { @Int | {x} == 1 };\n\n" + _MAIN_ONLY, ("{p}", "E189")),
+    "data_invariant": (
+        "private data D invariant({x} == 1) {\n  D(Int)\n}\n\n" + _MAIN_ONLY,
+        ("{p}", "E189")),
+    "data_field_refinement": (
+        "private data D {\n  D({ @Int | {x} == 1 })\n}\n\n" + _MAIN_ONLY,
+        ("{p}", "E189")),
+    "effect_operation_refinement": (
+        "effect E {\n  op e({ @Int | {x} == 1 } -> Unit);\n}\n\n" + _MAIN_ONLY,
+        ("{p}", "E189")),
+    "ability_operation_refinement": (
+        "ability A<T> {\n  op a({ @Int | {x} == 1 } -> T);\n}\n\n" + _MAIN_ONLY,
+        ("{p}", "E189")),
+    # A function around the form.
+    "parameter_refinement": (
+        _in_fn(params="@{ @Int | {x} == 1 }"), ("{p}", "E189")),
+    "return_refinement": (
+        _in_fn(ret="@{ @Int | {x} == 1 }"), ("{p}", "E189")),
+    "requires": (_in_fn(req="{x} == 1"), ("{p}", "E189")),
+    "decreases": (
+        _in_fn(params="@Nat", ret="@Nat", dec="{x}", body="@Nat.0"),
+        ("{p}", "E189")),
+    "body": (_in_fn(body="{x}"), ("{p}", "E189")),
+    "closure_body": (
+        _in_fn(body="let @fn(Int -> Int) effects(pure) = "
+                    "fn(@Int -> @Int) effects(pure) { {x} };\n  @Int.0"),
+        ("{p}", "E189")),
+    "where_helper_ensures": (
+        _in_fn(body="g(@Int.0)",
+               where=_HELPER.format(params="@Int", ens="{x} == 1")),
+        ("E189",)),
+    "where_helper_parameter_refinement": (
+        _in_fn(body="g(@Int.0)",
+               where=_HELPER.format(params="@{ @Int | {x} == 1 }",
+                                    ens="true")),
+        ("{p}", "E189")),
+    "ensures": (_in_fn(ens="{x} == 1"), ("E189",)),
+}
+
+
+@pytest.mark.parametrize("form", ["old", "new"])
+@pytest.mark.parametrize("position", list(_FORM_POSITIONS))
+def test_repro_old_and_new_of_io_in_every_position(
+        position: str, form: str) -> None:
+    """`old(IO)` / `new(IO)` written anywhere, a function around it or none,
+    draws its placement error where it has one and E189, and nothing
+    raises.  Round 2 read the enclosing function's row unguarded, so a form
+    in a declaration's refinement or invariant raised IndexError (E699)."""
+    template, expected = _FORM_POSITIONS[position]
+    placement = "E174" if form == "old" else "E175"
+    source = template.replace("{x}", f"{form}(IO)")
+    assert _all_codes(source) == [
+        placement if c == "{p}" else c for c in expected]
+
+
+def test_repro_e189_with_no_function_around_it_writes_the_no_cell_fix(
+) -> None:
+    """With no function around the form there is no row to read a cell
+    from: the fix is the one for a row with no cell."""
+    source = _FORM_POSITIONS["type_alias_predicate"][0].replace(
+        "{x}", "old(IO)")
+    error, = [e for e in _errors(source) if e.error_code == "E189"]
+    assert error.fix == (
+        "Name a State cell, `old(State<Int>)` in place of `old(IO)`, and "
+        "declare it in the function's effects row, `effects(<State<Int>>)`, "
+        "with the cell's type in place of `Int`.")
 
 
 # ---------------------------------------------------------------------

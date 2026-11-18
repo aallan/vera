@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
-from vera.formatter import format_effect_ref_canonical, format_expr_canonical
+from vera.formatter import format_effect_ref_structural, format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
@@ -2288,22 +2288,29 @@ class ExpressionsMixin:
         Returns whether it refused.
 
         The effect and the cell are written as the source writes them (the
-        form's argument, the function's row), in canonical form: the fix is
-        pasted, and a resolved type's rendering expands an alias and elides
-        a refinement's predicate (`State<{@Int | ...}>` does not parse)."""
+        form's argument, the enclosing function's row), in the formatter's
+        structural form, the one the checker names a cell by: the fix is
+        pasted, and must read back as the row's own cell.  A resolved type's
+        rendering expands an alias and elides a refinement's predicate
+        (`State<{@Int | ...}>` does not parse), and canonical form drops a
+        match arm's redundant block (`0 -> { true }` reads back as
+        `0 -> true`, another cell).  With no function around the form (a
+        refinement or invariant in a declaration, already refused by E174 or
+        E175) there is no row, and the fix is the one for a row with no
+        cell."""
         if ei.name == "State" or self.env.lookup_effect(ei.name) is None:
             # `State`'s cell, or a name no effect in scope declares (effect
             # declarations are module-local, spec §8.4.1, and a row naming
             # one is refused, E338 or an unknown effect): the row's E177 or
             # that refusal is the error behind it.
             return False
-        row = self._fn_scope_stack[-1].effect
+        row = self._fn_scope_stack[-1].effect if self._fn_scope_stack else None
         cells = sorted(
-            format_effect_ref_canonical(r)
+            format_effect_ref_structural(r)
             for r in (row.effects if isinstance(row, ast.EffectSet) else ())
             if isinstance(r, ast.EffectRef)
             and r.name == "State" and r.type_args)
-        shown = format_effect_ref_canonical(expr.effect_ref)
+        shown = format_effect_ref_structural(expr.effect_ref)
         if cells:
             cell = cells[0]
             fix = (f"Name the State cell the postcondition means: "
