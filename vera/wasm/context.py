@@ -1039,13 +1039,13 @@ class WasmContext(
         finally:
             self._evaluation = saved
 
-    @staticmethod
-    def _self_tail_calls(decl: ast.FnDecl) -> list[ast.FnCall]:
+    def _self_tail_calls(self, decl: ast.FnDecl) -> list[ast.FnCall]:
         """The self-recursive calls in tail position of *decl*'s body, in
         the order the body holds them: the order the table lists a
         measure's re-evaluation rows in, and the order `_compile_fn`
-        splices the self-tail prefix in."""
-        return self_tail_calls(decl)
+        splices the self-tail prefix in.  The table's predicate, over the
+        same typed program, so a clone's self call is one here too."""
+        return self_tail_calls(decl, self._typed_program)
 
     def _first_self_tail_call(self, decl: ast.FnDecl) -> ast.FnCall | None:
         calls = self._self_tail_calls(decl)

@@ -443,6 +443,71 @@ def test_repro_the_measure_is_checked_at_each_hop_of_a_split_function() -> None:
 
 
 # =====================================================================
+# A generic function's clone (a line of #1525)
+# =====================================================================
+
+
+def _generic(ensures: str, step: str = "@Nat.0 - 1") -> str:
+    return f"""\
+public forall<T> fn gcount(@T, @Nat, @Nat -> @Nat)
+  requires(true)
+  ensures({ensures})
+  decreases(@Nat.0)
+  effects(pure)
+{{
+  if @Nat.0 == 0 then {{
+    @Nat.1
+  }} else {{
+    gcount(@T.0, @Nat.1 + 1, {step})
+  }}
+}}
+
+public fn run_bool(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  gcount(true, 0, @Nat.0)
+}}
+
+public fn run_int(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  gcount(7, 0, @Nat.0)
+}}
+"""
+
+
+@pytest.mark.parametrize("ensures", ["true", "@Nat.result >= @Nat.1"],
+                         ids=["ensures-true", "ensures-real"])
+@pytest.mark.parametrize("fn", ["run_bool", "run_int"])
+def test_repro_a_generic_clones_self_tail_call_transfers(
+    ensures: str, fn: str,
+) -> None:
+    """A clone's self call still names the generic (`gcount`), and the one
+    predicate resolves it through the typed program to the clone
+    (`gcount$Bool`, `gcount$Int`): the measure is checked at the call and
+    the call transfers, to the clone itself or, with a real postcondition,
+    to the clone's body.  At base the call was a plain call and the loop
+    exhausted the stack at a million steps."""
+    source = _generic(ensures)
+    compiled = pipeline.compile(source, file=FILE)
+    clone = "gcount$Bool" if fn == "run_bool" else "gcount$Int"
+    target = f"{clone}@body" if ensures != "true" else clone
+    assert f"return_call $:{target}\n" in compiled.wat
+    assert pipeline.run(source, fn, [DEEP], file=FILE).value == DEEP
+
+
+def test_repro_a_generic_clones_measure_is_checked_at_each_hop() -> None:
+    ran = pipeline.run(_generic("@Nat.result >= @Nat.1", "@Nat.0"),
+                       "run_int", [3], file=FILE)
+    assert ran.trap is not None and ran.trap.kind == "contract_violation"
+    assert "decreases() measure in 'gcount$Int'" in str(ran.trap)
+
+
+# =====================================================================
 # The collector, the names, the shape
 # =====================================================================
 
