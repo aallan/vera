@@ -336,7 +336,7 @@ The precondition expression is compiled to a Boolean value. If it is false (`i32
 
 ### 11.8.3 Postcondition Checks
 
-Non-trivial `ensures` clauses compile to checks after the function body:
+Non-trivial `ensures` clauses compile to checks after the function body, except one on a function that returns a `String` or an `Array`, which code generation does not compile into a check (Section 11.8):
 
 ```wat
 ;; body computes result
