@@ -3745,6 +3745,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E186**: Quantifier index type is not Int or Nat
 - **E187**: Contract predicate performs an effect
 - **E188**: Missing visibility on a top-level declaration
+- **E189**: old()/new() names an effect with no state
 - **E200**: Unresolved function
 - **E201**: Wrong argument count
 - **E202**: Argument type mismatch

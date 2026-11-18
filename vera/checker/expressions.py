@@ -82,6 +82,13 @@ _STATE_FORM_PLACEMENT_FIX = (
 )
 
 
+def _render_effect(e: EffectInstance) -> str:
+    """An effect instance as a row writes it: `State<Int>`, `IO`."""
+    if not e.type_args:
+        return e.name
+    return f"{e.name}<{', '.join(pretty_type(a) for a in e.type_args)}>"
+
+
 # Widest `Available bindings:` table any diagnostic renders (#558).  The
 # scope it reports is unbounded — one row per binding — and the LSP
 # concatenates the fix into the hover message, so a wide function turns
@@ -2239,6 +2246,8 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            if self._refuse_stateless_effect(expr, ei, "old"):
+                return UnknownType()
             self._check_effect_ref_declared(expr, ei, "old")
             return self._effect_state_type(ei)
         return UnknownType()
@@ -2263,9 +2272,54 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            if self._refuse_stateless_effect(expr, ei, "new"):
+                return UnknownType()
             self._check_effect_ref_declared(expr, ei, "new")
             return self._effect_state_type(ei)
         return UnknownType()
+
+    def _refuse_stateless_effect(
+        self, expr: ast.Expr, ei: EffectInstance, form: str,
+    ) -> bool:
+        """E189 (#1862): ``old()`` and ``new()`` read a `State` cell, so
+        their argument MUST name a stateful effect (spec §7.9.2).  An effect
+        with no state (`IO`, `Exn<Int>`, a user effect) has no value for the
+        form to read, and the check gave it no type, with no diagnostic
+        behind it.  Refused here, once, in place of the row's E177 too: the
+        form names no cell whether the row declares the effect or not.
+        Returns whether it refused."""
+        if ei.name == "State":
+            return False
+        row = self.env.current_effect_row
+        cells = sorted(
+            (e for e in (row.effects if isinstance(row, ConcreteEffectRow)
+                         else frozenset())
+             if e.name == "State" and e.type_args),
+            key=_render_effect)
+        shown = _render_effect(ei)
+        if cells:
+            cell = _render_effect(cells[0])
+            fix = (f"Name the State cell the postcondition means: "
+                   f"`{form}({cell})` in place of `{form}({shown})`.")
+        else:
+            fix = (f"Name a State cell, `{form}(State<Int>)` in place of "
+                   f"`{form}({shown})`, and declare it in the function's "
+                   f"effects row, `effects(<State<Int>>)`, with the cell's "
+                   f"type in place of `Int`.")
+        self._error(
+            expr,
+            f"{form}({shown}) names an effect with no state: {form}() "
+            f"reads a State cell.",
+            rationale=(
+                f"{form}() refers to the value of a State effect's cell "
+                f"{'before' if form == 'old' else 'after'} the call.  "
+                f"{shown} holds no state, so there is no value for the "
+                f"form to name."),
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.9.2 "State in Contracts"',
+            error_code="E189",
+        )
+        return True
 
     def _check_effect_ref_declared(
         self, expr: ast.Expr, ei: EffectInstance, form: str,

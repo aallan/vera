@@ -221,6 +221,65 @@ def test_repro_an_index_after_an_error_is_not_refused_again() -> None:
 
 
 # ---------------------------------------------------------------------
+# old() and new() of an effect with no state (E189, spec §7.9.2)
+# ---------------------------------------------------------------------
+
+def _ensures(clause: str, effects: str) -> str:
+    return (f"public fn f(@Int -> @Int)\n  requires(true)\n"
+            f"  ensures({clause})\n  effects({effects})\n{{\n  @Int.0\n}}\n")
+
+
+def test_repro_old_of_io_is_refused() -> None:
+    """`old(IO)` checked at base, and `vera verify` stopped at E699."""
+    source = _ensures("old(IO) == old(IO)", "<IO>")
+    assert _codes(source) == ["E189", "E189"]
+
+
+def test_repro_new_of_an_exception_effect_is_refused() -> None:
+    source = _ensures("new(Exn<Int>) == new(Exn<Int>)", "<Exn<Int>>")
+    assert _codes(source) == ["E189", "E189"]
+
+
+def test_repro_old_of_a_state_cell_still_checks() -> None:
+    source = _ensures("old(State<Int>) == new(State<Int>)", "<State<Int>>")
+    assert _codes(source) == []
+    assert _dropped(source) == []
+
+
+def test_e189_reads_as_written_and_its_fix_clears_it() -> None:
+    """Each fix, applied as it says, checks clean: with a State cell in the
+    row the form names it; with none, the form names one and the row
+    declares it."""
+    with_cell = _ensures("old(IO) == 0", "<IO, State<Bool>>")
+    error, = _errors(with_cell)
+    assert error.description == (
+        "old(IO) names an effect with no state: old() reads a State cell.")
+    assert error.fix == (
+        "Name the State cell the postcondition means: `old(State<Bool>)` in "
+        "place of `old(IO)`.")
+    assert error.spec_ref == (
+        'Chapter 7, Section 7.9.2 "State in Contracts"')
+    applied = with_cell.replace("old(IO) == 0", "old(State<Bool>) == true")
+    assert _codes(applied) == []
+
+    without = _ensures("new(Exn<Int>) == 0", "<Exn<Int>>")
+    error, = _errors(without)
+    assert error.fix == (
+        "Name a State cell, `new(State<Int>)` in place of `new(Exn<Int>)`, "
+        "and declare it in the function's effects row, "
+        "`effects(<State<Int>>)`, with the cell's type in place of `Int`.")
+    applied = without.replace("new(Exn<Int>)", "new(State<Int>)").replace(
+        "effects(<Exn<Int>>)", "effects(<Exn<Int>, State<Int>>)")
+    assert _codes(applied) == []
+
+
+def test_e189_stands_in_place_of_the_row_s_e177() -> None:
+    """An effect with no state the row does not declare is refused once,
+    E189: the form names no cell whether the row declares it or not."""
+    assert _codes(_ensures("old(IO) == 0", "pure")) == ["E189"]
+
+
+# ---------------------------------------------------------------------
 # The matrix
 # ---------------------------------------------------------------------
 

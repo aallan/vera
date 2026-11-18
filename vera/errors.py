@@ -1140,6 +1140,7 @@ ERROR_CODES: dict[str, str] = {
     "E186": "Quantifier index type is not Int or Nat",
     "E187": "Contract predicate performs an effect",
     "E188": "Missing visibility on a top-level declaration",
+    "E189": "old()/new() names an effect with no state",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",
