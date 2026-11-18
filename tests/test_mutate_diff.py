@@ -698,6 +698,27 @@ class TestTheCountInTheEngine:
         assert lines[0] == 2 and lines.count(2) >= 2  # the call's own mutants first, on its first line
         assert md._unit_line_counts("m.py", source)["x_f"] == {line: lines.count(line) for line in set(lines)}
 
+    def test_show_names_each_mutant_by_the_number_and_line_the_count_gives_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The engine's ``show`` command, which the nightly sweep's cycle
+        comment reads a survivor's mutation from: mutant ``n`` of a unit sits
+        on the line the count's order gives it, and its code changes."""
+        pytest.importorskip("mutmut")
+        counts = json.loads(md.count_units(json.dumps(
+            {"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long"]}})))["m.py"]["x_long"]
+        expected = [int(line) for line, k in sorted(counts["lines"].items(), key=lambda kv: int(kv[0]))
+                    for _ in range(k)]
+        numbers = [*range(1, counts["mutants"] + 1), counts["mutants"] + 1]
+        request = json.dumps({"sources": {"m.py": WINDOWED}, "mutants": {"m.py": {"x_long": numbers}}})
+        shown = json.loads(md.show_mutants(request))["m.py"]["x_long"]
+        assert sorted(shown, key=int) == [str(n) for n in numbers[:-1]]  # one past the unit's is left out
+        assert [shown[str(n)]["line"] for n in numbers[:-1]] == expected
+        assert all(v["original"] != v["mutated"] for v in shown.values())
+        monkeypatch.setattr(sys, "stdin", io.StringIO(request))
+        assert md.engine_main([md.SHOW_ARG]) == 0
+        assert json.loads(capsys.readouterr().out)["m.py"]["x_long"] == shown
+
     def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:

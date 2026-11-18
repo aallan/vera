@@ -92,6 +92,13 @@ Usage:
     python scripts/mutate_sweep.py finish --live DIR
     python scripts/mutate_sweep.py stitch --state DIR --slices DIR --of 1 --out DIR
     python scripts/mutate_sweep.py summary --state DIR --out DIR
+    python scripts/mutate_sweep.py comment --state DIR --run-id N --repo OWNER/NAME --event schedule --out DIR
+
+Every scheduled night's result goes to one standing issue as a comment
+(``comment``, rendered from the ``night-report.json`` the stitch writes), and
+a closed cycle's survivors go there as a task list (MUTATION.md § The
+cycle's survivors).  A function evaluated at import alone is decided
+``at_import`` by rule (:func:`at_import_units`, #1740).
 """
 
 from __future__ import annotations
@@ -107,6 +114,7 @@ import os
 import re
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -251,6 +259,9 @@ LEGS = 9
 #: counted apart and listed, never caught and never survived.
 MEMORY = "memory"
 LOST = "lost"
+#: A mutant of a function evaluated at import alone (#1740): decided by
+#: rule, never run, counted apart (:func:`at_import_units`).
+AT_IMPORT = "at_import"
 
 #: The losses that decide a mutant ``lost``.
 LOSS_LIMIT = 2
@@ -306,7 +317,7 @@ STATE_EVENTS = frozenset({"schedule", "workflow_dispatch"})
 
 #: The statuses a state records: every one mutmut prints bar the undecided,
 #: the cap's, the bound's and the loss rule's.
-DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST}
+DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST, AT_IMPORT}
 
 
 class StateError(ValueError):
@@ -367,13 +378,13 @@ def inventory(sources: Mapping[str, str]) -> list[SweepUnit]:
     return sorted(units, key=lambda u: (u.path, u.start, u.key))
 
 
-def vera_sources(repo: Path, rev: str) -> dict[str, str]:
-    """``vera/``'s Python files at ``rev``, read from git (the checkout's own
-    files may differ from the commit)."""
-    archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", rev, "vera"],
+def vera_sources(repo: Path, rev: str, prefix: str = "vera") -> dict[str, str]:
+    """``vera/``'s Python files at ``rev`` (or ``prefix``'s: ``tests``), read
+    from git (the checkout's own files may differ from the commit)."""
+    archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", rev, prefix],
                              capture_output=True, env=md._git_env(), check=False)
     if archive.returncode != 0:
-        raise md.LaneError(f"git archive {rev} vera failed: "
+        raise md.LaneError(f"git archive {rev} {prefix} failed: "
                            f"{archive.stderr.decode('utf-8', 'replace')}")
     sources: dict[str, str] = {}
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
@@ -383,6 +394,202 @@ def vera_sources(repo: Path, rev: str) -> dict[str, str]:
                 assert handle is not None
                 sources[member.name] = handle.read().decode("utf-8")
     return sources
+
+
+#: Where a reference sits: in code run while its module is imported.
+_AT_IMPORT = "import"
+#: Where a reference sits: in code run later (a method, a lambda's body, a
+#: ``__main__`` block), so the function it names can run under a mutant.
+_LATER = "later"
+
+
+def _main_guard(node: ast.stmt) -> bool:
+    """``if __name__ == "__main__":``, whose body runs as a script, never at import."""
+    test = getattr(node, "test", None)
+    return (isinstance(node, ast.If) and isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name) and test.left.id == "__name__"
+            and len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == "__main__")
+
+
+def _imported_from(node: ast.ImportFrom, path: str) -> str | None:
+    """The module path an ``ImportFrom`` in ``path`` names, under ``vera/``."""
+    if node.level:
+        base = path.split("/")[:-1]
+        base = base[:len(base) - (node.level - 1)] if node.level > 1 else base
+        target = "/".join([*base, *(node.module.split(".") if node.module else [])])
+    else:
+        target = (node.module or "").replace(".", "/")
+    return target if target.startswith("vera") else None
+
+
+def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None = None) -> frozenset[str]:
+    """The top-level functions of ``vera/`` evaluated at import alone, by a
+    rule over the sources (#1740): a function every reference to which is a
+    call in code run while a module is imported (a module or class body
+    outside any ``def`` or ``lambda``, a decorator, a default, an
+    annotation), or a call in the body of another such function.  mutmut
+    forks a mutant's worker after the modules are imported, so such a
+    function never runs under its mutant: its mutants are not observable in
+    process, and every one would score as a survivor.  A reference that is
+    not a call (a name stored in a table or passed on), one in a nested
+    function or a method, and any in ``tests`` (the test files' sources: a
+    test that calls the function observes its mutants) can run later.  A
+    reference is a name in its own module or in one that imports it by
+    ``from``, or an attribute of that name anywhere; a function with no
+    reference, and a method, is never one."""
+    defined: dict[tuple[str, str], str] = {}  # (path, name) -> ident
+    trees: dict[str, ast.Module] = {}
+    for path in sorted(sources):
+        try:
+            tree = trees[path] = ast.parse(sources[path])
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined[(path, node.name)] = f"{path}::{md._key(node.name, None)}"
+    names = {name for _, name in defined}
+    where: dict[str, list[str]] = {ident: [] for ident in defined.values()}
+
+    def note(target: str | None, context: str) -> None:
+        if target is not None:
+            where[target].append(context)
+
+    for path, tree in trees.items():
+        visible = {name: defined[(path, name)] for p, name in defined if p == path}
+        for found_import in ast.walk(tree):
+            if isinstance(found_import, ast.ImportFrom):
+                origin = _imported_from(found_import, path)
+                for alias in found_import.names:
+                    for candidate in (f"{origin}.py", f"{origin}/__init__.py"):
+                        if origin and (candidate, alias.name) in defined:
+                            visible[alias.asname or alias.name] = defined[(candidate, alias.name)]
+
+        def refer(node: ast.AST, context: str) -> bool:
+            """Note a reference to a function; whether ``node`` was one."""
+            if isinstance(node, ast.Name) and node.id in visible:
+                note(visible[node.id], context)
+                return True
+            if isinstance(node, ast.Attribute) and node.attr in names:
+                for (_, name), ident in defined.items():
+                    if name == node.attr:
+                        note(ident, context)
+                return True
+            return False
+
+        def walk(node: ast.AST, context: str) -> None:
+            # A call runs where it sits; a reference that is not called (a
+            # name stored in a table, passed on, returned) can be called
+            # later, from anywhere, so it is never one run at import alone.
+            if isinstance(node, ast.Call) and refer(node.func, context):
+                for child in [*node.args, *node.keywords]:
+                    walk(child, context)
+                if isinstance(node.func, ast.Attribute):
+                    walk(node.func.value, context)
+                return
+            if refer(node, _LATER):
+                if isinstance(node, ast.Attribute):
+                    walk(node.value, context)
+                return
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for part in node.decorator_list:
+                    # A decorator is called with the function it decorates.
+                    if not refer(part, context):
+                        walk(part, context)
+                for part in [*node.args.defaults, *[d for d in node.args.kw_defaults if d is not None]]:
+                    walk(part, context)
+                for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
+                            *([node.args.vararg] if node.args.vararg else []),
+                            *([node.args.kwarg] if node.args.kwarg else [])]:
+                    if arg.annotation is not None:
+                        walk(arg.annotation, context)
+                if node.returns is not None:
+                    walk(node.returns, context)
+                # A top-level function's body runs as that function; any other
+                # (a method, a nested function, which can escape) runs later.
+                inner = (f"{path}::{md._key(node.name, None)}"
+                         if context == _AT_IMPORT and node in tree.body else _LATER)
+                for stmt in node.body:
+                    walk(stmt, inner)
+                return
+            if isinstance(node, ast.Lambda):
+                for part in [*node.args.defaults, *[d for d in node.args.kw_defaults if d is not None]]:
+                    walk(part, context)
+                walk(node.body, _LATER if context == _AT_IMPORT else context)
+                return
+            if context == _AT_IMPORT and isinstance(node, ast.stmt) and _main_guard(node):
+                walk(node.test, context)  # type: ignore[attr-defined]
+                for stmt in [*node.body, *node.orelse]:  # type: ignore[attr-defined]
+                    walk(stmt, _LATER)
+                return
+            for child in ast.iter_child_nodes(node):
+                walk(child, context)
+
+        walk(tree, _AT_IMPORT)
+    for path, text in sorted((tests or {}).items()):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        imported: dict[str, str] = {}
+        for found_import in ast.walk(tree):
+            if isinstance(found_import, ast.ImportFrom) and found_import.module and not found_import.level:
+                origin = found_import.module.replace(".", "/")
+                for alias in found_import.names:
+                    for candidate in (f"{origin}.py", f"{origin}/__init__.py"):
+                        if (candidate, alias.name) in defined:
+                            imported[alias.asname or alias.name] = defined[(candidate, alias.name)]
+        for use in ast.walk(tree):
+            if isinstance(use, ast.Name) and use.id in imported:
+                note(imported[use.id], _LATER)
+            elif isinstance(use, ast.Attribute) and use.attr in names:
+                for (_, name), ident in defined.items():
+                    if name == use.attr:
+                        note(ident, _LATER)
+    found: set[str] = set()
+    while True:
+        more = {ident for ident, contexts in where.items() if ident not in found and contexts
+                and all(c == _AT_IMPORT or c in found for c in contexts)}
+        if not more:
+            return frozenset(found)
+        found |= more
+
+
+def at_import_at(repo: Path, rev: str, sources: Mapping[str, str]) -> frozenset[str]:
+    """:func:`at_import_units` at ``rev``, the test files read from git there too."""
+    return at_import_units(sources, vera_sources(repo, rev, "tests"))
+
+
+def settle_at_import(state: dict[str, Any], units: Iterable[SweepUnit], idents: frozenset[str],
+                     taken: list[tuple[str, int, str]] | None = None) -> int:
+    """Decide each sampled mutant of a unit evaluated at import
+    (:func:`at_import_units`) as ``at_import``: counted apart, outside the
+    score's total and the survivor list, never planned.  A window decided,
+    whole or in part, before the rule (its mutants scored as survivors) is
+    decided again by it.  Returns the mutants newly decided, those no
+    earlier night decided; each goes into ``taken`` as (ident, window
+    number, status)."""
+    added = 0
+    for unit in units:
+        rec = state["units"].get(unit.ident)
+        if unit.ident not in idents or rec is None or rec["lines"] is None:
+            continue
+        size = sum(window_counts(state, unit)[1])
+        window = rec["window"]
+        if not size or (window is not None and window.get(AT_IMPORT) == window["mutants"]):
+            continue
+        before = ({str(n): True for n in range(1, size + 1)} if window is not None
+                  else (rec.get("partial") or {}).get("decided", {}))
+        for number in range(1, size + 1):
+            if str(number) not in before:
+                added += 1
+                if taken is not None:
+                    taken.append((unit.ident, number, AT_IMPORT))
+        rec["window"] = fold_window({"decided": {str(n): AT_IMPORT for n in range(1, size + 1)},
+                                     "survivors": []}, size)
+        rec["partial"] = None
+        rec.pop("losses", None)
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +631,7 @@ COLUMNS_2 = ("killed", "survived", "timeout", "no_tests", "other")
 #: The columns a decided window carries only when they count a mutant: a
 #: state with none of them is shaped as the schema 3 states before them,
 #: which an older reader loads; one with them it refuses rather than misread.
-OPTIONAL_COLUMNS = (MEMORY, LOST)
+OPTIONAL_COLUMNS = (MEMORY, LOST, AT_IMPORT)
 #: The statuses a window lists its mutants of, with their records.
 LISTED = frozenset({"survived", "timeout", SLOW, MEMORY, LOST})
 #: The most test files a survivor's record names.
@@ -498,7 +705,7 @@ def check_window(window: Any, what: str) -> None:
            f"{what}'s window columns do not sum to its size")
     _check_survivors(rec["survivors"], size, what)
     _check(len(rec["survivors"]) == rec["survived"] + rec["timeout"] + rec["slow"]
-           + sum(rec[c] for c in optional),
+           + sum(rec[c] for c in optional if c in LISTED),
            f"{what}'s survivors are not its survived, timeout, slow, memory and lost mutants")
 
 
@@ -617,6 +824,22 @@ def _check_night(night: Any) -> None:
             _int(s["source_tests"], 0, 10**6, "a night's source-reading tests")
 
 
+def _check_module_rows(modules: Any, what: str) -> None:
+    """A closed cycle's per-module counts."""
+    _check(isinstance(modules, dict), f"{what}'s modules")
+    for module, row in modules.items():
+        _text(module, _PATH, f"module {module!r}")
+        columns = set(COLUMNS_2)
+        # The population (#1827), the slow (#1838), and the memory, lost and
+        # at-import mutants, present when the cycle counted one (#1838, #1740).
+        for optional in ("mutants", "slow", *OPTIONAL_COLUMNS):
+            if isinstance(row, dict) and optional in row:
+                columns.add(optional)
+        counts = _keys(row, columns, f"{module}'s counts")
+        for column, n in counts.items():
+            _int(n, 0, MAX_MUTANTS * 10_000, f"{module}'s {column}")
+
+
 def check_state(data: Any) -> dict[str, Any]:
     """``data`` as a sweep state, every field's type and bounds checked: the
     state comes from an artifact, so nothing in it is trusted."""
@@ -645,7 +868,14 @@ def check_state(data: Any) -> dict[str, Any]:
         # The sample's size entered the record with the sample (#1827); a
         # cycle closed before carries none of the three.
         sample_keys = {"sampled", "population", "fraction"} & (set(last) if isinstance(last, dict) else set())
+        # The cycle before it entered the record with the results loop.
+        if isinstance(last, dict) and "previous" in last:
+            sample_keys.add("previous")
         rec = _keys(last, last_keys | sample_keys, "the last closed cycle")
+        if "previous" in rec:
+            prev = _keys(rec["previous"], {"cycle", "modules"}, "the cycle before the last closed one")
+            _int(prev["cycle"], 1, 10**6, "the cycle before the last closed one")
+            _check_module_rows(prev["modules"], "the cycle before the last closed one")
         _int(rec["cycle"], 1, 10**6, "the last closed cycle's number")
         if "sampled" in rec:
             _int(rec["sampled"], 0, MAX_MUTANTS * 10_000, "the last closed cycle's sample")
@@ -658,18 +888,7 @@ def check_state(data: Any) -> dict[str, Any]:
         _text(rec["finished"], _DATE, "the last closed cycle's end")
         _text(rec["head"], _HEX40, "the last closed cycle's head")
         _text(rec["engine"], _VERSION, "the last closed cycle's engine")
-        _check(isinstance(rec["modules"], dict), "the last closed cycle's modules")
-        for module, row in rec["modules"].items():
-            _text(module, _PATH, f"module {module!r}")
-            columns = set(COLUMNS_2)
-            # The population (#1827), the slow (#1838), and the memory and
-            # lost mutants, present when the cycle counted one (#1838).
-            for optional in ("mutants", "slow", *OPTIONAL_COLUMNS):
-                if isinstance(row, dict) and optional in row:
-                    columns.add(optional)
-            counts = _keys(row, columns, f"{module}'s counts")
-            for column, n in counts.items():
-                _int(n, 0, MAX_MUTANTS * 10_000, f"{module}'s {column}")
+        _check_module_rows(rec["modules"], "the last closed cycle")
         _check(isinstance(rec["survivors"], list), "the last closed cycle's survivors")
         for entry in rec["survivors"]:
             _text(entry, _SURVIVOR, f"survivor {entry!r}")
@@ -1797,6 +2016,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     state = reconcile(load_state(state_path, today), units, version)
     counts = engine_counts(engine, env, sources, uncounted(state, units))
     apply_counts(state, counts)
+    # A function evaluated at import alone is decided by rule, as the stitch
+    # decides it, and never planned (#1740).
+    settle_at_import(state, units, at_import_at(repo, head, sources))
     bins = plan(state, units, jobs=args.of, budget_s=args.budget)
     picks = bins[args.slice]
     record: dict[str, Any] = {
@@ -2081,7 +2303,7 @@ def merge_counts(state: dict[str, Any], record: Mapping[str, Any], problems: lis
 
 
 def merge(state: dict[str, Any], record: Mapping[str, Any], units: Mapping[str, SweepUnit],
-          problems: list[str]) -> int:
+          problems: list[str], taken: list[tuple[str, int, str]] | None = None) -> int:
     """Fold one slice's results into the state, a mutant at a time; what it
     moved on: the mutants newly decided.  A window's decided mutants gather
     in its ``partial`` record, by window number, and fold into its decided
@@ -2116,6 +2338,8 @@ def merge(state: dict[str, Any], record: Mapping[str, Any], units: Mapping[str, 
                 continue
             partial["decided"][number] = status
             added += 1
+            if taken is not None:
+                taken.append((ident, int(number), status))
             if status in LISTED:
                 n = pick.full_number(int(number))
                 partial["survivors"].append(listed.get(n) or {
@@ -2165,7 +2389,8 @@ def charged_in_flight(record: Mapping[str, Any]) -> list[str]:
     return sorted({n for n in record.get("in_flight", []) if float(ages.get(n, 0.0)) >= HEARTBEAT_S})
 
 
-def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequence[SweepUnit]) -> int:
+def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequence[SweepUnit],
+                 taken: list[tuple[str, int, str]] | None = None) -> int:
     """Each mutant in flight at ``record``, the last record its slice
     uploaded (a leg's, written up to a leg before a lost runner went, or
     the final one of a slice its engine stopped), whose run had lasted at
@@ -2204,6 +2429,8 @@ def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequen
         if losses[key] >= LOSS_LIMIT:
             pick = Pick(unit=unit, lines=lines, counts=counts, before=before)
             partial["decided"][key] = LOST
+            if taken is not None:
+                taken.append((unit.ident, number, LOST))
             partial["survivors"].append({"n": pick.full_number(number), "line": pick.line_of(number),
                                          "text_sha": None, "status": LOST, "files": None})
             decided += 1
@@ -2228,7 +2455,7 @@ def _column(status: str) -> str:
     """Where a decided mutant counts in the committed summary."""
     if status in ("killed", "caught by type check"):
         return "killed"
-    if status in ("timeout", "survived", SLOW, MEMORY, LOST):
+    if status in ("timeout", "survived", SLOW, MEMORY, LOST, AT_IMPORT):
         return status
     if status == "no tests":
         return "no_tests"
@@ -2273,12 +2500,17 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
             survivors.append(f"{u.module}.{u.key}__mutmut_{entry['n']}@{u.start + entry['line'] - 1}:"
                              f"{entry['status']}")
     survivors.sort()
+    earlier = state.get("last_complete")
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],
                               "modules": tally(state, units), "survivors": survivors,
                               "sampled": sum(sum(window_counts(state, u)[1]) for u in units),
                               "population": sum(state["units"][u.ident]["mutants"] or 0 for u in units),
                               "fraction": SAMPLE_FRACTION}
+    if earlier:
+        # The cycle before, per module, for the close's comparison; its own
+        # ``previous`` is not carried, so the record holds two cycles at most.
+        state["last_complete"]["previous"] = {"cycle": earlier["cycle"], "modules": earlier["modules"]}
     state["cycle"] += 1
     state["cycle_started"] = today
     for rec in state["units"].values():
@@ -2411,6 +2643,7 @@ def union_legs(legs: Sequence[Mapping[str, Any]], problems: list[str]) -> dict[s
 def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[str, Any]], *,
            jobs: int, head: str, units: Sequence[SweepUnit], today: str,
            legs: Sequence[Mapping[str, Any]] = (), cancelled: bool = False,
+           at_import: frozenset[str] = frozenset(), report: dict[str, Any] | None = None,
            ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The night's records folded into the state: the new state and the
     night's line (what each slice did, and what the night failed at).
@@ -2422,8 +2655,13 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     and the mutants in flight its last leg charges take a loss, as do those
     an engine stop's final record charges (:func:`charged_in_flight`,
     :func:`apply_losses`).  On a run that was ``cancelled`` no
-    slice's end is a loss: its legs' decisions are kept and nothing more."""
+    slice's end is a loss: its legs' decisions are kept and nothing more.
+
+    The units of ``at_import`` are decided by rule (:func:`settle_at_import`).
+    With ``report``, the night's report is filled in (:func:`night_report`):
+    what the state took tonight, for the standing issue's comment."""
     problems: list[str] = []
+    taken: list[tuple[str, int, str]] = []
     valid: list[Mapping[str, Any]] = []
     seen: set[int] = set()
     reported: set[int] = set()  # every slice a record came from, accepted or not
@@ -2502,9 +2740,9 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     lost_plans: dict[str, str] = {}
     before = (state_in.get("nights") or [{}])[-1].get("lost_plans", {})
     for leg in taken_legs:
-        moved = merge(state, leg, by_ident, problems)
+        moved = merge(state, leg, by_ident, problems, taken)
         if not cancelled:
-            moved += apply_losses(state, leg, units)
+            moved += apply_losses(state, leg, units, taken)
         added += moved
         if moved == 0 and leg.get("planned") and not cancelled:
             # A slice lost on a plan that decides nothing, not even a loss's
@@ -2517,11 +2755,11 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
                                 f"before ({_listed([str(p.get('unit')) for p in leg['planned']])}), and "
                                 "neither night decided a mutant of it")
     for record in valid:
-        added += merge(state, record, by_ident, problems)
+        added += merge(state, record, by_ident, problems, taken)
         if not cancelled:
             # The engine stopped with mutants in flight: each takes a loss
             # (charged_in_flight: none on a budget's stop, or a lane's).
-            added += apply_losses(state, record, units)
+            added += apply_losses(state, record, units, taken)
         if record.get("stopped") not in (None, "budget"):
             # What stopped it: a lane's reason, or the exception the engine's
             # own code raised, when it raised one.
@@ -2534,6 +2772,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
             # mutant by mutant, and the rest is planned again.
             notes.append(f"slice {record['slice']}: stopped by the budget with {decided_count(record)} "
                          f"mutant(s) decided; the rest of its bin waits for the next night")
+    added += settle_at_import(state, units, at_import, taken)
     if (added == 0 and (any(r.get("planned") for r in valid) or lost) and not complete(state, units)
             and empty_night(state_in.get("nights", []))):
         # One night that decides nothing is weather (a bin of slow
@@ -2544,6 +2783,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     if not lost and not any(r.get("planned") for r in valid) and not complete(state, units):
         problems.append("the night planned nothing while the cycle is open")
     calibrate(state, [*valid, *taken_legs], {u.ident: u for u in units})
+    if report is not None:
+        report.update(night_report(state, units, taken))  # before the close resets the windows
     # Only validated records merge, so a lost or failed slice cannot close
     # a cycle wrongly: the cycle closes when its sample is decided.
     closed = close_cycle(state, units, head=head, today=today)
@@ -2558,7 +2799,38 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     if lost_plans:
         night["lost_plans"] = lost_plans  # written only when there is one (_check_night)
     state["nights"] = [*state.get("nights", []), night][-KEPT_NIGHTS:]
+    if report is not None:
+        report["night"] = night
+        report["first_mutant_s"] = sorted(
+            float(r["phases"]["first_mutant_s"]) for r in valid
+            if isinstance(r.get("phases"), dict) and type(r["phases"].get("first_mutant_s")) in (int, float))
     return state, night
+
+
+def night_report(state: Mapping[str, Any], units: Sequence[SweepUnit],
+                 taken: Sequence[tuple[str, int, str]]) -> dict[str, Any]:
+    """What the state took tonight, read before a close resets the windows:
+    each decided mutant's column counted, the new survivors (path, unit key,
+    the file's line, the number mutmut gives the mutant over the whole unit),
+    and the cycle's progress after the night."""
+    by_ident = {u.ident: u for u in units}
+    columns: Counter[str] = Counter()
+    survivors = []
+    for ident, number, status in taken:
+        columns[_column(status)] += 1
+        unit = by_ident.get(ident)
+        if status != "survived" or unit is None:
+            continue
+        lines, counts, before = window_counts(state, unit)
+        pick = Pick(unit=unit, lines=lines, counts=counts, before=before)
+        survivors.append({"path": unit.path, "key": unit.key, "n": pick.full_number(number),
+                          "line": unit.start + pick.line_of(number) - 1})
+    drawn = sum(sum(window_counts(state, u)[1]) for u in units)
+    left = sum(sampled_undecided(state, u) or 0 for u in units)
+    return {"cycle": state["cycle"], "cycle_started": state["cycle_started"],
+            "decided": dict(sorted(columns.items())), "survivors": sorted(
+                survivors, key=lambda s: (s["path"], s["line"], s["n"])),
+            "sampled": drawn, "undecided": left}
 
 
 # ---------------------------------------------------------------------------
@@ -2763,6 +3035,258 @@ def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
         out.append("")
     out += [RULES, ""]
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# The standing issue's comments
+# ---------------------------------------------------------------------------
+
+
+#: The issue every night's result goes to, found by this title alone (the
+#: workflow's ``results`` job), never closed by a night.  The tracking issue
+#: a red night files has a title of its own, and finds its issue by it.
+STANDING_TITLE = "Mutation sweep results (standing)"
+#: The file the stitch writes beside the state: what the night took.
+REPORT_FILE = "night-report.json"
+#: A comment's most characters, under GitHub's 65,536 with room to spare.
+COMMENT_LIMIT = 60_000
+#: The night comment's line budget.
+NIGHT_LINES = 25
+#: The order the columns are named in.
+ORDER = ("killed", "survived", "timeout", "slow", "memory", "lost", AT_IMPORT, "no_tests", "other")
+#: MUTATION.md's section on a survivor's three ends.
+BURNDOWN = "MUTATION.md#the-cycles-survivors"
+
+
+def night_mark(run_id: int) -> str:
+    """The first line of a night's comment, which keeps a rerun from posting it twice."""
+    return f"<!-- mutation-sweep-night run={run_id} -->"
+
+
+def cycle_mark(cycle: int, part: int) -> str:
+    """The first line of each part of a cycle's close comment."""
+    return f"<!-- mutation-sweep-cycle cycle={cycle} part={part} -->"
+
+
+def _label(column: str) -> str:
+    return column.replace("_", " ")
+
+
+def _code(text: str, width: int = 100) -> str:
+    """``text`` on one line as an inline code span, cut at ``width``: a span
+    holding a backtick is opened with two."""
+    flat = " ".join(text.split())
+    if len(flat) > width:
+        flat = flat[:width - 3].rstrip() + "..."
+    if not flat:
+        return "(nothing)"
+    return f"`` {flat} ``" if "`" in flat else f"`{flat}`"
+
+
+def _function(key: str) -> str:
+    """A unit key as the function's name: ``x_f`` is ``f``, ``xǁCǁm`` is ``C.m``."""
+    return key[2:] if key.startswith("x_") else ".".join(key.split(md.SEP)[1:])
+
+
+def render_night_comment(report: Mapping[str, Any], *, run_id: int, repo: str,
+                         dispatched: bool) -> str:
+    """A night's comment on the standing issue: the commit, the run, the
+    mutants decided tonight by column, the cycle's progress, the slices, and
+    the new survivors counted by module, in at most ``NIGHT_LINES`` lines."""
+    night = report["night"]
+    decided = report.get("decided", {})
+    run = f"https://github.com/{repo}/actions/runs/{run_id}"
+    parts = [f"{decided[c]:,} {_label(c)}" for c in ORDER if decided.get(c)]
+    out = [night_mark(run_id),
+           ("Dispatched night, posted on request: " if dispatched else "")
+           + f"**{night['date']}**{'' if dispatched else ', scheduled night'} at `{night['head'][:12]}` "
+           f"([run]({run})): "
+           + (f"**{night['moved']:,} mutants decided**" if night["moved"] else "no mutant decided")
+           + (f": {', '.join(parts)}." if parts else "."), ""]
+    sampled, left = int(report["sampled"]), int(report["undecided"])
+    if night["closed"]:
+        out.append(f"Cycle {report['cycle']} closed tonight (from {report['cycle_started']}): its "
+                   "score and survivors are in the next comment.")
+    elif sampled:
+        out.append(f"Cycle {report['cycle']} (from {report['cycle_started']}): {sampled - left:,} of "
+                   f"{sampled:,} sampled mutants decided ({100 * (sampled - left) / sampled:.0f}%), "
+                   f"{left:,} to go.")
+    working = [s for s in night["slices"] if s["planned"]]
+    budget = sum(1 for s in working if s["stopped"] == "budget")
+    first = [float(s) / 60 for s in report.get("first_mutant_s", []) if s]
+    line = (f"Slices: {len(working)} with work, {budget} stopped by the budget, "
+            f"{len(night.get('lost', []))} lost")
+    if first:
+        line += (f"; first mutant at {min(first):.0f} to {max(first):.0f} minutes (median "
+                 f"{statistics.median(first):.0f})")
+    out.append(line + ".")
+    if not night["moved"] and not night["problems"]:
+        return "\n".join(x for x in out if x) + "\n"  # nothing new: three lines
+    out.append("")
+    if night["problems"]:
+        out += [f"Stopped short ({len(night['problems'])} problem(s)): the run's stitch summary names "
+                f"them, and the issue titled \"Nightly mutation sweep stopped short on main (tracking)\" "
+                "has the run.", ""]
+    by_module = Counter(s["path"] for s in report.get("survivors", []))
+    if by_module:
+        mods = sorted(by_module.items(), key=lambda kv: (-kv[1], kv[0]))
+        out.append(f"New survivors, {sum(by_module.values())} in {len(mods)} module(s): "
+                   + ", ".join(f"`{m}` {n}" for m, n in mods) + ".")
+    else:
+        out.append("No new survivor tonight.")
+    out += ["", "The cycle's survivors are listed as a task list when the cycle closes."]
+    return "\n".join(out) + "\n"
+
+
+def _survivor_rows(last: Mapping[str, Any], units: Sequence[SweepUnit],
+                   ) -> list[tuple[str, str, int, int, str]]:
+    """The closed cycle's listed mutants as (path, unit key, number, file
+    line, status), the path read from the inventory at the cycle's head
+    (a module ``vera.x`` is ``vera/x.py`` where the tree is not at hand)."""
+    paths = {(u.module, u.key): u.path for u in units}
+    rows = []
+    for entry in last["survivors"]:
+        name, _, status = entry.rpartition(":")
+        name, _, line = name.partition("@")
+        module, key = md.unit_of_mutant(name)
+        path = paths.get((module, key), module.replace(".", "/") + ".py")
+        rows.append((path, key, md._mutant_number(name), int(line or 0), status))
+    return rows
+
+
+def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
+                         units: Sequence[SweepUnit] = (), at_import: frozenset[str] = frozenset(),
+                         mutations: Mapping[tuple[str, str, int], tuple[str, str]] | None = None,
+                         lines: Mapping[tuple[str, int], str] | None = None) -> list[str]:
+    """A closed cycle's comment on the standing issue, in parts of at most
+    ``COMMENT_LIMIT`` characters: the score by module beside the cycle
+    before's, the survivors as a task list grouped by module, each line its
+    file and line and the mutation (``mutations``: the code mutmut changes
+    and what to; where it is not at hand, the line's text from ``lines``),
+    and the rule a survivor ends by.  A survivor of a unit evaluated at
+    import (``at_import``, by ident) is no task: it is named apart, and a
+    cycle closed before the rule still counts it in its score."""
+    cycle = int(last["cycle"])
+    rows = []
+    for module, row in last["modules"].items():
+        total = row["killed"] + row["survived"] + row["timeout"]
+        if total:
+            low, high = wilson(row["killed"] + row["timeout"], total)
+            rows.append((module, total, row["killed"] + row["timeout"], row["survived"], row.get("slow", 0),
+                         _pct(row["killed"] + row["timeout"], total), low, high))
+    rows.sort(key=lambda r: (-r[3], r[0]))
+    total = sum(r[1] for r in rows)
+    caught = sum(r[2] for r in rows)
+    low, high = wilson(caught, total)
+    columns = Counter[str]()
+    for row in last["modules"].values():
+        columns.update({c: int(row.get(c, 0)) for c in ("slow", "no_tests", MEMORY, LOST, AT_IMPORT)})
+    apart = ", ".join(f"{columns[c]} {_label(c)}" for c in ("slow", MEMORY, LOST, AT_IMPORT, "no_tests")
+                      if columns[c])
+    previous = last.get("previous")
+    before: dict[str, float] = {}
+    if previous:
+        p_total = p_caught = 0
+        for module, row in previous["modules"].items():
+            t = row["killed"] + row["survived"] + row["timeout"]
+            if t:
+                before[module] = _pct(row["killed"] + row["timeout"], t)
+                p_total += t
+                p_caught += row["killed"] + row["timeout"]
+        change = (f"Against cycle {previous['cycle']}: {_pct(p_caught, p_total)}% then, "
+                  f"{_pct(caught, total)}% now; each module's change is in the table.")
+    else:
+        change = "No earlier cycle has closed, so there is no change to compare."
+    run = f"https://github.com/{repo}/actions/runs/{run_id}"
+    head = [cycle_mark(cycle, 1),
+            f"## Cycle {cycle} closed: {_pct(caught, total)}% caught (95% interval {low} to {high})", "",
+            f"{last['started']} to {last['finished']}, at `{str(last['head'])[:12]}`, mutmut {last['engine']}: "
+            + (f"{last['sampled']:,} mutants sampled ({float(last['fraction']):.0%} by line of "
+               f"{last['population']:,}), " if "sampled" in last else "")
+            + f"{total:,} scored: {caught:,} caught, {total - caught:,} survived."
+            + (f" Counted apart: {apart}." if apart else ""), "",
+            change, "",
+            "Each survivor below ends as one of three things: a killing cell in a class instrument whose "
+            "marker names its module, `# pragma: no mutate` with its reason, or a deletion with the "
+            f"evidence that no cell can tell the code from its absence ([the rule](https://github.com/{repo}/"
+            f"blob/main/{BURNDOWN})). Tick it in the pull request that does.", "",
+            f"The score reaches the badge through a pull request: `gh run download {run_id} --name "
+            "mutation-sweep-state --dir state`, then `python scripts/mutate_sweep.py summary --state state` "
+            f"([this run]({run}) holds the state).", ""]
+    table = ["| Module | Scored | Caught | Survived | Slow | Score | 95% interval"
+             + (" | Before |" if previous else " |"),
+             "|---|---:|---:|---:|---:|---:|---|" + ("---:|" if previous else "")]
+    for module, scored, got, survived, slow, score, lo, hi in rows:
+        table.append(f"| `{module}` | {scored} | {got} | {survived} | {slow} | {score}% | {lo} to {hi} |"
+                     + (f" {before[module]}% |" if module in before else (" |" if previous else "")))
+    head += [*table, ""]
+    tasks: dict[str, list[str]] = {}
+    slow_items: dict[str, list[str]] = {}
+    unobservable: list[str] = []
+    for path, key, n, line, status in sorted(_survivor_rows(last, units)):
+        name = _function(key)
+        if f"{path}::{key}" in at_import:
+            if status == "survived":
+                unobservable.append(f"`{path}:{line}` `{name}` mutant {n}")
+            continue
+        if status == "slow":
+            slow_items.setdefault(path, []).append(f"`{name}` mutant {n} (line {line})")
+            continue
+        if status != "survived":
+            continue
+        shown = (mutations or {}).get((path, key, n))
+        if shown is not None:
+            what = f"{_code(shown[0])} to {_code(shown[1])}"
+        else:
+            text = (lines or {}).get((path, line))
+            what = f"on {_code(text)}" if text else "(the mutation is not at hand)"
+        tasks.setdefault(path, []).append(f"- [ ] `{path}:{line}` `{name}` mutant {n}: {what}")
+    blocks = []
+    for path in sorted(tasks, key=lambda p: (-len(tasks[p]), p)):
+        blocks.append("\n".join([f"<details><summary><code>{path}</code>: {len(tasks[path])} "
+                                 f"survivor{'s' if len(tasks[path]) != 1 else ''}</summary>", "",
+                                 *tasks[path], "", "</details>", ""]))
+    tail = []
+    if unobservable:
+        tail += ["Evaluated at import, not observable in process (#1740), so no task: "
+                 + "; ".join(unobservable) + "."
+                 + (" This cycle closed before the rule and counts them as survivors in its score."
+                    if not columns[AT_IMPORT] else ""), ""]
+    if slow_items:
+        tail += ["Slow, ended at the cap (counted apart; that its tests take so long is itself a finding): "
+                 + "; ".join(f"`{p}` " + ", ".join(v) for p, v in sorted(slow_items.items())) + ".", ""]
+    parts: list[list[str]] = [["\n".join(head)]]
+    size = len(parts[0][0])
+    for piece in [*blocks, "\n".join(tail)]:
+        if not piece:
+            continue
+        if size + len(piece) + 1 > COMMENT_LIMIT:
+            k = len(parts) + 1
+            opener = f"{cycle_mark(cycle, k)}\n## Cycle {cycle}'s survivors, continued (part {k})\n"
+            parts.append([opener])
+            size = len(opener)
+        parts[-1].append(piece)
+        size += len(piece) + 1
+    return ["\n".join(p).rstrip("\n") + "\n" for p in parts]
+
+
+def render_issue_body() -> str:
+    """The standing issue's body, written once when the workflow creates it."""
+    return "\n".join([
+        "The nightly mutation sweep's results (MUTATION.md § The measure-all baseline). Each scheduled "
+        "night comments here, and the issue stays open: no night closes it.",
+        "",
+        "- **A night's comment** gives the commit and the run, the mutants decided that night by "
+        "verdict, the cycle's progress, and the night's new survivors counted by module.",
+        "- **A cycle's close comment** gives the cycle's score by module, the change against the cycle "
+        "before, and the cycle's survivors as a task list grouped by module, each line the file, the "
+        "line and the mutation. That comment is the worklist: each survivor ends as a killing cell, a "
+        "`# pragma: no mutate` with its reason, or a deletion (MUTATION.md § The cycle's survivors), "
+        "and the pull request that ends it ticks its line.",
+        "- A night that stops short is reported on its own tracking issue, as before; its comment here "
+        "says so in one line.",
+        "",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -3067,17 +3591,111 @@ def cmd_stitch(args: argparse.Namespace) -> int:
         # final record (slice-<n>.json), whose name is unchanged.
         (legs if LEG_NAME.fullmatch(path.name) else records).append(
             json.loads(path.read_text(encoding="utf-8")))
-    units = inventory(vera_sources(repo, head))
+    sources = vera_sources(repo, head)
+    units = inventory(sources)
+    taken: dict[str, Any] = {}
     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
-                          units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled")
+                          units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled",
+                          at_import=at_import_at(repo, head, sources), report=taken)
     out = Path(args.out)
     save_state(state, out)
+    (out / REPORT_FILE).write_text(json.dumps(taken, indent=1) + "\n", encoding="utf-8")
     if night["closed"]:
         write_summary(state, out)
     report = render_night(state, night, units)
     print(report)
     _write(args.summary, report)
     return 2 if night["problems"] else 0
+
+
+def mutation_texts(engine: Sequence[str], sources: Mapping[str, str],
+                   wanted: Iterable[tuple[str, str, int]]) -> dict[tuple[str, str, int], tuple[int, str, str]]:
+    """Each wanted mutant's line, its code and what mutmut changes it to,
+    from the engine's ``show`` command (mutmut's own visitor over the file
+    at the cycle's head); empty when the engine cannot show them."""
+    request: dict[str, dict[str, list[int]]] = {}
+    for path, key, n in wanted:
+        if path in sources:
+            request.setdefault(path, {}).setdefault(key, []).append(n)
+    if not request:
+        return {}
+    result = md._engine_call(engine, [md.SHOW_ARG], cwd=None, env=md._git_env(), timeout_s=COUNT_TIMEOUT_S,
+                             stdin=json.dumps({"sources": {p: sources[p] for p in request}, "mutants": request}))
+    if result is None or result.returncode != 0:
+        print("warning: the engine did not show the mutations; each task names its line's text instead"
+              + (f": {result.stderr.strip()[-300:]}" if result is not None else ""), file=sys.stderr)
+        return {}
+    try:
+        shown = json.loads(result.stdout)
+        return {(path, key, int(n)): (int(v["line"]), str(v["original"]), str(v["mutated"]))
+                for path, keys in shown.items() for key, ns in keys.items() for n, v in ns.items()}
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError) as exc:
+        print(f"warning: the engine's mutations are malformed ({exc}); each task names its line's text instead",
+              file=sys.stderr)
+        return {}
+
+
+def cmd_comment(args: argparse.Namespace) -> int:
+    """The standing issue's comments for this run, as files in ``--out``:
+    ``1-night.md`` from the stitch's report, ``2-cycle-<n>-<k>.md`` for the
+    last closed cycle (when it closed tonight, or with ``--backfill``), and
+    ``issue-body.md``.  Each comment's first line is its marker, so the
+    workflow posts each once."""
+    state_dir = Path(args.state)
+    out = Path(args.out)
+    if not (state_dir / STATE_FILE).exists():
+        print("no state was written, so there is nothing to comment", file=sys.stderr)
+        return 0
+    out.mkdir(parents=True, exist_ok=True)
+    state = load_state(state_dir / STATE_FILE, _today())
+    report_path = state_dir / REPORT_FILE
+    report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else None
+    dispatched = args.event != "schedule"
+    if report is not None:
+        (out / "1-night.md").write_text(render_night_comment(report, run_id=args.run_id, repo=args.repo,
+                                                             dispatched=dispatched), encoding="utf-8")
+    (out / "issue-body.md").write_text(render_issue_body(), encoding="utf-8")
+    last = state.get("last_complete")
+    closed = bool(report and report.get("night", {}).get("closed"))
+    if last and (closed or args.backfill):
+        try:
+            sources = vera_sources(Path(args.repo_dir), str(last["head"]))
+        except md.LaneError as exc:
+            print(f"warning: the cycle's head is not in this checkout ({exc}); its tasks name no code",
+                  file=sys.stderr)
+            sources = {}
+        units = inventory(sources) if sources else []
+        rows = _survivor_rows(last, units)
+        shown = (mutation_texts(md._default_engine(), sources,
+                                [(p, k, n) for p, k, n, _, s in rows if s == "survived"])
+                 if args.mutations and sources else {})
+        # A mutation the engine places on another line than the state's is
+        # not the survivor's: its task names the line's text instead.
+        mutations = {(p, k, n): shown[(p, k, n)][1:] for p, k, n, line, _ in rows
+                     if (p, k, n) in shown and shown[(p, k, n)][0] == line}
+        lines = {(p, line): sources[p].splitlines()[line - 1]
+                 for p, _, _, line, _ in rows if p in sources and 0 < line <= len(sources[p].splitlines())}
+        parts = render_cycle_comment(last, run_id=args.run_id, repo=args.repo, units=units,
+                                     at_import=(at_import_at(Path(args.repo_dir), str(last["head"]), sources)
+                                                if sources else frozenset()),
+                                     mutations=mutations, lines=lines)
+        for k, text in enumerate(parts, 1):
+            (out / f"2-cycle-{last['cycle']}-{k:02d}.md").write_text(text, encoding="utf-8")
+    print("\n".join(sorted(p.name for p in out.glob("*.md"))))
+    return 0
+
+
+def cmd_closed(args: argparse.Namespace) -> int:
+    """Print ``closed=true`` when the stitch's report says the night closed
+    a cycle, ``closed=false`` otherwise: the step output the workflow reads
+    to install the engine that shows a cycle's mutations."""
+    path = Path(args.state) / REPORT_FILE
+    try:
+        closed = bool(json.loads(path.read_text(encoding="utf-8"))["night"]["closed"])
+    except (OSError, ValueError, KeyError, TypeError):
+        closed = False
+    print(f"closed={'true' if closed else 'false'}")
+    return 0
 
 
 def _gh(gh: Sequence[str], path: str) -> Any:
@@ -3195,6 +3813,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary.add_argument("--state", required=True, help="the directory holding the state")
     summary.add_argument("--out", default=str(ROOT), help="where to write them (default: the "
                          "repository root)")
+    comment = sub.add_parser("comment", help="write the standing issue's comments for this run")
+    comment.add_argument("--state", required=True, help="the stitch's out directory (the state and its report)")
+    comment.add_argument("--run-id", type=int, required=True, help="this run's id")
+    comment.add_argument("--repo", required=True, help="owner/name, for the links")
+    comment.add_argument("--event", required=True, help="the event that started the run")
+    comment.add_argument("--backfill", action="store_true",
+                         help="write the last closed cycle's comment even when it closed on an earlier night")
+    comment.add_argument("--mutations", action="store_true",
+                         help="show each survivor's mutation through the engine (mutmut installed)")
+    comment.add_argument("--repo-dir", default=str(ROOT), help="the repository (default: this one)")
+    comment.add_argument("--out", required=True, help="the directory for the comment files")
+    closed_p = sub.add_parser("closed", help="print closed=true when the night closed a cycle")
+    closed_p.add_argument("--state", required=True, help="the stitch's out directory")
     find = sub.add_parser("find-state", help="print the run whose state the night carries on from")
     find.add_argument("--repo", required=True, help="owner/name")
     find.add_argument("--repo-id", type=int, required=True, help="the repository's numeric id")
@@ -3212,7 +3843,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("start needs the night's arguments after --")
     commands = {"night": cmd_night, "stitch": cmd_stitch, "summary": cmd_summary,
                 "matrix": cmd_matrix, "find-state": cmd_find_state, "lane-failed": cmd_lane_failed,
-                "start": cmd_start, "leg": cmd_leg, "finish": cmd_finish}
+                "start": cmd_start, "leg": cmd_leg, "finish": cmd_finish, "comment": cmd_comment,
+                "closed": cmd_closed}
     return commands[args.command](args)
 
 

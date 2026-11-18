@@ -1731,7 +1731,8 @@ class TestWorkflow:
         stitch = self._wf()["jobs"]["stitch"]
         assert stitch["needs"] == ["setup", "sweep"]
         assert stitch["if"] == "always() && needs.setup.result == 'success'"
-        (keep,) = [s for s in stitch["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        (keep,) = [s for s in stitch["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+                   and s["with"]["name"] == "mutation-sweep-state"]
         assert keep["if"] == "always()"
         assert keep["with"]["name"] == "mutation-sweep-state" and keep["with"]["retention-days"] == 90
         (record,) = [s for s in self._steps("sweep") if s.get("name") == "Upload the slice's record"]
@@ -3841,3 +3842,359 @@ class TestAnOomEventIsARise:
         tracker.look(30.0)
         assert tracker.events == [{"look": 3, "t": 30.0, "rise": 1, "gone": [self.NAMES[0]]}]
         assert tracker.memory() == {self.NAMES[0]}
+
+
+# ---------------------------------------------------------------------------
+# Functions evaluated at import (#1740)
+# ---------------------------------------------------------------------------
+
+
+def _at_import(module: str, *, tests: dict[str, str] | None = None,
+               others: dict[str, str] | None = None) -> set[str]:
+    """The rule's verdict over ``vera/m.py`` (``module``) and its neighbours,
+    as the bare names of the functions it finds."""
+    found = sw.at_import_units({"vera/m.py": module, **(others or {})}, tests)
+    return {ident.split("::x_", 1)[1] for ident in found}
+
+
+class TestAtImport:
+    """A function every reference to which is a call run while a module is
+    imported never runs under its mutant: mutmut forks the worker after the
+    import.  The rule names such functions from the sources; the stitch and
+    the slice decide their mutants ``at_import``, counted apart."""
+
+    def test_a_module_level_call_is_at_import(self) -> None:
+        assert _at_import("def f():\n    return 1\n\n\nX = f()\n") == {"f"}
+
+    def test_a_class_body_default_is_at_import(self) -> None:
+        source = "def f():\n    return 1\n\n\nclass C:\n    x: int = f()\n"
+        assert _at_import(source) == {"f"}
+
+    def test_a_decorator_is_called_at_import(self) -> None:
+        source = "def deco(fn):\n    return fn\n\n\n@deco\ndef g():\n    return 2\n\n\nY = g\n"
+        assert _at_import(source) == {"deco"}
+
+    def test_a_function_called_only_by_one_at_import_is_at_import_too(self) -> None:
+        source = "def h():\n    return 3\n\n\ndef f():\n    return h()\n\n\nX = f()\n"
+        assert _at_import(source) == {"f", "h"}
+
+    def test_a_call_from_a_function_run_later_keeps_it_observable(self) -> None:
+        source = "def f():\n    return 1\n\n\nX = f()\n\n\ndef later():\n    return f()\n"
+        assert _at_import(source) == set()
+
+    def test_a_reference_that_is_not_a_call_can_run_later(self) -> None:
+        """A name stored in a table is called when the table is read."""
+        assert _at_import("def f():\n    return 1\n\n\nTABLE = {'f': f}\n") == set()
+
+    def test_a_decorators_wrapper_runs_later(self) -> None:
+        source = ("def helper():\n    return 1\n\n\ndef deco(fn):\n    def wrapper():\n        return helper()\n"
+                  "    return wrapper\n\n\n@deco\ndef g():\n    return 2\n")
+        assert _at_import(source) == {"deco"}
+
+    def test_a_lambda_body_and_a_main_block_run_later(self) -> None:
+        assert _at_import("def f():\n    return 1\n\n\nG = lambda: f()\n") == set()
+        assert _at_import("def f():\n    return 1\n\n\nif __name__ == '__main__':\n    f()\n") == set()
+
+    def test_a_test_that_imports_it_observes_it(self) -> None:
+        source = "def f():\n    return 1\n\n\nX = f()\n"
+        assert _at_import(source, tests={"tests/test_m.py": "from vera.m import f\n\n\ndef test():\n    f()\n"}) == set()
+        assert _at_import(source, tests={"tests/test_m.py": "import vera.m\n\n\ndef test():\n    vera.m.f()\n"}) == set()
+        # A test's own function of the same name is not this one.
+        assert _at_import(source, tests={"tests/test_m.py": "def f():\n    pass\n\n\ndef test():\n    f()\n"}) == {"f"}
+
+    def test_a_call_from_another_module_that_imports_it(self) -> None:
+        source = "def f():\n    return 1\n"
+        assert _at_import(source, others={"vera/n.py": "from vera.m import f\n\nX = f()\n"}) == {"f"}
+        assert _at_import(source, others={"vera/n.py": "from .m import f\n\n\ndef g():\n    return f()\n"}) == set()
+
+    def test_an_unreferenced_function_and_a_method_are_never_at_import(self) -> None:
+        assert _at_import("def f():\n    return 1\n") == set()
+        assert _at_import("class C:\n    def m(self):\n        return 1\n\n\nX = C().m()\n") == set()
+
+    def test_the_tree_holds_the_seven_functions_the_sweep_met(self) -> None:
+        """The three #1740 names, which no cycle's sample has drawn, and the
+        four the nights of cycles 2 and 3 scored as survivors."""
+        sources = {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+                   for p in sorted((ROOT / "vera").rglob("*.py"))}
+        tests = {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+                 for p in sorted((ROOT / "tests").rglob("*.py"))}
+        found = sw.at_import_units(sources, tests)
+        assert {"vera/__init__.py::x__read_version", "vera/ast.py::x__spelling", "vera/ast.py::x__stage",
+                "vera/monomorphize.py::x__builtin_return_tables", "vera/trap_registry.py::x__kinds",
+                "vera/trap_registry.py::x__emitters", "vera/fold.py::x__check_order"} <= found
+        # Called at import and by a test: observable, so not the rule's.
+        assert "vera/trap_registry.py::x_native_trap_conditions" not in found
+
+    def test_the_stitch_decides_its_window_at_import_outside_the_score(self) -> None:
+        state = _state(f=3, m=2, g=2)
+        _decide(state, B, killed=2)
+        _decide(state, C, killed=1, survived=1, survivors=("2@2:survived",))
+        # f's window was scored before the rule: its mutants were survivors.
+        _decide(state, A, survived=1, killed=1, timeout=1, survivors=("1@1:survived",))
+        taken: list[Any] = []
+        assert sw.settle_at_import(state, UNITS, frozenset({A.ident, C.ident}), taken) == 0  # none new
+        for unit in (A, C):
+            window = state["units"][unit.ident]["window"]
+            assert window[sw.AT_IMPORT] == window["mutants"] and window["survivors"] == []
+        sw.check_state(state)
+        assert sw.close_cycle(state, UNITS, head=HEAD, today="2026-11-18")
+        last = state["last_complete"]
+        assert last["survivors"] == [] and last["modules"]["vera/a.py"][sw.AT_IMPORT] == 3
+        sw.check_state(state)
+
+    def test_an_undecided_window_is_decided_and_taken_and_never_planned(self) -> None:
+        state = _state(f=3, m=2, g=2)
+        state["units"][A.ident]["partial"] = {"decided": {"1": "killed"}, "survivors": []}
+        taken: list[Any] = []
+        assert sw.settle_at_import(state, UNITS, frozenset({A.ident}), taken) == 2  # 2 and 3 were open
+        assert sorted(taken) == [(A.ident, 2, sw.AT_IMPORT), (A.ident, 3, sw.AT_IMPORT)]
+        picks = [p.unit for b in sw.plan(state, UNITS, jobs=1, budget_s=sw.DEFAULT_BUDGET_S) for p in b]
+        assert A not in picks and B in picks and C in picks
+
+    def test_a_stitch_given_the_rule_settles_and_reports_the_column(self) -> None:
+        report: dict[str, Any] = {}
+        state = _state(f=2, m=2, g=2)
+        state, night = sw.stitch(state, "none", [_record(0, 1, {C.ident: _res(C, killed=2)})], jobs=1,
+                                 head=HEAD, units=UNITS, today="2026-11-18", at_import=frozenset({A.ident}),
+                                 report=report)
+        assert night["moved"] == 4 and report["decided"] == {sw.AT_IMPORT: 2, "killed": 2}
+
+
+# ---------------------------------------------------------------------------
+# The standing issue's comments
+# ---------------------------------------------------------------------------
+
+
+NIGHT_FIXTURE = ROOT / "tests" / "fixtures" / "mutation_sweep_night_44224887325.json"
+CYCLE_FIXTURE = ROOT / "tests" / "fixtures" / "mutation_sweep_cycle_2.json"
+
+
+def _fixture(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def _body(text: str) -> list[str]:
+    """A comment's lines as GitHub shows them: the marker is an HTML comment."""
+    return [line for line in text.splitlines()[1:]]
+
+
+class TestNightComment:
+    """A night's comment, rendered from the night of 18 November 2026: each
+    slice's record cut to its decided statuses, and the report the stitch
+    writes for that night (re-stitched from the state before it)."""
+
+    def test_the_night_of_18_november_reads_as_its_records(self) -> None:
+        data = _fixture(NIGHT_FIXTURE)
+        report, slices = data["report"], data["slices"]
+        recorded: dict[str, int] = {}
+        for s in slices:
+            for status, n in s["statuses"].items():
+                column = sw._column(status)
+                recorded[column] = recorded.get(column, 0) + n
+        assert report["decided"] == recorded == {"killed": 769, "survived": 141, "timeout": 16, "no_tests": 6}
+        assert len(report["survivors"]) == recorded["survived"]
+        text = sw.render_night_comment(report, run_id=44224887325, repo="aallan/vera", dispatched=False)
+        assert text.splitlines()[0] == sw.night_mark(44224887325)
+        assert ("**2026-11-18**, scheduled night at `e4cd3725ce05` "
+                "([run](https://github.com/aallan/vera/actions/runs/44224887325)): **932 mutants decided**: "
+                "769 killed, 141 survived, 16 timeout, 6 no tests.") in text
+        assert "Cycle 3 (from 2026-11-16): 1,215 of 2,321 sampled mutants decided (52%), 1,106 to go." in text
+        first = sorted(s["first_mutant_s"] / 60 for s in slices)
+        assert (f"Slices: 7 with work, 6 stopped by the budget, 0 lost; first mutant at {first[0]:.0f} to "
+                f"{first[-1]:.0f} minutes (median {first[3]:.0f}).") in text
+        assert "New survivors, 141 in 29 module(s): `vera/verifier.py` 25, `vera/tester.py` 24," in text
+        assert len(_body(text)) <= sw.NIGHT_LINES
+
+    def test_a_night_with_nothing_new_posts_three_lines(self) -> None:
+        report = _fixture(NIGHT_FIXTURE)["report"]
+        quiet = {**report, "decided": {}, "survivors": [], "night": {**report["night"], "moved": 0}}
+        text = sw.render_night_comment(quiet, run_id=1, repo="o/r", dispatched=False)
+        assert len([line for line in _body(text) if line]) == 3
+        assert "no mutant decided" in text and "survivor" not in text
+
+    def test_a_night_with_no_new_survivor_says_so(self) -> None:
+        report = _fixture(NIGHT_FIXTURE)["report"]
+        text = sw.render_night_comment({**report, "survivors": []}, run_id=1, repo="o/r", dispatched=False)
+        assert "No new survivor tonight." in text
+
+    def test_a_dispatched_night_says_so_in_its_first_line(self) -> None:
+        report = _fixture(NIGHT_FIXTURE)["report"]
+        text = sw.render_night_comment(report, run_id=7, repo="o/r", dispatched=True)
+        assert _body(text)[0].startswith("Dispatched night, posted on request: **2026-11-18** at ")
+
+    def test_a_red_night_names_the_tracking_issue(self) -> None:
+        report = _fixture(NIGHT_FIXTURE)["report"]
+        red = {**report, "night": {**report["night"], "problems": ["slice 3: stopped by the engine"]}}
+        text = sw.render_night_comment(red, run_id=1, repo="o/r", dispatched=False)
+        assert "Stopped short (1 problem(s))" in text and "Nightly mutation sweep stopped short on main" in text
+
+    def test_a_cycle_that_closes_tonight(self, tmp_path: Path) -> None:
+        """The stitch's report says the night closed the cycle; the comment
+        command writes the night's comment and the cycle's, the night's
+        first, with no backfill asked for."""
+        state = _state(f=2, m=2, g=2)
+        _decide(state, A, killed=2)
+        _decide(state, C, killed=2)
+        report: dict[str, Any] = {}
+        state, night = sw.stitch(state, "none", [_record(0, 1, {B.ident: _res(
+            B, killed=1, survived=1, survivors=("2@2:survived",))})], jobs=1, head=HEAD, units=UNITS,
+            today="2026-11-18", report=report)
+        assert night["closed"] and report["night"]["closed"]
+        # B starts at the file's line 20, so its line 2 is the file's 21.
+        assert report["survivors"] == [{"path": "vera/a.py", "key": B.key, "n": 2, "line": 21}]
+        text = sw.render_night_comment(report, run_id=9, repo="o/r", dispatched=False)
+        assert "Cycle 1 closed tonight" in text
+        out = tmp_path / "state"
+        sw.save_state(state, out)
+        (out / sw.REPORT_FILE).write_text(json.dumps(report), encoding="utf-8")
+        args = sw.argparse.Namespace(state=str(out), run_id=9, repo="o/r", event="schedule", backfill=False,
+                                     mutations=False, repo_dir=str(tmp_path / "no-repo"), out=str(tmp_path / "c"))
+        assert sw.cmd_comment(args) == 0
+        names = sorted(p.name for p in (tmp_path / "c").glob("*.md"))
+        assert names == ["1-night.md", "2-cycle-1-01.md", "issue-body.md"]
+        cycle = (tmp_path / "c" / "2-cycle-1-01.md").read_text(encoding="utf-8")
+        assert cycle.splitlines()[0] == sw.cycle_mark(1, 1)
+        assert "- [ ] `vera/a.py:21` `C.m` mutant 2: (the mutation is not at hand)" in cycle
+
+    def test_a_cycle_closed_on_an_earlier_night_is_written_only_on_backfill(self, tmp_path: Path) -> None:
+        out = tmp_path / "state"
+        state = sw.empty_state("2026-11-16")
+        state["last_complete"] = _fixture(CYCLE_FIXTURE)["last_complete"]
+        sw.save_state(state, out)
+        for backfill, files in ((False, ["issue-body.md"]), (True, ["2-cycle-2-01.md", "issue-body.md"])):
+            dest = tmp_path / f"c{backfill}"
+            args = sw.argparse.Namespace(state=str(out), run_id=9, repo="o/r", event="schedule", backfill=backfill,
+                                         mutations=False, repo_dir=str(tmp_path / "no-repo"), out=str(dest))
+            assert sw.cmd_comment(args) == 0
+            assert sorted(p.name for p in dest.glob("*.md")) == files
+
+
+class TestCycleComment:
+    """The close comment of cycle 2, the first the sweep closed, rendered
+    from its ``last_complete`` (the state of run 43780855727)."""
+
+    LAST = _fixture(CYCLE_FIXTURE)["last_complete"]
+    THREE = frozenset({"vera/monomorphize.py::x__builtin_return_tables", "vera/trap_registry.py::x__kinds",
+                       "vera/trap_registry.py::x__emitters"})
+
+    def _parts(self, **kw: Any) -> list[str]:
+        return sw.render_cycle_comment(self.LAST, run_id=43780855727, repo="aallan/vera", **kw)
+
+    def test_the_score_and_the_counts_are_the_summarys(self, tmp_path: Path) -> None:
+        state = sw.empty_state("2026-11-16")
+        state["last_complete"] = self.LAST
+        score = sw.write_summary(state, tmp_path)
+        text = "".join(self._parts())
+        assert score == 86.6
+        assert "## Cycle 2 closed: 86.6% caught (95% interval 85.1 to 87.9)" in text
+        assert "2,301 mutants sampled (2% by line of 118,969), 2,253 scored: 1,951 caught, 302 survived." in text
+        assert "Counted apart: 34 slow, 14 no tests." in text
+        rows = [line for line in tmp_path.joinpath("mutation-summary.csv").read_text(encoding="utf-8").splitlines()[1:]
+                if not line.startswith("TOTAL")]
+        assert text.count("\n| `vera/") == len(rows)
+        assert "| `vera/verifier.py` | 297 | 222 | 75 | 0 | 74.7% | 69.5 to 79.4 |" in text
+
+    def test_with_no_earlier_cycle_the_change_line_says_so(self) -> None:
+        assert "No earlier cycle has closed, so there is no change to compare." in self._parts()[0]
+
+    def test_the_cycle_before_is_compared_module_by_module(self) -> None:
+        previous = {"cycle": 1, "modules": {"vera/verifier.py": {"killed": 8, "survived": 2, "timeout": 0,
+                                                                 "no_tests": 0, "other": 0}}}
+        text = sw.render_cycle_comment({**self.LAST, "previous": previous}, run_id=1, repo="o/r")[0]
+        assert "Against cycle 1: 80.0% then, 86.6% now" in text
+        assert "| `vera/verifier.py` | 297 | 222 | 75 | 0 | 74.7% | 69.5 to 79.4 | 80.0% |" in text
+
+    def test_a_second_close_keeps_the_cycle_before_and_no_more(self) -> None:
+        state = _state()
+        for cycle in (1, 2, 3):
+            _complete(state, {A: 4, B: 3, C: 5})
+            if cycle == 2:
+                _decide(state, C, killed=4, survived=1, survivors=("5@5:survived",))
+            assert sw.close_cycle(state, UNITS, head=HEAD, today=f"2026-11-1{cycle}")
+            sw.check_state(state)
+        last = state["last_complete"]
+        assert last["cycle"] == 3 and last["previous"]["cycle"] == 2
+        assert last["previous"]["modules"]["vera/b.py"]["survived"] == 1
+        assert "previous" not in last["previous"]
+
+    def test_every_survivor_is_a_task_grouped_by_module(self) -> None:
+        long = {(path, line): "x" * 200 for path, _, _, line, _ in sw._survivor_rows(self.LAST, ())}
+        parts = self._parts(lines=long)
+        assert len(parts) == 2  # past the limit, the tasks go on in a second comment
+        text = "".join(parts)
+        assert text.count("\n- [ ] `") == 302
+        assert text.count("<details><summary>") == 43
+        assert "<details><summary><code>vera/verifier.py</code>: 75 survivors</summary>" in text
+        assert all(len(p) <= sw.COMMENT_LIMIT for p in parts)
+        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, k) for k in range(1, len(parts) + 1)]
+
+    def test_a_task_names_the_mutation_or_else_its_lines_text(self) -> None:
+        name = ("vera/verifier.py", "x\u01c1ContractVerifier\u01c1_aggregate_generic_instances", 4)
+        text = "".join(self._parts(mutations={name: ('"verified"', '"XXverifiedXX"')},
+                                   lines={("vera/verifier.py", 3368): '        "verified": 1,'}))
+        assert ('- [ ] `vera/verifier.py:3368` `ContractVerifier._aggregate_generic_instances` mutant 4: '
+                '`"verified"` to `"XXverifiedXX"`') in text
+        assert ('- [ ] `vera/verifier.py:3368` `ContractVerifier._aggregate_generic_instances` mutant 5: '
+                'on `"verified": 1,`') in text
+
+    def test_a_survivor_evaluated_at_import_is_no_task(self) -> None:
+        text = "".join(self._parts(at_import=self.THREE))
+        assert text.count("\n- [ ] `") == 299
+        assert ("Evaluated at import, not observable in process (#1740), so no task: "
+                "`vera/monomorphize.py:1104` `_builtin_return_tables` mutant 11; "
+                "`vera/trap_registry.py:394` `_emitters` mutant 2; `vera/trap_registry.py:78` `_kinds` mutant 2. "
+                "This cycle closed before the rule and counts them as survivors in its score.") in text
+
+    def test_github_renders_nothing_it_should_not(self) -> None:
+        text = "".join(self._parts())
+        assert "\u2014" not in text
+        for line in text.splitlines():
+            if line.startswith("- [ ]"):
+                assert line.count("`") % 2 == 0 and "@" not in line.replace("`", "")
+        assert sw._code("a ` b") == "`` a ` b ``" and sw._code("x" * 200).endswith("...`")
+
+    def test_the_issue_body_says_how_to_read_the_comments(self) -> None:
+        body = sw.render_issue_body()
+        assert "no night closes it" in body and "task list" in body and "\u2014" not in body
+
+
+class TestResultsWorkflow:
+    """The jobs that post a night's comments and report a red night."""
+
+    def _wf(self) -> dict[Any, Any]:
+        data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        return data
+
+    def test_a_red_night_finds_its_tracking_issue_by_its_own_title(self) -> None:
+        """The standing results issue carries the `mutation-sweep` label too,
+        and the listing returns the newest first: a red path that took the
+        first open issue so labelled would report the failure there."""
+        script = self._wf()["jobs"]["issue"]["steps"][0]["with"]["script"]
+        assert "item => !item.pull_request && item.title === TITLE" in script
+        assert 'const TITLE = "Nightly mutation sweep stopped short on main (tracking)";' in script
+        assert sw.STANDING_TITLE not in script
+
+    def test_the_results_job_can_write_issues_and_nothing_else(self) -> None:
+        job = self._wf()["jobs"]["results"]
+        assert job["permissions"] == {"issues": "write"}
+        assert job["needs"] == ["setup", "stitch"]
+        assert "github.event_name == 'schedule' || inputs.post" in job["if"]
+        assert not any(str(s.get("uses", "")).startswith("actions/checkout") for s in job["steps"])
+        run = job["steps"][-1]["run"]
+        assert f'title="{sw.STANDING_TITLE}"' in run
+        assert "--body-file" in run and "grep -qxF" in run and "${{" not in run
+
+    def test_a_dispatch_posts_only_when_asked(self) -> None:
+        post = self._wf()[True]["workflow_dispatch"]["inputs"]["post"]
+        assert post["type"] == "boolean" and post["default"] is False
+
+    def test_the_comments_are_rendered_in_the_stitch_job_through_env(self) -> None:
+        steps = self._wf()["jobs"]["stitch"]["steps"]
+        (render,) = [s for s in steps if s.get("name") == "Render the night's comments"]
+        assert "scripts/mutate_sweep.py comment --backfill" in render["run"] and "${{" not in render["run"]
+        (install,) = [s for s in steps if s.get("name") == "Install the engine that shows the cycle's mutations"]
+        assert "steps.closed.outputs.closed == 'true'" in install["if"]
+        assert self._wf()["jobs"]["stitch"]["permissions"] == {"contents": "read", "actions": "read"}
