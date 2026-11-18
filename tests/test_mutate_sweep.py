@@ -4004,7 +4004,11 @@ class TestNightComment:
         first = sorted(s["first_mutant_s"] / 60 for s in slices)
         assert (f"Slices: 7 with work, 6 stopped by the budget, 0 lost; first mutant at {first[0]:.0f} to "
                 f"{first[-1]:.0f} minutes (median {first[3]:.0f}).") in text
-        assert "New survivors, 141 in 29 module(s): `vera/verifier.py` 25, `vera/tester.py` 24," in text
+        assert "141 new survivors in 29 modules: `vera/verifier.py` 25, `vera/tester.py` 24," in text
+        one = {**report, "survivors": report["survivors"][:1]}
+        assert "1 new survivor in 1 module: `" in sw.render_night_comment(one, run_id=1, repo="o/r",
+                                                                         dispatched=False)
+        assert "(s)" not in text
         assert len(_body(text)) <= sw.NIGHT_LINES
 
     def test_a_night_with_nothing_new_posts_three_lines(self) -> None:
@@ -4028,7 +4032,7 @@ class TestNightComment:
         report = _fixture(NIGHT_FIXTURE)["report"]
         red = {**report, "night": {**report["night"], "problems": ["slice 3: stopped by the engine"]}}
         text = sw.render_night_comment(red, run_id=1, repo="o/r", dispatched=False)
-        assert "Stopped short (1 problem(s))" in text and "Nightly mutation sweep stopped short on main" in text
+        assert "Stopped short (1 problem)" in text and "Nightly mutation sweep stopped short on main" in text
 
     def test_a_cycle_that_closes_tonight(self, tmp_path: Path) -> None:
         """The stitch's report says the night closed the cycle; the comment
@@ -4142,7 +4146,8 @@ class TestCycleComment:
     def test_a_survivor_evaluated_at_import_is_no_task(self) -> None:
         text = "".join(self._parts(at_import=self.THREE))
         assert text.count("\n- [ ] `") == 299
-        assert ("Evaluated at import, not observable in process (#1740), so no task: "
+        assert ("Evaluated at import, not observable in process ([the rule](https://github.com/aallan/vera/blob/"
+                "main/MUTATION.md#the-cycles-survivors)), so no task: "
                 "`vera/monomorphize.py:1104` `_builtin_return_tables` mutant 11; "
                 "`vera/trap_registry.py:394` `_emitters` mutant 2; `vera/trap_registry.py:78` `_kinds` mutant 2. "
                 "This cycle closed before the rule and counts them as survivors in its score.") in text

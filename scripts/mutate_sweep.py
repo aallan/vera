@@ -3056,6 +3056,8 @@ NIGHT_LINES = 25
 ORDER = ("killed", "survived", "timeout", "slow", "memory", "lost", AT_IMPORT, "no_tests", "other")
 #: MUTATION.md's section on a survivor's three ends.
 BURNDOWN = "MUTATION.md#the-cycles-survivors"
+#: MUTATION.md's section on the at-import rule (#1740), the same section.
+AT_IMPORT_RULE = BURNDOWN
 
 
 def night_mark(run_id: int) -> str:
@@ -3066,6 +3068,11 @@ def night_mark(run_id: int) -> str:
 def cycle_mark(cycle: int, part: int) -> str:
     """The first line of each part of a cycle's close comment."""
     return f"<!-- mutation-sweep-cycle cycle={cycle} part={part} -->"
+
+
+def _count(n: int, noun: str) -> str:
+    """``1 module``, ``29 modules``."""
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
 
 
 def _label(column: str) -> str:
@@ -3124,13 +3131,13 @@ def render_night_comment(report: Mapping[str, Any], *, run_id: int, repo: str,
         return "\n".join(x for x in out if x) + "\n"  # nothing new: three lines
     out.append("")
     if night["problems"]:
-        out += [f"Stopped short ({len(night['problems'])} problem(s)): the run's stitch summary names "
+        out += [f"Stopped short ({_count(len(night['problems']), 'problem')}): the run's stitch summary names "
                 f"them, and the issue titled \"Nightly mutation sweep stopped short on main (tracking)\" "
                 "has the run.", ""]
     by_module = Counter(s["path"] for s in report.get("survivors", []))
     if by_module:
         mods = sorted(by_module.items(), key=lambda kv: (-kv[1], kv[0]))
-        out.append(f"New survivors, {sum(by_module.values())} in {len(mods)} module(s): "
+        out.append(f"{_count(sum(by_module.values()), 'new survivor')} in {_count(len(mods), 'module')}: "
                    + ", ".join(f"`{m}` {n}" for m, n in mods) + ".")
     else:
         out.append("No new survivor tonight.")
@@ -3248,7 +3255,8 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
                                  *tasks[path], "", "</details>", ""]))
     tail = []
     if unobservable:
-        tail += ["Evaluated at import, not observable in process (#1740), so no task: "
+        tail += [f"Evaluated at import, not observable in process ([the rule](https://github.com/{repo}/blob/main/"
+                 f"{AT_IMPORT_RULE})), so no task: "
                  + "; ".join(unobservable) + "."
                  + (" This cycle closed before the rule and counts them as survivors in its score."
                     if not columns[AT_IMPORT] else ""), ""]
