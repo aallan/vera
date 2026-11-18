@@ -127,7 +127,14 @@ The release-prep PR must:
    the two can disagree: a bug filed against an open PR's branch has an
    issue before it has a row.  At release time they must agree, because
    the file is then the published list.
-6. Pass the ordinary protected-branch CI and review process.
+6. Write the committed mutation score from the nightly sweep's last closed
+   cycle: download the state of the newest scheduled night
+   (`gh run download <run-id> --name mutation-sweep-state --dir state`),
+   then `python scripts/mutate_sweep.py summary --state state` writes
+   `mutation.json`, which the README badge reads, and `mutation-summary.csv`
+   at the repository root; commit both (MUTATION.md § The measure-all
+   baseline, The score and the badge).  Its `mutation-survivors.csv` is gitignored.
+7. Pass the ordinary protected-branch CI and review process.
 
 The release PR merges by merge commit or squash, the only methods the
 repository allows: the release reads the version rise against the merge

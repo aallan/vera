@@ -396,6 +396,8 @@ jobs:
       actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    outputs:
+      comments: ${{ steps.keep_comments.outputs.artifact-id }}
     steps:
       # The whole history: a cycle's close comment reads the tree at the
       # head the cycle closed at, which can be older than this run's.
@@ -488,7 +490,10 @@ jobs:
           path: ${{ runner.temp }}/state-out/
           retention-days: 90
 
+      # Its id, the job's `comments` output, tells the results job the
+      # comments exist: empty when nothing was rendered.
       - name: Keep the comments
+        id: keep_comments
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
@@ -501,31 +506,40 @@ jobs:
   # its title alone and created when absent; each comment's first line is a
   # marker, so a rerun posts nothing twice.  A dispatched night posts only
   # when asked (`post`).  No checkout: the comments are files the stitch job
-  # rendered, posted as they are.
+  # rendered, posted as they are.  A night whose stitch rendered none (it
+  # failed, or never ran) posts a marked two-line comment linking the run;
+  # comments that exist and fail to download fail the job, to be rerun.
   results:
     needs: [setup, stitch]
-    if: ${{ !cancelled() && needs.stitch.result != 'skipped' && (github.event_name == 'schedule' || inputs.post) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.post) }}
     permissions:
       issues: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Download the night's comments
-        id: download
-        continue-on-error: true
+        if: needs.stitch.outputs.comments != ''
         uses: actions/download-artifact@v8
         with:
           name: mutation-sweep-comment
           path: ${{ runner.temp }}/comment
 
       - name: Post them on the standing issue
-        if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DIR: ${{ runner.temp }}/comment
+          COMMENTS: ${{ needs.stitch.outputs.comments }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ -z "$COMMENTS" ]; then
+            mkdir -p "$DIR"
+            printf '%s\n%s\n' "<!-- mutation-sweep-night run=$RUN_ID stopped -->" \
+              "**$(date -u +%F)**: the night stopped before its comment was rendered ([run]($RUN_URL))." \
+              > "$DIR/1-stopped.md"
+          fi
           title="Mutation sweep results (standing)"
           number=$(gh issue list --state open --label mutation-sweep --limit 100 \
             --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
@@ -533,6 +547,10 @@ jobs:
             gh label create testing --color C2E0C6 --description "Test suite structure and coverage" 2>/dev/null || true
             gh label create mutation-sweep --color d73a4a \
               --description "The nightly mutation sweep stopped short on main" 2>/dev/null || true
+            if [ ! -e "$DIR/issue-body.md" ]; then
+              printf '%s\n' "The nightly mutation sweep's results (MUTATION.md § The cycle's survivors)." \
+                > "$DIR/issue-body.md"
+            fi
             url=$(gh issue create --title "$title" --label testing --label mutation-sweep \
               --body-file "$DIR/issue-body.md")
             number="${url##*/}"
