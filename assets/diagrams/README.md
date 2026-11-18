@@ -86,7 +86,7 @@ and any paired `<details>` text version in the same commit.
 | `toolchain.svg` | `TOOLCHAIN.md` | CLI commands mapped onto pipeline stages; `verify` compiles to reconcile, `compile`, `run` and `serve` skip verification |
 | `testing-layers.svg` | `TESTING.md` | three test layers + four conformance levels |
 | `lsp-session.svg` | `LSP_SERVER.md` | the agent proof-delta session |
-| `history-growth.svg` | `HISTORY.md` | growth across the ten landmark releases |
+| `history-growth.svg` | `HISTORY.md` | growth across the twelve landmark releases |
 | `subtyping-lattice.svg` | `spec/02` | the complete subtyping relation, the variance of compound types, and the checker/verifier Nat split |
 | `effect-row-lattice.svg` | `spec/07`, `DESIGN.md` | effect subtyping by row inclusion |
 | `module-resolution.svg` | `spec/08` | path mapping, cache, cycle rejection, transitive-≠-visible |

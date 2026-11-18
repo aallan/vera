@@ -98,7 +98,11 @@ The release-prep PR must:
    deletes the fragments it consumed; a malformed fragment stops it before
    anything is written.  Then write the section's `### Highlights` above its
    first subsection.
-3. Add the release's one-line HISTORY entry and regenerate site assets.
+3. Add the release's HISTORY row: one sentence that names the release's
+   theme, about twenty words (`scripts/check_history_rows.py` holds the
+   ceiling, 35).  A release the maintainer names a landmark also adds its
+   column to HISTORY.md's By the numbers and redraws
+   `assets/diagrams/history-growth.svg`.  Then regenerate the site assets.
 4. Regenerate TESTING.md's status (the test totals, the per-file and
    skipped-tests tables, and the tree's counts) with
    `python scripts/render_status.py`, and commit it; confirm with
