@@ -415,7 +415,7 @@ def _example(name: str) -> ReconcileRun:
 #: The corpus holds no binder pair since the widening went (v0.2.3), so the
 #: binder case is `_BINDERS`'s, written to a temporary file.
 _RULE_CASES = [
-    ("examples/factorial.vera", "int_overflow", 11),                 # value
+    ("examples/factorial.vera", "int_overflow", 12),                 # value
     ("tests/conformance/ch05_closure_nat_return.vera", "nat_bind", 25),
     #                                          value: a join's arms
     ("<binders>", "nat_bind", 21),                                    # binder
