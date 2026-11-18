@@ -1,8 +1,9 @@
-<svg width="920" height="272" viewBox="0 0 920 272" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Growth across the ten landmark releases, 23 February to 17 July 2026: tests from about fifty to 7,992; conformance programs from zero to 163; examples from thirteen to 39; built-in functions from zero to 164.</title>
-  <!-- Design system: see architecture.svg. Data: HISTORY.md §By the numbers, as recorded at v0.1.5.
-       Series (10 columns): tests 50,300,1400,3095,4342,5559,5615,5808,6779,7992 · conformance 0,0,0,64,89,103,104,104,143,163
-       examples 13,15,18,30,35,35,36,36,37,39 · builtins 0,0,30,122,164,164,164,164,164,164 -->
+<svg width="920" height="288" viewBox="0 0 920 288" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Growth across the twelve landmark releases, 23 February to 9 November 2026: tests from about fifty to 55,671; conformance programs from zero to 273; examples from thirteen to 44; built-in functions from zero to 168.</title>
+  <!-- Design system: see architecture.svg. Data: HISTORY.md §By the numbers, as recorded at v0.2.8.
+       Each series is scaled to its own maximum.
+       Series (12 columns): tests 50,300,1400,3095,4342,5559,5615,5808,6779,7992,30095,55671 · conformance 0,0,0,64,89,103,104,104,143,163,256,273
+       examples 13,15,18,30,35,35,36,36,37,39,43,44 · builtins 0,0,30,122,164,164,164,164,164,164,164,168 -->
   <defs>
     <style>
       .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
@@ -18,64 +19,65 @@
     </style>
   </defs>
 
-  <rect x="1.5" y="1.5" width="917" height="269" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+  <rect x="1.5" y="1.5" width="917" height="285" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
-  <text class="f micro" x="36" y="40">BY THE NUMBERS · TEN RELEASES</text>
-  <text class="f sub" x="36" y="62">23 Feb → 17 Jul 2026, as recorded in HISTORY.md at v0.1.5</text>
+  <text class="f micro" x="36" y="40">BY THE NUMBERS · TWELVE RELEASES</text>
+  <text class="f sub" x="36" y="62">23 Feb → 9 Nov 2026, as recorded in HISTORY.md at v0.2.8</text>
 
   <!-- tests -->
   <g>
     <rect class="card" x="36" y="84" width="194" height="140" rx="10"/>
     <text class="f lbl" x="52" y="108">TESTS</text>
-    <text class="f val" x="52" y="130">7,992</text>
+    <text class="f val" x="52" y="130">55,671</text>
     <text class="f from" x="214" y="130" text-anchor="end">from ~50</text>
-    <polygon points="52,186 70,184 88,178 106,169 124,162 142,155 160,155 178,154 196,149 214,142 214,186" fill="#f8efdf"/>
-    <polyline points="52,186 70,184 88,178 106,169 124,162 142,155 160,155 178,154 196,149 214,142" fill="none" stroke="#d4952a" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="52,186 66.7,185.8 81.5,184.9 96.2,183.6 110.9,182.6 125.6,181.6 140.4,181.6 155.1,181.4 169.8,180.6 184.5,179.7 199.3,162.2 214,142 214,186 52,186" fill="#f8efdf"/>
+    <polyline points="52,186 66.7,185.8 81.5,184.9 96.2,183.6 110.9,182.6 125.6,181.6 140.4,181.6 155.1,181.4 169.8,180.6 184.5,179.7 199.3,162.2 214,142" fill="none" stroke="#d4952a" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="214" cy="142" r="2.5" fill="#d4952a"/>
     <text class="m axis" x="52" y="212">v0.0.1</text>
-    <text class="m axis" x="214" y="212" text-anchor="end">v0.1.5</text>
+    <text class="m axis" x="214" y="212" text-anchor="end">v0.2.7</text>
   </g>
 
   <!-- conformance -->
   <g>
     <rect class="card" x="254" y="84" width="194" height="140" rx="10"/>
     <text class="f lbl" x="270" y="108">CONFORMANCE PROGRAMS</text>
-    <text class="f val" x="270" y="130">163</text>
+    <text class="f val" x="270" y="130">273</text>
     <text class="f from" x="432" y="130" text-anchor="end">from 0</text>
-    <polygon points="270,186 288,186 306,186 324,169 342,162 360,158 378,158 396,158 414,147 432,142 432,186" fill="#ede8f2"/>
-    <polyline points="270,186 288,186 306,186 324,169 342,162 360,158 378,158 396,158 414,147 432,142" fill="none" stroke="#8b6cad" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="270,186 284.7,186 299.5,186 314.2,175.7 328.9,171.7 343.6,169.4 358.4,169.2 373.1,169.2 387.8,163 402.5,159.7 417.3,144.7 432,142 432,186" fill="#ede8f2"/>
+    <polyline points="270,186 284.7,186 299.5,186 314.2,175.7 328.9,171.7 343.6,169.4 358.4,169.2 373.1,169.2 387.8,163 402.5,159.7 417.3,144.7 432,142" fill="none" stroke="#8b6cad" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="432" cy="142" r="2.5" fill="#8b6cad"/>
     <text class="m axis" x="270" y="212">v0.0.1</text>
-    <text class="m axis" x="432" y="212" text-anchor="end">v0.1.5</text>
+    <text class="m axis" x="432" y="212" text-anchor="end">v0.2.7</text>
   </g>
 
   <!-- examples -->
   <g>
     <rect class="card" x="472" y="84" width="194" height="140" rx="10"/>
     <text class="f lbl" x="488" y="108">EXAMPLES</text>
-    <text class="f val" x="488" y="130">39</text>
+    <text class="f val" x="488" y="130">44</text>
     <text class="f from" x="650" y="130" text-anchor="end">from 13</text>
-    <polygon points="488,171 506,169 524,166 542,152 560,147 578,147 596,145 614,145 632,144 650,142 650,186 488,186" fill="#e6f0e9"/>
-    <polyline points="488,171 506,169 524,166 542,152 560,147 578,147 596,145 614,145 632,144 650,142" fill="none" stroke="#5a9e6f" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="488,173 502.7,171 517.5,168 532.2,156 546.9,151 561.6,151 576.4,150 591.1,150 605.8,149 620.5,147 635.3,143 650,142 650,186 488,186" fill="#e6f0e9"/>
+    <polyline points="488,173 502.7,171 517.5,168 532.2,156 546.9,151 561.6,151 576.4,150 591.1,150 605.8,149 620.5,147 635.3,143 650,142" fill="none" stroke="#5a9e6f" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="650" cy="142" r="2.5" fill="#5a9e6f"/>
     <text class="m axis" x="488" y="212">v0.0.1</text>
-    <text class="m axis" x="650" y="212" text-anchor="end">v0.1.5</text>
+    <text class="m axis" x="650" y="212" text-anchor="end">v0.2.7</text>
   </g>
 
   <!-- built-ins -->
   <g>
     <rect class="card" x="690" y="84" width="194" height="140" rx="10"/>
     <text class="f lbl" x="706" y="108">BUILT-IN FUNCTIONS</text>
-    <text class="f val" x="706" y="130">164</text>
+    <text class="f val" x="706" y="130">168</text>
     <text class="f from" x="868" y="130" text-anchor="end">from 0</text>
-    <polygon points="706,186 724,186 742,178 760,153 778,142 796,142 814,142 832,142 850,142 868,142 868,186" fill="#e4ecf2"/>
-    <polyline points="706,186 724,186 742,178 760,153 778,142 796,142 814,142 832,142 850,142 868,142" fill="none" stroke="#4a82a8" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="706,186 720.7,186 735.5,178.1 750.2,154 764.9,143 779.6,143 794.4,143 809.1,143 823.8,143 838.5,143 853.3,143 868,142 868,186" fill="#e4ecf2"/>
+    <polyline points="706,186 720.7,186 735.5,178.1 750.2,154 764.9,143 779.6,143 794.4,143 809.1,143 823.8,143 838.5,143 853.3,143 868,142" fill="none" stroke="#4a82a8" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="868" cy="142" r="2.5" fill="#4a82a8"/>
     <text class="m axis" x="706" y="212">v0.0.1</text>
-    <text class="m axis" x="868" y="212" text-anchor="end">v0.1.5</text>
+    <text class="m axis" x="868" y="212" text-anchor="end">v0.2.7</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="248">Ten releases, chosen for the capability each unlocked rather than for even spacing:</text>
-  <text class="f footi" x="36" y="264">first release → runs end-to-end → GC → Inference → LSP → soundness → HttpServer → WASI serve → zero known bugs → first PyPI release.</text>
+  <text class="f footi" x="36" y="248">Twelve releases, chosen for the capability each unlocked rather than for even spacing:</text>
+  <text class="f footi" x="36" y="264">first release → runs end-to-end → GC → Inference → LSP → soundness campaign → HttpServer → WASI serve →</text>
+  <text class="f footi" x="36" y="280">zero known bugs → first PyPI release → soundness release → one obligation table.</text>
 </svg>

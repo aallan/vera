@@ -20,44 +20,13 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.9 to v0.2.12, the rest
 
 A bug class outranks stage work, so the open [`bug`-labelled issues](https://github.com/aallan/vera/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug) are the queue the fix releases work from, soundness defects first, and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each one's full account.
 
-Bugs in a mechanism cluster close in the stage that removes their mechanism and carry that release's [milestone](https://github.com/aallan/vera/milestones); the rest are the [debt track](https://github.com/aallan/vera/milestone/10), burned down alongside the stages in small pull requests.
-
-## Stage 19: The verification completeness sprint
-
-*`vera verify` tells the whole truth.*
-
-Verification-completeness gaps, each small: an obligation not emitted, or a guard not planted.
-
-| Issue | What |
-|---|---|
-| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved; a generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved; and a parameterized ADT `decreases` measure (`List<Int>`) gets no runtime guard until per-instantiation size helpers rank it at run time. |
-| [#1450](https://github.com/aallan/vera/issues/1450) | The boundary guard composes a refinement over a refined base, so such a type compiles instead of being refused with **E618**. |
-
-## Stage 20: The single-source sprint
-
-*One fact, one home, drift caught by a gate.*
-
-This stage makes drift-prone consistency classes structural. Each gets a generator or a gate, so a documented fact lives in one place and the next consistency pass finds nothing. A gate that does not check its own premise can drift too. Release-process automation belongs here as well, as single-sourcing for process.
-
-Exit criterion: each listed drift class has a generator or a gate, and a release requires no manual tag/publish steps.
-
-| Issue | What |
-|---|---|
-| [#1344](https://github.com/aallan/vera/issues/1344) | **Single-source registries umbrella**: one typed source of truth for built-ins, diagnostics, and doc mirrors.  The next two rows are its remaining parts. |
-| [#1342](https://github.com/aallan/vera/issues/1342) | Conformance matrix: generate a construct × phase × target support table, so which constructs `check`, `verify`, and each compile target accept is read off the suite rather than asserted in prose. |
-| [#653](https://github.com/aallan/vera/issues/653) | Spec audit for §0.2 / §0.3 design-principle violations, holding the spec to its own principles. |
-| [#540](https://github.com/aallan/vera/issues/540) | lychee + markdownlint MD051 cross-doc anchor validation. |
-| [#1525](https://github.com/aallan/vera/issues/1525) | **Derive each fact once**: a resolved program representation shared by the checker, the verifier and code generation, so no two of them re-derive a fact and disagree. |
-| [#1396](https://github.com/aallan/vera/issues/1396) | Spec question: whether a repeated contract clause (two identical `requires`) is refused, warned about or accepted; decide it and state it in the spec. |
-| [#1532](https://github.com/aallan/vera/issues/1532) | Pin the nested refused-constructor search in the #1433 duplicate-name tests. |
-| [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert, each shown by a mutation or a direct run. |
-| [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
+Bugs in a mechanism cluster close in the stage that removes their mechanism and carry that release's [milestone](https://github.com/aallan/vera/milestones); a bug outside a cluster carries the milestone of the release that fixes it.
 
 ## Stage 28: Decomposition and the spec (v0.2.9 to v0.2.12)
 
 *Readable parts, and a spec that states the language.*
 
-The large classes split along the seams Stages 25 to 27 created, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.9.  §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
+The large classes split along the seams Stages 25 to 27 created, and the spec hands its implementation status to the documents that track it.  Its releases fix the bugs outside a mechanism cluster, each under the milestone of the release that fixes it.  §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
 
 Exit criterion: no function is over 500 lines, and the spec states no implementation status.
 
@@ -65,27 +34,30 @@ The stage's four remaining releases:
 
 | Release | What |
 |---|---|
-| v0.2.9 | The rest of the stage's bugs, the language-server batch, and the rest of the nightly mutation sweep's redesign, its declared oracle first, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
-| v0.2.10 | The documentation sweep and housekeeping. |
-| v0.2.11 | The testing-hygiene batch. |
-| v0.2.12 | The host and runtime bugs; Stage 29 follows at v0.3.0. |
+| [v0.2.9](https://github.com/aallan/vera/milestone/8) | The negation fix ([#1875](https://github.com/aallan/vera/issues/1875)), the nightly mutation sweep's results on one standing issue, tail calls under a postcondition ([#1851](https://github.com/aallan/vera/issues/1851)), the rest of the stage's bugs and the language-server batch. |
+| [v0.2.10](https://github.com/aallan/vera/milestone/14) | Housekeeping and the mutation sweep's declared oracle, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
+| [v0.2.11](https://github.com/aallan/vera/milestone/11) | The testing-hygiene batch. |
+| [v0.2.12](https://github.com/aallan/vera/milestone/12) | The host and runtime bugs; Stage 29 follows at v0.3.0. |
 
 | Change | What |
 |---|---|
 | Decomposition | `ContractVerifier`, `WasmContext` and `CodeGenerator` split along the seams Stages 25 to 27 created. |
 | The spec states the language | Implementation status moves out of the spec to KNOWN_ISSUES.md and the limitation data file. |
 | Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire. |
-| Debt, second batch | Whatever remains of the debt track. |
+| Bugs outside a cluster | Each fixed in one of the stage's releases, under that release's milestone. |
 
 ## Stage 29: The sound base (v0.3.0)
 
 *Declared sound by measurement.*
 
-A release, plus the one change to what the language accepts that a minor version is for:
+The release that derives each fact once, plus the changes to what the language accepts that a minor version is for:
 
 | Issue | What |
 |---|---|
+| [#1525](https://github.com/aallan/vera/issues/1525) | **Derive each fact once**: a resolved program representation shared by the checker, the verifier and code generation, so no two of them re-derive a fact and disagree; code generation's remaining readers of a written type are its last lines. |
 | [#1819](https://github.com/aallan/vera/issues/1819) | A function type's parameters and result are compared under the formal relation only, so a closure typed `fn(Int -> Int)` no longer fits a `fn(Int -> Nat)` formal, nor a `fn(Nat -> Int)` one a `fn(Int -> Int)`: the `Int` to `Nat` relaxation has no value to obligate or guard inside a function type.  The refusal's fix is the eta-expansion, and spec §2.8 rule 5 states where the relaxation applies. |
+| [#294](https://github.com/aallan/vera/issues/294) | A row variable in a parameter's function type may be carried, but applying such a function value under a concrete row is refused at check, with a fix that names the concrete row to write. |
+| [#1396](https://github.com/aallan/vera/issues/1396) | Spec question: whether a repeated contract clause (two identical `requires`) is refused, warned about or accepted; decide it and state it in the spec. |
 
 The release pull request re-measures the scorecard below and carries one section stating the supported fragment, the trusted components, the runtime enforcement and the refusals, beside the scorecard, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
 
@@ -94,7 +66,7 @@ Exit criterion: every target in the scorecard is met.
 | Measure | Target |
 |---|---|
 | Open `soundness` bugs | 0 |
-| Open bugs | The debt track's residue only, each with an instrument |
+| Open bugs | Only bugs outside a mechanism cluster, each with an instrument and a later release's milestone |
 | Backend `_infer_*` functions | 0 |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 0 |
 | Explicit `guarded=` claims by the verifier | 0 |
@@ -198,7 +170,9 @@ Exit criterion: the browser limitation rows are retired and an animated demo run
 
 Work beyond the staged sprints, grouped by arc; each item is pulled forward by its trigger, not before.
 
-**Verification depth**: [#427](https://github.com/aallan/vera/issues/427) Tier 2 verification (Z3 with `assert`/lemma hints; its differential oracle, per-monomorphization results, exists, so nothing blocks it, but the stages outrank it), [#439](https://github.com/aallan/vera/issues/439) lifting effect-handler bodies out of Tier 3 (research-grade; approach 3 depends on #427), [#686](https://github.com/aallan/vera/issues/686) `data invariant(...)` clauses (blocked; refinement types are the working alternative).
+**Verification depth**: [#427](https://github.com/aallan/vera/issues/427) Tier 2 verification (Z3 with `assert`/lemma hints; its differential oracle, per-monomorphization results, exists, so nothing blocks it, but the stages outrank it), [#439](https://github.com/aallan/vera/issues/439) lifting effect-handler bodies out of Tier 3 (research-grade; approach 3 depends on #427), [#686](https://github.com/aallan/vera/issues/686) `data invariant(...)` clauses (blocked; refinement types are the working alternative), [#1561](https://github.com/aallan/vera/issues/1561) a generic's `decreases` measure that stays at Tier 3 where the monomorphic form is proved, [#1450](https://github.com/aallan/vera/issues/1450) a refinement over a refined base compiled instead of refused with **E618**.
+
+**Single source**: [#1344](https://github.com/aallan/vera/issues/1344) the single-source registries umbrella, one typed source for built-ins, diagnostics and doc mirrors, [#1342](https://github.com/aallan/vera/issues/1342) a generated construct × phase × target support table, [#653](https://github.com/aallan/vera/issues/653) a spec audit against the §0.2 / §0.3 design principles, [#540](https://github.com/aallan/vera/issues/540) lychee and markdownlint MD051 cross-doc anchor validation.
 
 **Nominal types**: [#1358](https://github.com/aallan/vera/issues/1358) `newtype`: nominal scalar types, checked at use (the issue carries the design, a validation plan and an estimate).
 
@@ -206,7 +180,7 @@ Work beyond the staged sprints, grouped by arc; each item is pulled forward by i
 
 **Concurrency and WASI**: [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (gated on wasmtime-py exposing component async), [#853](https://github.com/aallan/vera/issues/853) extend wasi-p2 beyond IO+Random (Http via `wasi:http` outgoing-handler, streaming filesystem, sockets), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for shape-unfusable `async` arguments.
 
-**Modules and ecosystem**: [#127](https://github.com/aallan/vera/issues/127) module re-exports, [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#294](https://github.com/aallan/vera/issues/294) effect row variable unification, [#785](https://github.com/aallan/vera/issues/785) GitHits MCP (bookmark; trial at the next dependency-facing milestone).
+**Modules and ecosystem**: [#127](https://github.com/aallan/vera/issues/127) module re-exports, [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#1750](https://github.com/aallan/vera/issues/1750) full effect-row unification, [#785](https://github.com/aallan/vera/issues/785) GitHits MCP (bookmark; trial at the next dependency-facing milestone).
 
 **Standard library long tail**: [#367](https://github.com/aallan/vera/issues/367) Markdown extractors, [#368](https://github.com/aallan/vera/issues/368) HTML accessors, [#507](https://github.com/aallan/vera/issues/507) ability-dispatched array operations, [#509](https://github.com/aallan/vera/issues/509) Unicode-aware string built-ins phase 2, [#1143](https://github.com/aallan/vera/issues/1143) `<DB>` effect phases 2–3: named columns (via Map), typed rows (via JSON), and further backends.
 

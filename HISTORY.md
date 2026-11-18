@@ -28,8 +28,8 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 16 | 2–3 Jul | The server-effects sprint | v0.0.192–v0.0.195 |
 | 17 | 4 Jul | The v0.1.0 bug burndown | v0.1.0 |
 | 18 | 8 Jul | The visual documentation pass | v0.1.1 |
-| 19 + 20 | 9 Jul – 28 Sep | Verification completeness + single source (dual-threaded) | v0.1.2–v0.2.0 |
-| 21 + 22 | 9–13 Oct | Instruments and truth + fast lane and one driver | v0.2.1–v0.2.2 |
+| 19–20 | 9 Jul – 28 Sep | Verification and single source | v0.1.2–v0.2.0 |
+| 21–22 | 9–13 Oct | Instruments and the fast lane | v0.2.1–v0.2.2 |
 | 23 | 13–15 Oct | `Nat` and the lowering boundary | v0.2.3 |
 | 24 | 15–16 Oct | Hosts and the fold | v0.2.4 |
 | 25 | 21–22 Oct | One resolver | v0.2.5 |
@@ -466,7 +466,7 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 
 
-## Stage 19 and Stage 20: The dual-threaded start (9 July – 28 September)
+## Stages 19–20: The dual-threaded start (9 July – 28 September)
 
 *Two sprints at once.*
 
@@ -488,94 +488,94 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.13 | 21 Aug | **The inference response-shape fix**: `Inference.complete` selects text by block type, and every failure names its provider. |
 | v0.2.0 | 28 Sep | **The soundness release**: termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
-## Stage 21 and Stage 22: Instruments and truth (9–13 October)
+## Stages 21–22: Instruments and truth (9–13 October)
 
 *The pipeline checks its own claims.*
 
-The first of the releases toward v0.3.0's sound base gave the pipeline instruments: `vera verify --reconcile` joins the verifier's runtime-check claims with the checks the compiled module holds, `vera test --distrust` runs the functions the verifier proved, and the conformance manifest pins every run-level program's exit status and the stdout of 175 of the 176.  The pipe became the call it stands for at transform, closing six pipe bugs; CI took coverage off the pull request, re-ran the matrix after a merge only for a release, and sampled the class-instrument matrices on a pull request; six dependency bumps landed as one lock update; counts left the prose for a status generated into TESTING.md at release; the ROADMAP laid out the releases to v0.3.0; the class-fix rules were revised; and the documents dropped their hedges.  v0.2.2 gave every later fix a faster path: a 12-to-19-minute pull-request lane with the full matrix kept for releases and nights, one in-process driver for the whole test suite, CHANGELOG fragments, lists rendered from one source, and the scorecard measured at release.
+The first releases toward v0.3.0's sound base gave the pipeline instruments for its own claims: the verifier's runtime-check claims are joined with the compiled module's checks, and a run can refute a proof.  v0.2.2 then gave every later fix a faster path: a pull-request lane under twenty minutes and one in-process test driver.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.2.1 | 10 Oct | **Instruments and truth**: the pipeline checks its own claims. |
-| v0.2.2 | 13 Oct | **Fast lane and one driver**: a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
+| v0.2.2 | 13 Oct | **Fast lane and one driver**: a pull-request lane under twenty minutes and one in-process test driver. |
 
 ## Stage 23: `Nat` and the lowering boundary (13–15 October)
 
 *`Nat` is the type the spec defines, and what checks compiles.*
 
-v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, where the compiler had held an unsigned 64-bit integer, and typed every integer literal `Int`; its upgrade note names what breaks, a value or a literal above `9223372036854775807` and the typing of a literal by its value, and the fix for each.  One module, `vera/lowering.py`, says what code generation lowers, and the checker refuses the rest where it is written, a user-declared effect's row among it; an effect operation is held to the row in force wherever it is performed; an array literal's elements, an `if`'s branches and a `match`'s arms are joined into one type; a result reference is held to its function's return type; a `match` over a scrutinee in error is reported once; `&&`, `||` and `==>` short-circuit in compiled code and in the verifier's premises; and a nested pattern is read to its full depth by the exhaustiveness check and the verifier.  The filing rules put a bug's mechanism first, and the open bugs were consolidated by mechanism, 44 of them into seven class issues; with the cycle's fixes, the open `bug` issues went from 91 at v0.2.2 to 33.
+v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, and drew one boundary, `vera/lowering.py`, between what the checker accepts and what code generation lowers.  The same cycle put a bug's mechanism first, and the open bugs were consolidated by mechanism.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.3 | 15 Oct | **`Nat` and the lowering boundary**: `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
+| v0.2.3 | 15 Oct | **`Nat` and the lowering boundary**: `Nat` is the non-negative i64 the spec defines, and what checks compiles. |
 
 ## Stage 24: Hosts and the fold (15–16 October)
 
 *One source where there were many.*
 
-v0.2.4 gave the host bindings and the tree walks one source each.  The built-in registry, `vera/builtins.py`, holds every built-in function as one record and every host import as one row, which the checker, code generation, the Python host, the browser runtime, the WASI target's refusals and spec §9's signature tables read, so a host operation is added in one row and implemented once per host; `IO.read_bytes` and `IO.write_bytes` were added that way, beside four conversions between strings, bytes and Base64 compiled in place.  `Map` and `Set` became persistent hash tries in the module's own code, which took their operations off every host and a fold of `map_insert` over 10,000 keys from 50.4 s to 41 ms natively.  One fold, `vera/fold.py`, carries the fourteen walkers the walker-coverage gate guarded, so the gate went, and compiled WAT stayed byte-identical over the corpus.  Mutation testing runs over a pull request's diff, and over all of `vera/` a slice a night.  The verifier assumes a call's facts only where its arguments fit the callee's parameters, a destructuring `let` is checked as the constructor pattern it names, and the collector marks a heap of any width.  The program generator, the stage's third source, carries over to v0.2.5.  The open `bug` issues numbered 33 at v0.2.3's cut; the cycle's fixes closed five, and it filed seventeen with `bug`, two of which moved to `testing` and `ci`; the day's consolidation closed fourteen `bug` issues into their class issues as instances, opening [#1744](https://github.com/aallan/vera/issues/1744) to hold two of them, so 30 are open.
+v0.2.4 gave the host bindings and the tree walks one source each: the built-in registry, `vera/builtins.py`, from which every host binds, and one fold, `vera/fold.py`, that carries the walks over the AST.  It set the pattern of the next three stages, one owner for one kind of fact.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.4 | 16 Oct | **Hosts and the fold**: every built-in one registry record and every host import bound from its row, `Map` and `Set` as persistent hash tries in the module's own code, bytes in, out and through, one fold over the AST with the walker-coverage gate retired, mutation testing over a pull request's diff and over all of `vera/` by night, a call's facts assumed only where its arguments fit, a destructuring `let` checked as the pattern it names, and a collector that marks a heap of any width. |
+| v0.2.4 | 16 Oct | **Hosts and the fold**: one registry binds every built-in and host import, and one fold walks the AST. |
 
 ## Stage 25: One resolver (21–22 October)
 
 *Every name resolved once.*
 
-v0.2.5 gave names one owner.  A binding pass, `vera/binding.py`, gives every declaration of the entry file, each module and the prelude an identity and binds every call, data type, alias and constructor name to one declaration before any later stage asks; the checker, the verifier and code generation read that binding, every declaration compiles under its own link name in a namespace no function the compiler writes for itself can reach, and two modules' same-named data types are two types.  The prelude's names are reserved, so no file redeclares `Option`, `Json` or `json_get`, and the five compile-time collision errors left with the mechanism that needed them.  Around the resolver: `vera verify` reconciles its runtime-check claims with the compiled module by default; a `Map`'s or `Set`'s `String` keys hash under a key drawn for each instantiation; a contract predicate is held to purity whatever its function's row; an `if` joining an `@Int` branch with a `@Nat` one is an `@Int`; a type-directed program generator writes whole programs from a seed and feeds three nightly differentials, which found that join; forty-two run-level conformance programs reach what their headers name; the distrust tester attributes a trap through the reconciliation and runs 1,000 trials a night; and a pull request that changes only the editor extension runs four jobs and stands the rest down.
+v0.2.5 gave names one owner.  A binding pass, `vera/binding.py`, binds every name to one declaration before any later stage asks, and the checker, the verifier and code generation read that binding instead of resolving names for themselves.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.5 | 22 Oct | **One resolver**: every name bound once to one declaration and read by the checker, the verifier and code generation, the prelude's names reserved, `vera verify` reconciled by default, `Map` and `Set` keyed per instantiation, contracts held to purity, a program generator with three nightly differentials, and the conformance corpus running what it names. |
+| v0.2.5 | 22 Oct | **One resolver**: every name is bound once, to one declaration. |
 
 ## Stage 26: One typed program (22–28 October)
 
 *Every type derived once.*
 
-v0.2.6 gave types one owner.  The checker records each generic call's type arguments, and `vera.typed` derives from those records the instances a program needs, links the program once and builds each clone once, every node with a type of its own; code generation and the verifier each read every type, instantiation and clone from that typed program, which `verify`, `compile` and `test` take as their one input, save seventeen code-generation functions that still read a written type, for v0.2.7, so code generation's 23 `_infer_*` walkers, the two discoveries of a program's instances and the verifier's `_resolve_type` are gone.  A rule whose answer depends on a generic's instantiation is judged at check, at the call that chooses the type arguments, and a cycle of instances that grows without bound is refused there.  Thirty-one programs whose types code generation re-derived compile, load and run at the checker's types; a type variable inside a function-typed argument is fixed by the polarity of the position it holds, and a call argument's open variable takes one type; a construction is modelled at the sort of its checked type; and an `Exn` handler's value is the join of its body's and its clauses'.  Around the typed program: every diagnostic carries a registered code, the command line's refusals and the runtime trap included; a source that is not UTF-8 is refused at every reading; the collector no longer marks a block on the free list; a module declares only the `State` cells and `Exn` tags its code uses; the program generator's second version writes recursion, generics, imports, containers and handlers and adds a warm-session differential; a release starts when CI's run on the merge commit completes; the mutation lanes install the lock and name an engine failure; and the lock moves to z3-solver 5.3.2.0, ending the hold on 5.x.
+v0.2.6 gave types one owner.  The checker records each generic call's type arguments, and `vera/typed.py` derives from them one typed program, which the verifier and code generation read in place of the types each had derived for itself.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.6 | 28 Oct | **One typed program**: every generic's instances derived once from the check and judged at the call that chooses them, code generation and the verifier each reading every type from the typed program, save seventeen code-generation functions that read a written type, a call argument's open type variable bound to one type and a function-typed argument's by the polarity of its position, every diagnostic with a registered code, every source decoded by one reader with a file that is not UTF-8 refused, a collector that never marks a free block, a module declaring only the cells and tags its code uses, the program generator's second version with a warm-session differential, the mutation lanes installing the lock with an engine-failure classifier and its class matrix, and the lock on z3-solver 5.3.2.0 with the hold on 5.x ended. |
+| v0.2.6 | 28 Oct | **One typed program**: every type is derived once and read by the verifier and code generation. |
 
 ## Stage 27: One obligation table (29 October – 9 November)
 
 *Every obligation listed once.*
 
-v0.2.7 gave obligations one owner.  One pass over the typed program, `vera/obligations/table.py`, lists every obligation site once as a row; code generation emits a runtime check for every row the table holds guardable and for no other node, and `vera verify` discharges every row in the context its traversal reaches it in, each record naming the rows it discharges, so whether a site has a runtime check is read from its row rather than predicted.  The verifier's 49 `guarded=` predictions, its six mirrors of code generation's decisions, its narrowing walk, its fallback discharge and the roster of guarded positions are gone; the reconciliation join keys on row identity, with no allowlist in the corpus gate or the program generator where both listed 30 entries in 7 classes.  A row no check can guard is disclosed, never counted, and a signed division whose divisor only a zero check excludes is Tier 3, its `INT_MIN / -1` row left to the check.  Around the table: a refinement the checker recorded at a join is no longer a premise of the value; a generic instantiated at a function type compiles; an expression the verifier cannot translate is one stand-in of its checked type's sort under one rule; a refused binder draws no second error and a refuted postcondition's counterexample prints the body's result; a composite coercion into a `Nat` component is guarded by one rule over the typed program; the nightly matrix is a workflow of its own on pinned images; and the nightly mutation sweep measures a sample drawn by line, each session in a process of its own.
+v0.2.7 gave obligations one owner.  One pass, `vera/obligations/table.py`, lists every obligation site once as a row; code generation guards the rows a check can guard and the verifier discharges them, so whether a site has a runtime check is read from its row rather than predicted.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.7 | 9 Nov | **One obligation table**: the table complete, with code generation guarding and the verifier discharging its rows, a join's recorded refinement no longer a premise of the value, a generic at a function type compiled, the small verifier batch of counterexamples, refused binders and stand-ins, the nightly matrix on pinned images, and the mutation sweep sampled by line. |
+| v0.2.7 | 9 Nov | **One obligation table**: every obligation is listed once, guarded by code generation and discharged by the verifier. |
 
 ## Stage 28: Decomposition and the spec (from 11 November)
 
 *Readable parts, and a spec that states the language.*
 
-v0.2.8 opened the stage with the bugs the obligation table's reviews had left loud.  An `if`, a `match` or an `Exn` handler has the type its arms share, where the checker had recorded one arm's, so no arm lends its refinement or its effect row to a value that does not have it.  A type variable takes one type from a call's arguments whatever their order, the type they share, and the type a value is expected at fixes what its arguments or elements leave open.  A message quotes the program's own text as `vera fmt` writes it, and a fix that names a type or offers a precondition writes one the program can hold, computed from the site and offered only where it clears the diagnostic.  The nightly mutation sweep keeps each mutant as the engine decides it, uploads a slice's record in legs that outlive a lost runner, and runs its engine under a memory bound.
+The stage splits the large classes along the seams Stages 25 to 27 created and moves implementation status out of the spec.  v0.2.8 opened it with the bugs the obligation table's reviews had left loud: a join had taken one arm's type, and argument order could decide a type variable.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.8 | 13 Nov | **Joins and open variables**: a join typed at what its arms share, a type variable given one type whatever the argument order and fixed by the type its site expects, messages that quote the program's own text with fixes computed from the site, a check kept on a tail call's result, and the mutation sweep accounting per mutant under a memory bound. |
+| v0.2.8 | 13 Nov | **Joins and open variables**: a join has the type its arms share, and a type variable takes one type. |
 
 ---
 
 ## By the numbers
 
-Ten releases, chosen for the capability each one unlocked rather than even spacing.
+Twelve releases, chosen for the capability each one unlocked rather than even spacing.
 
-![Growth across the ten landmark releases: tests from ~50 to 7,992, conformance programs from 0 to 163, examples from 13 to 39, built-in functions from 0 to 164.](assets/diagrams/history-growth.svg)
+![Growth across the twelve landmark releases: tests from ~50 to 55,671, conformance programs from 0 to 273, examples from 13 to 44, built-in functions from 0 to 168.](assets/diagrams/history-growth.svg)
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) | v0.0.195 (2 Jul) | v0.1.0 (4 Jul) | v0.1.5 (17 Jul) |
-|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect | WASI serve backend | Zero known bugs | First PyPI release |
-| Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,808 | 6,779 | 7,992 |
-| Examples | 13 | 15 | 18 | 30 | 35 | 35 | 36 | 36 | 37 | 39 |
-| Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 | 164 | 164 | 164 |
-| Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 | 104 | 143 | 163 |
-| Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
-| Python coverage | – | – | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) | v0.0.195 (2 Jul) | v0.1.0 (4 Jul) | v0.1.5 (17 Jul) | v0.2.0 (28 Sep) | v0.2.7 (9 Nov) |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect | WASI serve backend | Zero known bugs | First PyPI release | Soundness release | One obligation table |
+| Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI | 5 + modules + GC + browser + LSP + WASI + resolver + typed program + obligation table |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,808 | 6,779 | 7,992 | 30,095 | 55,671 |
+| Examples | 13 | 15 | 18 | 30 | 35 | 35 | 36 | 36 | 37 | 39 | 43 | 44 |
+| Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 | 164 | 164 | 164 | 164 | 168 |
+| Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 | 104 | 143 | 163 | 256 | 273 |
+| Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 | 14 | 14 |
+| Python coverage | – | – | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% | 95% | 95% |
 
 Total: **3,300+ commits, 220 tagged releases, 176 active development days.**
