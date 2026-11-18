@@ -2222,13 +2222,29 @@ class OperatorsMixin:
             return None
         if type(base).__name__ == "RefinedType":
             return None
-        base_name = getattr(base, "name", None)
-        if not isinstance(base_name, str):
+        base_te = OperatorsMixin._named_type_expr(base)
+        if base_te is None:
             return None
-        return ast.RefinementType(
-            base_type=ast.NamedType(name=base_name, type_args=None),
-            predicate=predicate,
-        )
+        return ast.RefinementType(base_type=base_te, predicate=predicate)
+
+    @staticmethod
+    def _named_type_expr(ty: object) -> ast.NamedType | None:
+        """*ty*, a primitive or a data type over such types, as the
+        ``NamedType`` that writes it (`Array<Int>`, not `Array`: the
+        binder a predicate over a parameterised base reads is named with
+        its arguments, #1861); ``None`` for a type with no such name."""
+        if type(ty).__name__ == "PrimitiveType":
+            return ast.NamedType(name=getattr(ty, "name"), type_args=None)
+        if type(ty).__name__ != "AdtType":
+            return None
+        args: list[ast.TypeExpr] = []
+        for arg in getattr(ty, "type_args", ()):
+            te = OperatorsMixin._named_type_expr(arg)
+            if te is None:
+                return None
+            args.append(te)
+        return ast.NamedType(name=getattr(ty, "name"),
+                             type_args=tuple(args) if args else None)
 
     @staticmethod
     def _adt_arg_type(target: object | None, index: int) -> object | None:

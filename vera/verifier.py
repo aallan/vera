@@ -4043,11 +4043,9 @@ class ContractVerifier:
             if r.evaluation == obligation_table.RETURN and k in at_te:
                 groups.setdefault(g, []).append(r)
             elif k in leaves and ((refinements and r.kind == "refine_bind") or (
-                    r.kind == "nat_bind" and r.answered_by is not None and (
-                        r.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY
-                        or (r.answered_by >= 0
-                            and self._table.by_id(r.answered_by).evaluation in (
-                                obligation_table.ENTRY, obligation_table.RETURN))))):
+                    r.kind == "nat_bind" and r.answered_by is not None
+                    and self._table.by_id(r.answered_by).evaluation in (
+                        obligation_table.ENTRY, obligation_table.RETURN))):
                 groups.setdefault(g, []).append(r)
         for rows in groups.values():
             node = rows[0].node
@@ -4277,12 +4275,10 @@ class ContractVerifier:
     def _row_checked(self, row: obligation_table.Row) -> bool:
         """Whether a check answers *row*: its own, or the check of the row
         that answers it (a value's component at a boundary is checked by
-        the boundary's entry or return row), or a closure's entry."""
+        the boundary's entry or return row)."""
         if row.guard.check:
             return True
-        if row.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY:
-            return True
-        if row.answered_by is not None and row.answered_by >= 0:
+        if row.answered_by is not None:
             return self._table.by_id(row.answered_by).guard.check
         return False
 
@@ -8537,8 +8533,9 @@ class ContractVerifier:
                     # reduced to `>= 0`.  `_refined_binding_target` takes the
                     # RESOLVED formal (a concrete refined formal, or a generic one
                     # instantiated to a RefinedType at this site).  Codegen guards
-                    # the closure's refined formal at the lifted body's prologue
-                    # (`_compile_lifted_closure`, fix site 2), so `guarded=True`.
+                    # the argument at the call, against the function type's
+                    # formal (`_guard_closure_argument`, #1861): the closure
+                    # that runs can be wider than its type.
                     refined_target = self._refined_binding_target(
                         arg, resolved_formal)
                     if (refined_target := self._refined_site(arg, refined_target)) is not None:

@@ -8,6 +8,7 @@ from vera.types import FunctionType, RefinedType, base_type
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _align_up,
+    bind_slot_value_from_stack,
     field_layout,
     gc_shadow_push,
 )
@@ -163,6 +164,12 @@ class ClosuresMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            # The argument's refinement, checked at the call against the
+            # function type's parameter (spec §6.7; #1861, #1885): the
+            # closure that runs can be wider than its type (§2.8 rule 5),
+            # so its own entry check, which still runs, need not be this one.
+            arg_instrs = self._guard_closure_argument(
+                arg_instrs, arg, formal, env)
             # #1017: the @Int -> @Nat NARROWING.
             # A negative @Int argument narrowing into a @Nat closure formal would
             # otherwise enter the formal reinterpreted (silently) — guard it at
@@ -236,6 +243,31 @@ class ClosuresMixin:
         sig_name = self._closure_sigs[sig_key]
         instructions.append(f"call_indirect (type {sig_name})")
         return instructions
+
+    def _guard_closure_argument(
+        self, value: list[str], arg: ast.Expr, formal: object | None,
+        env: WasmSlotEnv,
+    ) -> list[str]:
+        """*value*, the translation of an ``apply_fn`` argument, behind the
+        refinement check of its ``refine_bind`` row, where the table gives
+        the row a check of its own: the value is spilled to the locals a
+        slot of its representation binds, the function type's parameter
+        predicate is evaluated over them, and the value is pushed back."""
+        row = self._row(arg, "refine_bind")
+        if not self._checked(row):
+            return value
+        assert row is not None  # noqa: S101 — `_checked`
+        te = self.refined_type_expr(row.target)
+        width = self._width_of(formal) if formal is not None else None
+        if te is None or width is None:
+            raise CodegenInvariantError(
+                "the obligation table holds a closure argument's refinement "
+                "guardable, and this lowering resolves no type for it "
+                "(#1861)", arg)
+        spill = bind_slot_value_from_stack(self.alloc_local, width)
+        guard = self._emit_bind_refine_guard(
+            te, spill.slot_local, "closure argument", arg, env, row=row)
+        return [*value, *spill.load, *guard, *spill.push]
 
     def _collect_free_vars(
         self,
