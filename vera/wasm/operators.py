@@ -1295,8 +1295,7 @@ class OperatorsMixin:
                 return self._emit_overflow_guard(
                     ["i64.const 0"], operand, ast.BinOp.SUB, row=row)
             return ["i64.const 0"] + operand + ["i64.sub"]
-        raise CodegenInvariantError(  # pragma: no cover, no mutate — unreachable: the checker admits `!` and `-` alone
-            "unary operator dispatch fell through", expr)  # pragma: no mutate — as above, so no run reads the message
+        raise CodegenInvariantError("unary operator dispatch fell through", expr)  # pragma: no cover, no mutate — unreachable: the checker admits `!` and `-` alone, so no run reads the message
 
     # -----------------------------------------------------------------
     # Control flow

@@ -3899,7 +3899,8 @@ class ContractVerifier:
             ovf_type = self._overflow_arith_fail_closed(node)
             return ovf_type is not None and not (
                 node.op == ast.BinOp.SUB
-                and ovf_type == "Nat")  # pragma: no mutate — equivalent: a subtraction of two operands the checker types `Nat` is `_is_guarded_nat_subtraction`'s, answered at `nat_sub` first, so this row is never asked of it
+                and ovf_type == "Nat"  # pragma: no mutate — equivalent: a subtraction of two operands the checker types `Nat` is `_is_guarded_nat_subtraction`'s, answered at `nat_sub` first, so this row is never asked of it
+            )
         if kind == "int_overflow" and isinstance(node, ast.UnaryExpr):
             # A negation is `0 - x` (#1875), by the table's own rule.
             return obligation_table.negation_obligated(
