@@ -1300,9 +1300,12 @@ class ResolutionMixin:
 
         Two types no position reconciles keep the first binding, and the
         argument check refuses the other.  A variable the arguments agree
-        on, or one argument fixes, is left as they give it."""
+        on, or one argument fixes, is left as they give it.  Every variable
+        *given* records is in *mapping*: unification binds each variable
+        `_bound_parts` meets (none was missing over the corpus, the
+        generator's seeds and the checker's instruments, #1862)."""
         for tv, parts in given.items():
-            if len(parts) < 2 or tv not in mapping:
+            if len(parts) < 2:
                 continue
             first = parts[0][1]
             if all(same_type_and_facts(t, first) for _, t in parts[1:]):

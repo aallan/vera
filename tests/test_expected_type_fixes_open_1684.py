@@ -690,6 +690,25 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
         assert args[0] in (instance, names.get(instance)), (args, instance)
 
 
+def test_repro_an_element_that_does_not_fit_the_context_leaves_it_untaken(
+) -> None:
+    """`[f_io, f_pure]` bound at `Array<TakesIO>`: a function that takes a
+    pure callback does not fit one that takes an `IO` callback, so the
+    context is not taken as the element type and the literal is the
+    elements' join, whichever comes first, as the literal written at that
+    type behaves.  Killed: the context branch's `_fits(t, ctx)` with its
+    operands swapped, which asks whether the context fits each element
+    (PR 1864's mutation lane; a matrix cell alone killed it)."""
+    pair = PAIRS["effect_row"]
+    instance = _instance("array", pair, "stronger")
+    assert instance == pair.join == "TakesPure"
+    for order in ("strong_first", "weak_first"):
+        source = _program("array", pair, order, "stronger", "")
+        twin = _program("array", pair, order, "stronger", "",
+                        element=instance)
+        assert _outcome(source) == _outcome(twin), order
+
+
 # ---------------------------------------------------------------------
 # B, nested: each level is the join, and the narrowing is the binding's
 # ---------------------------------------------------------------------

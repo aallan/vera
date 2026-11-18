@@ -285,6 +285,57 @@ def test_repro_an_empty_literal_filled_two_deep() -> None:
         "Array<Array<String>>.")
 
 
+_EMPTY_ELEMENTS = """
+public fn f(@Bool, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Nat>> = [[], []];
+  array_length(@Array<Array<Nat>>.0)
+}
+"""
+
+
+def test_repro_the_context_fills_an_element_type_the_elements_leave_unknown(
+) -> None:
+    """`[[], []]` at `Array<Array<Nat>>`: each element is an
+    `Array<Unknown>`, and the context fills the unknown, so the literal is
+    an `Array<Array<Nat>>` and the binding checks.  Killed: the fill's
+    `contains_unknown` test dropped (PR 1864's mutation lane; a matrix
+    cell alone killed it)."""
+    checked = _checked(_EMPTY_ELEMENTS)
+    assert _where(checked) == []
+    assert _literal_types(checked)[_place(_EMPTY_ELEMENTS, "[[], []]")] == (
+        "Array<Array<Nat>>")
+
+
+_BRANCHES_LEFT_OPEN = """
+public fn f(@Bool, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length([if @Bool.0 then { [Tuple(None, -1)] } else { [Tuple(5, -1)] }])
+}
+"""
+
+
+def test_repro_a_context_the_join_cannot_fill_leaves_the_element_type(
+) -> None:
+    """An `if` whose branches join to nothing (E301) inside a literal with
+    no context: the element type is the branches' as the literal leaves
+    it, `Array<Tuple<Option<T$>, Int>>`.  Killed: the fill's `filled is not
+    None` test dropped, which writes the failed fill over it (PR 1864's
+    mutation lane; a matrix cell alone killed it)."""
+    checked = _checked(_BRANCHES_LEFT_OPEN)
+    literal = ("[if @Bool.0 then { [Tuple(None, -1)] } "
+               "else { [Tuple(5, -1)] }]")
+    assert _where(checked) == [("E301", 7, 17)]
+    assert _literal_types(checked)[_place(_BRANCHES_LEFT_OPEN, literal)] == (
+        "Array<Array<Tuple<Option<T$>, Int>>>")
+
+
 def test_repro_result_parameters_filled_by_two_elements() -> None:
     checked = _checked(_ISSUE_RESULT)
     literal = '[Err("e"), Ok(1), Ok("x")]'

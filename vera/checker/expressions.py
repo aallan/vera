@@ -1280,27 +1280,25 @@ class ExpressionsMixin:
         if ty is None or isinstance(ty, UnknownType):
             return ty
         # The open call's re-check is blocked only by what cannot fix its
-        # variable: an unknown, a literal's hole, a variable some call left
-        # open.  The enclosing function's own type parameter is a type like
-        # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
-        # `forall<T>` fixes `none_ord`'s variable at that `T`).
+        # variable: an unknown in the context.  No site hands this check a
+        # context holding a literal's hole or a variable a call left open
+        # (each caller's context is a written or recorded type; none was
+        # reached over the corpus, the generator's seeds and the checker's
+        # instruments, #1862).  The enclosing function's own type parameter
+        # is a type like any other (`let @Array<Option<T>> = [none_ord(())]`
+        # inside a `forall<T>` fixes `none_ord`'s variable at that `T`).
         open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall,
                                         ast.IndexExpr)
         if component:
             open_kinds += (ast.ConstructorCall, ast.NullaryConstructor)
         left_open = (isinstance(expr, open_kinds)
                      and contains_fresh_typevar(ty)
-                     and not contains_fresh_typevar(context)
-                     and not contains_unknown(context)
-                     and not contains_literal_hole(context))
+                     and not contains_unknown(context))
         if not left_open and (contains_typevar(context)
                               or not self._call_literal_meets_nat(
                                   expr, context)):
             return ty
-        rechecked = self._synth_expr(expr, expected=context)
-        if rechecked is None or isinstance(rechecked, UnknownType):
-            return ty
-        return rechecked
+        return self._synth_expr(expr, expected=context)
 
     def _call_literal_meets_nat(self, expr: ast.Expr, context: Type) -> bool:
         """Whether a generic call that *expr* evaluates to, or builds into
@@ -1628,10 +1626,13 @@ class ExpressionsMixin:
                  and not contains_literal_hole(
                      self._literal_soft_type(e, t) or t)
                  and not self._leaves_open(t)]
+        # An unknown element context (an unresolved type name, a sibling's
+        # empty literal) decides nothing.  No element context holds a
+        # literal's hole or a variable a call left open (none was reached
+        # over the corpus, the generator's seeds and the checker's
+        # instruments, #1862).
         ctx = (element_ctx if element_ctx is not None
-               and not contains_fresh_typevar(element_ctx)
-               and not contains_unknown(element_ctx)
-               and not contains_literal_hole(element_ctx) else None)
+               and not contains_unknown(element_ctx) else None)
         element_type = structure
         if typed and any(not same_type_and_facts(t, typed[0][1])
                          for _, t in typed[1:]):
