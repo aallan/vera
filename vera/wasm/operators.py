@@ -1286,6 +1286,14 @@ class OperatorsMixin:
         if expr.op == ast.UnaryOp.NEG:
             if self._expr_width(expr.operand) == "f64":
                 return operand + ["f64.neg"]
+            # #1875: the negation of an `Int` is `0 - x`, and where the
+            # obligation table lists its `int_overflow` row it takes the
+            # subtraction's guard, which traps at `x = -2^63`.  A negated
+            # literal and the negation of a `Nat` have no row.
+            row = self._row(expr, "int_overflow")
+            if self._checked(row):
+                return self._emit_overflow_guard(
+                    ["i64.const 0"], operand, ast.BinOp.SUB, row=row)
             return ["i64.const 0"] + operand + ["i64.sub"]
         raise CodegenInvariantError(  # pragma: no cover
             "unary operator dispatch fell through", expr)
