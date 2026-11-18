@@ -332,14 +332,12 @@ def _shared_facts(
     `fn(Small -> X)`; a chain is never moved onto another base (a refined
     `Int` beside a `Nat` gives a plain `Nat`).  Where two chains state
     different predicates at one level the parameter has the shared prefix,
-    the relaxation `is_subtype` already admits at any site of that function
-    type (rule 9 with rule 7, issue #1819); that remainder is held by an
-    entry check only where one exists, a closure's own parameter and its
-    data components, never a callback's result; a callback's result whose
-    arms differ by base (a `Nat` beside a refined `Int`, where no chain is
-    kept) is held by none either.  Binding the join where
-    a refined type is expected is then the narrowing it is, obligated by its
-    leaves.
+    which an arm stating one of them does not fit under rule 9's formal
+    relation: `ControlFlowMixin._value_join` refuses that arm (E189, #1885),
+    so a callback's result whose arms differ by base (a `Nat` beside a
+    refined `Int`, where no chain is kept) is refused there too.  Binding
+    the join where a refined type is expected is then the narrowing it is,
+    obligated by its leaves.
     """
     return _shared_at(joined, list(arms))
 
@@ -445,8 +443,22 @@ class ControlFlowMixin:
         a `match` over its arms, an `Exn` handler over its body and clauses,
         *joined* being the structure the join of their types gives
         (`_join`), stating only the facts every arm states
-        (:func:`_shared_facts`, #1716)."""
-        return _shared_facts(joined, arms)
+        (:func:`_shared_facts`, #1716).
+
+        Where the arms state two refinements at a function type's
+        parameter, the join keeps their shared prefix, which no arm accepts
+        all of: that arm is refused at the join (E189, #1885), as it is at
+        any other flow into the type."""
+        shared = _shared_facts(joined, arms)
+        for expr, ty in arms:
+            if expr is None or is_subtype(ty, shared):
+                continue
+            node = expr.expr if isinstance(expr, ast.Block) else expr
+            if self._refuse_unfit_function_value(
+                    node, ty, shared, "the join with its sibling arms",
+                    "declare every arm at"):
+                break
+        return shared
 
     def _synth_against(self, expr: ast.Expr, sibling: Type) -> Type | None:
         """*expr*, an `if` branch or a `match` arm, synthesized again with
@@ -1953,7 +1965,11 @@ class ControlFlowMixin:
             init_type = self._synth_expr(
                 expr.state.init_expr, expected=state_type)
             if init_type and not isinstance(init_type, UnknownType):
-                if not is_subtype(init_type, state_type):
+                if (not is_subtype(init_type, state_type)
+                        and not self._refuse_unfit_function_value(
+                            expr.state.init_expr, init_type, state_type,
+                            "the handler's state type",
+                            "declare the handler's state at")):
                     self._error(
                         expr.state.init_expr,
                         f"Handler state initial value has type "
@@ -2182,7 +2198,11 @@ class ControlFlowMixin:
                         upd_expr, expected=state_type)
                     if (upd_type and state_type
                             and not isinstance(upd_type, UnknownType)
-                            and not is_subtype(upd_type, state_type)):
+                            and not is_subtype(upd_type, state_type)
+                            and not self._refuse_unfit_function_value(
+                                upd_expr, upd_type, state_type,
+                                "the handler's state type",
+                                "declare the handler's state at")):
                         self._error(
                             upd_expr,
                             f"State update expression has type "

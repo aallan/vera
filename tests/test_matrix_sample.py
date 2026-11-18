@@ -725,6 +725,7 @@ MARKED_FILES = (
     "test_diagnostic_text_reads_back_1573.py",
     "test_expected_type_fixes_open_1684.py",
     "test_negation_overflow_1875.py",
+    "test_narrower_closure_refused_1885.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

@@ -897,7 +897,8 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     7. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
     8. UnknownType is compatible with everything (error recovery), and so
        is the placeholder of a name nothing declares (UnresolvedAdtType)
-    9. FunctionType: params contravariant, return covariant, effects covariant
+    9. FunctionType: params contravariant, return covariant, effects covariant,
+       all under the formal relation (`is_formal_subtype`: never 3b or 7)
 
     TypeVar is NOT compatible with concrete types.  TypeVar equality is
     handled by reflexivity (rule 1).  At call sites, type inference
@@ -909,8 +910,24 @@ def is_subtype(sub: Type, sup: Type) -> bool:
             sup, (UnknownType, UnresolvedAdtType)):
         return True
 
-    # Reflexivity (structural equality)
-    if types_equal(sub, sup):
+    # FunctionType subtyping (rule 9): params contravariant, return
+    # covariant, effects covariant (Spec §2.8 rule 5, §7.8), all under the
+    # formal relation.  Rules 3b and 7 narrow a VALUE, obligated and checked
+    # where it flows; a function type's parameter holds no value yet
+    # (#1885), and a function guarantees the result it declares, so a
+    # `-> @Int` closure guarantees no `Pos` (#1819).  Ahead of reflexivity:
+    # `types_equal` compares a refined type by its base, so it would take
+    # `fn(Big -> Int)` for `fn(Pos -> Int)`.
+    if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
+        return is_formal_subtype(sub, sup)
+
+    # Reflexivity (structural equality).  `types_equal` compares a refined
+    # type by its base, so where a function type sits inside (an
+    # `Array<fn(Pos -> Int)>` beside an `Array<fn(Big -> Int)>`) the
+    # predicates must agree too, or the pair goes on to the rules below,
+    # which reach rule 9 (#1885).
+    if types_equal(sub, sup) and (_refined_predicates_agree(sub, sup)
+                                  or not _holds_function(sub)):
         return True
 
     # Never is bottom
@@ -942,22 +959,124 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     if isinstance(sup, RefinedType):
         return is_subtype(sub, sup.base)
 
-    # FunctionType subtyping: params contravariant, return covariant,
-    # effects covariant (Spec §7.8).
+    return False
+
+
+def _holds_function(ty: Type) -> bool:
+    """Whether a function type stands anywhere in *ty*."""
+    ty = base_type(ty)
+    if isinstance(ty, FunctionType):
+        return True
+    return isinstance(ty, AdtType) and any(
+        _holds_function(a) for a in ty.type_args)
+
+
+def is_formal_subtype(sub: Type, sup: Type) -> bool:
+    """`sub <: sup` under spec §2.8's relation alone: reflexivity,
+    `Never`, `Nat <: Int`, a refinement to its base, a refinement to one
+    that states the same predicate, and the variance of compound types.
+    Never `Int <: Nat` (rule 3b) and never a type to a refinement of it
+    (rule 7): those narrow a value where it flows, obligated and checked
+    there.  The relation inside a function type (rule 9): a parameter holds
+    no value yet (#1885), and a result is what the function guarantees,
+    checked on its own return (#1819).
+
+    Two refinements of one base fit only where they state the same
+    predicate: `{ @Int | @Int.0 > 10 }` is not taken for
+    `{ @Int | @Int.0 > 0 }`, though it implies it, since a closure can
+    always declare its position's own type, narrowing a parameter inside."""
+    if isinstance(sub, (UnknownType, UnresolvedAdtType)) or isinstance(
+            sup, (UnknownType, UnresolvedAdtType)):
+        return True
+    if isinstance(sub, PrimitiveType) and sub.name == "Never":
+        return True
+    if isinstance(sub, RefinedType):
+        if (isinstance(sup, RefinedType) and types_equal(sub, sup)
+                and _refined_predicates_agree(sub, sup)):
+            return True
+        return is_formal_subtype(sub.base, sup)
+    if isinstance(sup, RefinedType):
+        return False
+    if isinstance(sub, PrimitiveType) and isinstance(sup, PrimitiveType):
+        return sub.name == sup.name or (sub.name == "Nat"
+                                        and sup.name == "Int")
+    if isinstance(sub, AdtType) and isinstance(sup, AdtType):
+        return (sub.name == sup.name
+                and len(sub.type_args) == len(sup.type_args)
+                and all(is_formal_subtype(sa, pa)
+                        for sa, pa in zip(sub.type_args, sup.type_args)))
+    if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
+        return (len(sub.params) == len(sup.params)
+                and all(is_formal_subtype(sp, sbp)
+                        for sp, sbp in zip(sup.params, sub.params))
+                and is_formal_subtype(sub.return_type, sup.return_type)
+                and is_effect_subtype(sub.effect, sup.effect))
+    return types_equal(sub, sup)
+
+
+@dataclass(frozen=True)
+class UnfitFunctionValue:
+    """A function value that fits the function type it meets only by a
+    narrowing (#1885, #1819): its parameter *index* narrower than the
+    type's, or, where *index* is None, its result wider.  *value* is the
+    value's function type and *position* the one it meets, each at the
+    depth where they meet."""
+
+    value: FunctionType
+    position: FunctionType
+    index: int | None
+
+
+def _narrowing_erased(ty: Type) -> Type:
+    """*ty* with every refinement taken to its base and every `Nat` to
+    `Int`: what is left once a narrowing is set aside."""
+    if isinstance(ty, RefinedType):
+        return _narrowing_erased(ty.base)
+    if isinstance(ty, PrimitiveType) and ty.name == "Nat":
+        return INT
+    if isinstance(ty, AdtType):
+        return ty.with_args(tuple(_narrowing_erased(a) for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return FunctionType(tuple(_narrowing_erased(p) for p in ty.params),
+                            _narrowing_erased(ty.return_type), ty.effect)
+    return ty
+
+
+def unfit_function_value(sub: Type, sup: Type) -> UnfitFunctionValue | None:
+    """The function type in *sub* that meets its place in *sup* only by a
+    narrowing (`Int` at `Nat`, a type at a refinement of it, a refinement
+    at another): a parameter narrower than the place's, or a result wider,
+    the rest of the pair fitting.  The case rule 9 refuses for E189
+    (#1885, #1819).  Searched through a data type's type arguments and a
+    function type's result, outermost first; ``None`` where there is
+    none."""
+    sub, sup = base_type(sub), base_type(sup)
     if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
         if len(sub.params) != len(sup.params):
-            return False
-        # Params: contravariant (sup params <: sub params)
-        if not all(is_subtype(sp, sbp)
-                   for sp, sbp in zip(sup.params, sub.params)):
-            return False
-        # Return: covariant (sub return <: sup return)
-        if not is_subtype(sub.return_type, sup.return_type):
-            return False
-        # Effects: covariant (sub effects <: sup effects)
-        return is_effect_subtype(sub.effect, sup.effect)
-
-    return False
+            return None
+        pairs = list(zip(sup.params, sub.params))
+        if not (all(is_formal_subtype(_narrowing_erased(sp),
+                                      _narrowing_erased(sbp))
+                    for sp, sbp in pairs)
+                and is_formal_subtype(_narrowing_erased(sub.return_type),
+                                      _narrowing_erased(sup.return_type))
+                and is_effect_subtype(sub.effect, sup.effect)):
+            return None
+        for i, (sp, sbp) in enumerate(pairs):
+            if not is_formal_subtype(sp, sbp):
+                return UnfitFunctionValue(sub, sup, i)
+        if is_formal_subtype(sub.return_type, sup.return_type):
+            return None
+        deeper = unfit_function_value(sub.return_type, sup.return_type)
+        return deeper or UnfitFunctionValue(sub, sup, None)
+    if (isinstance(sub, AdtType) and isinstance(sup, AdtType)
+            and sub.name == sup.name
+            and len(sub.type_args) == len(sup.type_args)):
+        for a, b in zip(sub.type_args, sup.type_args):
+            found = unfit_function_value(a, b)
+            if found is not None:
+                return found
+    return None
 
 
 def numeric_join(left: Type, right: Type) -> Type | None:

@@ -1334,6 +1334,12 @@ class CallsMixin:
                         error_code="E202",
                     )
                     continue
+                if self._refuse_unfit_function_value(
+                        args[i], arg_ty, param_ty,
+                        f"parameter {i} of '{fn_info.name}'",
+                        f"declare parameter {i} of '{fn_info.name}' at",
+                        call=(fn_info, i, arg_types)):
+                    continue
                 self._error(
                     args[i],
                     f"Argument {i} of '{fn_info.name}' has type "
@@ -1599,7 +1605,12 @@ class CallsMixin:
                     param_ty):
                 self._refuse_unfixed_application(
                     rest[i], i, arg_ty, param_ty, args[0])
-            elif not is_subtype(arg_ty, param_ty):
+            elif (not is_subtype(arg_ty, param_ty)
+                    and not self._refuse_unfit_function_value(
+                        rest[i], arg_ty, param_ty,
+                        f"parameter {i} of the applied function type",
+                        f"declare parameter {i} of the applied function "
+                        f"type at")):
                 rigid = self._rigid_variable(param_ty)
                 self._error(
                     rest[i],
@@ -1812,7 +1823,11 @@ class CallsMixin:
             if (isinstance(param_ty, UnknownType)
                     or _unmapped(op_info.param_types[i], mapping)):
                 continue
-            if not is_subtype(arg_ty, param_ty):
+            if (not is_subtype(arg_ty, param_ty)
+                    and not self._refuse_unfit_function_value(
+                        args[i], arg_ty, param_ty,
+                        f"parameter {i} of '{op_info.name}'",
+                        f"declare parameter {i} of '{op_info.name}' at")):
                 rigid = self._rigid_variable(param_ty)
                 self._error(
                     args[i],
@@ -2987,7 +3002,11 @@ class CallsMixin:
                         and is_subtype(re, field_ty)):
                     arg_ty = re
                     arg_types[i] = re
-            if not is_subtype(arg_ty, field_ty):
+            if (not is_subtype(arg_ty, field_ty)
+                    and not self._refuse_unfit_function_value(
+                        expr.args[i], arg_ty, field_ty,
+                        f"field {i} of '{expr.name}'",
+                        f"declare field {i} of '{expr.name}' at")):
                 self._error(
                     expr.args[i],
                     f"Constructor '{expr.name}' field {i} has type "

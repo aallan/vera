@@ -544,7 +544,7 @@ class TestTheRecord:
 
 
 # =====================================================================
-# The function types (ruling 1): admitted, and no walk can check them
+# The function types (ruling 1): no walk can check them, so refused
 # =====================================================================
 
 _FN_RETURN = """\
@@ -591,21 +591,22 @@ public fn f(@Int -> @Int)
 }
 """
 
-_FN_REASON = (
-    "#1819 (v0.3.0): a function type gaining a Nat component is admitted "
-    "(is_subtype rule 9 with 3b) and no runtime walk can check it where the "
-    "function is passed; v0.3.0 refuses it there, with the eta-expansion "
-    "as the fix")
+def _refused_e189(src: str) -> None:
+    """A function type gaining a `Nat` component is refused where the
+    function is passed (#1819, #1885: rule 9 compares a function type's
+    components under the formal relation, E189); no walk could check it
+    there, and the run used to give -5 from a `-> @Nat`."""
+    checked = pipeline.check(src)
+    assert [d.error_code for d in checked.errors] == ["E189"], [
+        d.format() for d in checked.errors]
 
 
-@pytest.mark.xfail(strict=True, reason=_FN_REASON)
 def test_repro_a_closure_returning_int_at_a_nat_result_is_refused() -> None:
-    _assert_traps(_ran(_FN_RETURN, "f", -5))
+    _refused_e189(_FN_RETURN)
 
 
-@pytest.mark.xfail(strict=True, reason=_FN_REASON)
 def test_repro_a_closure_taking_nat_at_an_int_formal_is_refused() -> None:
-    _assert_traps(_ran(_FN_PARAM, "f", -5))
+    _refused_e189(_FN_PARAM)
 
 
 # =====================================================================
