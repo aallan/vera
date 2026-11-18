@@ -2239,12 +2239,26 @@ class OperatorsMixin:
             return None
         args: list[ast.TypeExpr] = []
         for arg in getattr(ty, "type_args", ()):
-            te = OperatorsMixin._named_type_expr(arg)
+            te = OperatorsMixin._type_argument_expr(arg)
             if te is None:
                 return None
             args.append(te)
         return ast.NamedType(name=getattr(ty, "name"),
                              type_args=tuple(args) if args else None)
+
+    @staticmethod
+    def _type_argument_expr(ty: object) -> ast.TypeExpr | None:
+        """A type argument as the ``TypeExpr`` that writes it: a named type
+        as :meth:`_named_type_expr` writes it, and a refinement over one
+        with its own predicate (`Array<{ @Int | @Int.0 > 0 }>`), which the
+        binder's name renders as the checker does."""
+        if type(ty).__name__ == "RefinedType":
+            base = OperatorsMixin._type_argument_expr(getattr(ty, "base"))
+            if base is None:
+                return None
+            return ast.RefinementType(base_type=base,
+                                      predicate=getattr(ty, "predicate"))
+        return OperatorsMixin._named_type_expr(ty)
 
     @staticmethod
     def _adt_arg_type(target: object | None, index: int) -> object | None:

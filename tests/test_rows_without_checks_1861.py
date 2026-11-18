@@ -56,6 +56,9 @@ HEADER = (
     "type NE = { @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
     "type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };\n"
     "type RM = { @Map<Int, Int> | map_size(@Map<Int, Int>.0) > 0 };\n"
+    "type NEP = { @Array<Pos> | array_length(@Array<Pos>.0) > 0 };\n"
+    "type NEPI = { @Array<{ @Int | @Int.0 > 0 }> | "
+    "array_length(@Array<{ @Int | @Int.0 > 0 }>.0) > 0 };\n"
 )
 CONTRACT = ("  requires(@Int.0 >= 0 && @Int.0 < 5)\n  ensures(true)\n"
             "  effects(pure)\n")
@@ -119,6 +122,13 @@ PARAMS: dict[str, tuple[str, str, str, str, float | None]] = {
     "pos_join": ("Pos", "@Pos.0", "if @Bool.0 then { @Int.0 + 1 } else { 1 }",
                  "if @Bool.0 then { float_to_int(@Float64.0) } else { 1 }",
                  -5.0),
+    # A refined head over a base whose type argument is itself refined,
+    # by an alias and written inline: the guard at the call names its
+    # binder with the argument rendered as the checker renders it.
+    "nep": ("NEP", "array_length(@NEP.0)", "[@Int.0 + 1, 1]",
+            "[float_to_int(@Float64.0)]", -5.0),
+    "nep_inline": ("NEPI", "array_length(@NEPI.0)", "[@Int.0 + 1, 1]",
+                   "[float_to_int(@Float64.0)]", -5.0),
 }
 
 OPERANDS: dict[str, str] = {
