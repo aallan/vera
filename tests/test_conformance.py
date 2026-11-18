@@ -537,6 +537,81 @@ def test_the_cli_process_exits_as_the_in_process_cli_does(
         f"{mine.stdout}{mine.stderr}")
 
 
+#: A program whose `old(State<Int>)` checks: the internal error is injected
+#: at `state_type_arg` as code generation's state snapshot calls it, since no
+#: program reaches an internal compiler error from source (the last,
+#: `ensures(old(IO))`, is refused at check, E189, #1862).
+_INTERNAL_ERROR = (
+    "private fn bump(@Unit -> @Unit)\n  requires(true)\n"
+    "  ensures(old(State<Int>) == old(State<Int>))\n"
+    "  effects(<State<Int>>)\n{\n  ()\n}\n\n"
+    "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+    "  effects(pure)\n{\n"
+    "  handle[State<Int>](@Int = 0) {\n"
+    "    get(@Unit) -> { resume(@Int.0) },\n"
+    "    put(@Int) -> { resume(()) }\n"
+    "  } in {\n    bump(())\n  };\n  7\n}\n")
+
+#: The injection, as a process runs it: `vera.cli` run as `python -m` would
+#: run it, with `state_type_arg` raising the invariant.
+_INJECTING_LAUNCHER = """\
+import runpy
+import sys
+
+sys.path.insert(0, sys.argv.pop(1))
+from vera.codegen import contracts
+from vera.skip import CodegenInvariantError
+
+
+def _boom(effect_ref):
+    raise CodegenInvariantError("State type ref name is not 'State'",
+                                effect_ref)
+
+
+contracts.state_type_arg = _boom
+sys.argv[0] = "vera"
+runpy.run_module("vera.cli", run_name="__main__", alter_sys=True)
+"""
+
+
+@pytest.mark.parametrize("command", [("verify",), ("verify", "--json")],
+                         ids=["verify", "verify_json"])
+def test_an_internal_error_exits_as_the_in_process_cli_does(
+    command: tuple[str, ...], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An internal compiler error (E699), reached through the compile
+    `vera verify` runs, leaves the process and the in-process CLI with the
+    same exit status, 1, and every byte of both streams the same.  The
+    program checks; the error is injected in both, at `state_type_arg`, as
+    `tests/test_codegen_invariant_e699.py` injects it."""
+    from vera.codegen import contracts
+    from vera.skip import CodegenInvariantError
+
+    path = tmp_path / "internal_error.vera"
+    path.write_text(_INTERNAL_ERROR, encoding="utf-8")
+    launcher = tmp_path / "inject.py"
+    launcher.write_text(_INJECTING_LAUNCHER, encoding="utf-8")
+    assert pipeline.check(path).ok
+    process = subprocess.run(
+        [sys.executable, str(launcher), str(ROOT), *command, str(path)],
+        capture_output=True, input=pipeline.stdin_bytes(""),
+        env=golden.run_env(), cwd=ROOT, timeout=golden.RUN_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+    def _boom(effect_ref):  # type: ignore[no-untyped-def]
+        raise CodegenInvariantError(
+            "State type ref name is not 'State'", effect_ref)
+
+    monkeypatch.setattr(contracts, "state_type_arg", _boom)
+    mine = pipeline.cli(*command, path, env=_RUN_ENV)
+    assert (process.returncode, process.stdout, process.stderr) == (
+        mine.returncode, mine.stdout_bytes, mine.stderr_bytes)
+    assert mine.returncode == 1 and "E699" in mine.stdout + mine.stderr, (
+        mine.stdout + mine.stderr)
+
+
 def test_every_smoke_program_is_in_the_corpus() -> None:
     """A smoke program the corpus no longer holds would smoke nothing."""
     corpus = {f"tests/conformance/{e['file']}" for e in MANIFEST}
