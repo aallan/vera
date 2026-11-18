@@ -1,7 +1,7 @@
 -- Conformance: self-recursion with decreases (Chapter 5)
 -- Tests: recursive function, decreases clause, base case
 private fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)

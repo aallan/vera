@@ -74,6 +74,8 @@ Unary negation:
 -@Int.0                -- negation
 ```
 
+The negation of an `Int` is `0 - x`, with that subtraction's overflow obligation and trap at `x = -2^63` (§6.4.3); a negated literal is that literal's value (§4.2), and the negation of a `Nat` cannot leave the range.
+
 **No implicit conversions.** `Int` and `Float64` cannot be mixed in arithmetic. Use explicit conversion functions:
 
 ```

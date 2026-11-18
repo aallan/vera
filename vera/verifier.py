@@ -3898,7 +3898,13 @@ class ContractVerifier:
                 and node.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)):
             ovf_type = self._overflow_arith_fail_closed(node)
             return ovf_type is not None and not (
-                node.op == ast.BinOp.SUB and ovf_type == "Nat")
+                node.op == ast.BinOp.SUB
+                and ovf_type == "Nat"  # pragma: no mutate — equivalent: a subtraction of two operands the checker types `Nat` is `_is_guarded_nat_subtraction`'s, answered at `nat_sub` first, so this row is never asked of it
+            )
+        if kind == "int_overflow" and isinstance(node, ast.UnaryExpr):
+            # A negation is `0 - x` (#1875), by the table's own rule.
+            return obligation_table.negation_obligated(
+                node, self._resolved_type_of(node.operand))
         if kind in ("float_to_int_domain", "index_bounds", "assert") or (
                 kind == "int_overflow" and isinstance(node, ast.FnCall)):
             return True
@@ -7616,6 +7622,7 @@ class ContractVerifier:
             ast.IfExpr: self._operation_if,
             ast.Block: self._operation_block,
             ast.BinaryExpr: self._operation_binary,
+            ast.UnaryExpr: self._operation_unary,
             ast.MatchExpr: self._operation_match,
             ast.IndexExpr: self._operation_index,
             ast.AssertExpr: self._operation_assert,
@@ -7855,6 +7862,18 @@ class ContractVerifier:
                 self._check_overflow_obligation(
                     decl, expr, smt, path.env, path.facts,
                 )
+
+    def _operation_unary(
+        self, decl: ast.FnDecl, expr: ast.UnaryExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        yield expr.operand, path
+        # #1875: the negation of an `Int` is `0 - x`, whose result for
+        # `x = -2^63` leaves the range: the subtraction's range obligation,
+        # where the table lists the row.
+        if self._rows_taking(expr, "int_overflow"):
+            self._check_overflow_obligation(
+                decl, expr, smt, path.env, path.facts,
+            )
 
     def _operation_match(
         self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
@@ -9916,14 +9935,14 @@ class ContractVerifier:
     def _check_overflow_obligation(
         self,
         decl: ast.FnDecl,
-        expr: ast.BinaryExpr | ast.FnCall,
+        expr: ast.BinaryExpr | ast.FnCall | ast.UnaryExpr,
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
     ) -> None:
         """Discharge the i64 range obligation at one ``+``/``-``/``*``
-        site (#798), or at one ``abs`` call, whose result ``-x`` leaves the
-        range for ``x = -2^63``.
+        site (#798), or at one ``abs`` call or negation (#1875), whose
+        result ``-x`` leaves the range for ``x = -2^63``.
 
         ``@Int`` / ``@Nat`` arithmetic wraps at the machine boundary, and per
         #798 a wrapping op now traps at runtime, so each site carries a "result
@@ -13663,7 +13682,7 @@ class ContractVerifier:
     def _report_overflow(
         self,
         decl: ast.FnDecl,
-        expr: ast.BinaryExpr | ast.FnCall,
+        expr: ast.BinaryExpr | ast.FnCall | ast.UnaryExpr,
         counterexample: dict[str, str] | None,
     ) -> None:
         """Emit an E528 diagnostic for a provably-overflowing arithmetic op."""
@@ -13673,13 +13692,18 @@ class ContractVerifier:
             for name, value in sorted(counterexample.items()):
                 if name != "@result":
                     ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = "\n  ".join(ce_lines)
 
-        op_word = "`abs`" if isinstance(expr, ast.FnCall) else {
-            ast.BinOp.ADD: "addition",
-            ast.BinOp.SUB: "subtraction",
-            ast.BinOp.MUL: "multiplication",
-        }.get(expr.op, "operation")
+        if isinstance(expr, ast.FnCall):
+            op_word = "`abs`"
+        elif isinstance(expr, ast.UnaryExpr):
+            op_word = "negation"
+        else:
+            op_word = {
+                ast.BinOp.ADD: "addition",
+                ast.BinOp.SUB: "subtraction",
+                ast.BinOp.MUL: "multiplication",
+            }.get(expr.op, "operation")
         operands = self._written(expr)
         description = (
             f"Integer {op_word} in '{decl.name}' provably overflows."
@@ -13693,8 +13717,8 @@ class ContractVerifier:
             rationale=(
                 "@Int / @Nat arithmetic carries a Tier-1 proof obligation that "
                 "the result stays within the i64 range.  The SMT solver "
-                "proved the result is always out of range; `+`/`-`/`*` and "
-                "`abs` trap at runtime on overflow (#798)."
+                "proved the result is always out of range; `+`/`-`/`*`, "
+                "negation and `abs` trap at runtime on overflow (#798)."
             ),
             fix=(
                 f"Constrain the operands so `{operands}` cannot overflow — add a "

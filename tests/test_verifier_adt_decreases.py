@@ -820,9 +820,17 @@ private fn sum(@List<Int> -> @Int)
         # binder at its component's own type is the guarded row the module
         # checks (`ephemeris.vera` 340: +1 T3, a W004 before).  +19 T1, +3
         # T3, +22 total: 459/102/561 -> 478/105/583.
-        assert t1 == 478, f"Expected 478 T1, got {t1}"
+        #
+        # #1875: a negation of an `Int` is `0 - x`, with its `int_overflow`
+        # row, and the examples that negate state the precondition under
+        # which it proves.  `absolute_value.vera` gains the two rows (7 and
+        # 13) and the call precondition at 23 (+3 T1); `factorial.vera`'s
+        # `requires(@Nat.0 <= 20)` (#1635) is a call precondition at its
+        # recursive call (12) and at `test_factorial`'s (22): +2 T1.
+        # +5 T1: 478/105/583 -> 483/105/588.
+        assert t1 == 483, f"Expected 483 T1, got {t1}"
         assert t3 == 105, f"Expected 105 T3, got {t3}"
-        assert total == 583, f"Expected 583 total, got {total}"
+        assert total == 588, f"Expected 588 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The
