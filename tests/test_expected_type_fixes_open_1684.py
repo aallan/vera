@@ -1039,16 +1039,12 @@ def test_an_empty_literal_takes_the_binding_s_element_type() -> None:
     'nat_to_int(string_length("\\([][0])"))',
     "[][0] + 1",
 ])
-def test_an_index_no_context_types_is_left_to_1862(form: str) -> None:
-    """With no type around it the index's element type stays unknown, with
-    no diagnostic: the check accepts, `vera verify` warns that `main` is
-    skipped (E602) and `vera run` refuses it (E907).  Issue #1862 refuses
-    such an index at check; this pins where it stands until then."""
+def test_an_index_no_context_types_is_refused_at_check(form: str) -> None:
+    """With no type around it the index's element type is unknown: the
+    check refused nothing, and `vera verify` warned that `main` is skipped
+    (E602).  The index is refused at check (E164, #1862)."""
     source = _fn("main", "@Unit", "Int", form, visibility="public")
-    assert pipeline.check(source).ok
-    warnings = {w.error_code
-                for w in pipeline.verify(source, reconcile=True).warnings}
-    assert "E602" in warnings, warnings
+    assert _codes(source) == ["E164"]
 
 
 # ---------------------------------------------------------------------
@@ -1871,9 +1867,12 @@ def test_repro_indexing_a_function_value_is_refused() -> None:
 
 def test_repro_an_array_with_no_element_type_is_indexed() -> None:
     """`@Array.0[0]` expected at `Int`: an `Array` type written with no type
-    argument holds no element type to read, so the index is not read again;
-    the check accepts the program with no diagnostic, as c35763d6 does."""
-    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == []
+    argument holds no element type to read, so the index is not read again.
+    c35763d6 accepted the program with no diagnostic; the index has no type
+    and is refused (E164, #1862).  The type written with no argument is
+    issue #1732's."""
+    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == [
+        "E164"]
 
 
 def test_repro_an_unresolved_binding_type_is_reported_once() -> None:

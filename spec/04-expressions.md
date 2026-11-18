@@ -317,7 +317,9 @@ All elements have one type, the element type, and the type of the literal is `Ar
 @Array<Int>.0[3]
 ```
 
-Indexing uses square brackets with an `Int` or `Nat` index. Array indexing is bounds-checked:
+Indexing uses square brackets with an `Int` or `Nat` index. The index has the array's element type, so that type must be fixed: by the array's elements, by an argument, or by the type the array or the index is expected at (§4.12.1). An index into an array whose element type nothing fixes, such as `match [][0] { _ -> 1 }` or an `@Array` written with no type argument, has no type and is refused (**E164**).
+
+Array indexing is bounds-checked:
 - Statically: if the index is a literal or can be proven in-bounds by the contract system
 - At runtime: otherwise (generates a trap on out-of-bounds)
 

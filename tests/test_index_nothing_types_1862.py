@@ -1,0 +1,396 @@
+"""No value has the checker's unknown type with no diagnostic behind it
+(#1862).
+
+An index into an array whose element type no element, argument or
+expected type fixes has no type: the checker gave it its unknown type and
+reported nothing, so `vera check` accepted the program, code generation
+dropped the enclosing function (`E602`) and `vera run` refused it
+(`E907`).  The index is refused at check (E164), with a fix that names the
+type to write: the array bound at its type first, or the index read where
+a type is expected; for an `Array` written with no type argument, the type
+argument.  `old()` and `new()` of an effect with no state were the other
+silent route (`old(IO)` checked, and `vera verify` stopped at `E699`); they
+are refused at check (E189, spec §7.9.2).
+
+With every route to an unreported `Unknown` refused, a `match` or a
+destructuring `let` over a value typed `Unknown` is never judged: a
+diagnostic always stands behind it, so `_unknown_is_reported` and the
+E313 an `Unknown` scrutinee drew are gone.
+
+The class: every route by which a value of the checker's unknown type
+exists with no diagnostic behind it.  The instrument:
+
+* the matrix, position the index stands in (a `let`, an argument, a
+  return, an array element, a `Tuple` component, a `match` scrutinee, a
+  destructuring `let`, an `if` branch, an operand, an interpolation, a
+  discarded statement) × what leaves its element type unfixed (an empty
+  literal, an empty literal read from an index, an `Array` written with no
+  type argument) × whether the position's type reaches the index itself or
+  a generic call that leaves it to the index (`idg(..)`).  Each cell is
+  refused with E164 alone and its fix, applied, checks and compiles with no
+  function dropped, or (a position whose type reaches the index) checks and
+  compiles as it is;
+* the census: over the corpus and the documents' blocks, no expression is
+  typed `Unknown` while no error is reported and no typed hole stands
+  inside it.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+from pathlib import Path
+
+import pytest
+
+from tests import pipeline
+from vera import ast, fold
+from vera.checker.core import TypeChecker
+from vera.types import UnknownType, base_type
+
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/checker/control.py",
+    "vera/checker/expressions.py",
+])
+
+ROOT = Path(__file__).resolve().parents[1]
+
+_SIG = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+_IDG = f"private forall<T> fn idg(@T -> @T)\n{_SIG}{{\n  @T.0\n}}\n\n"
+
+
+def _fn(name: str, params: str, ret: str, body: str, *,
+        visibility: str = "public", effects: str = "pure") -> str:
+    indented = "\n".join(f"  {line}" if line else line
+                         for line in body.splitlines())
+    return (f"{visibility} fn {name}({params} -> @{ret})\n"
+            f"  requires(true)\n  ensures(true)\n"
+            f"  effects({effects})\n{{\n{indented}\n}}\n")
+
+
+def _main(ret: str, body: str) -> str:
+    return _fn("main", "@Unit", ret, body)
+
+
+def _errors(source: str) -> list:
+    return list(pipeline.check(source).errors)
+
+
+def _codes(source: str) -> list[str]:
+    return [e.error_code for e in _errors(source)]
+
+
+def _all_codes(source: str) -> list[str]:
+    return [d.error_code for d in pipeline.check(source).diagnostics]
+
+
+def _dropped(source: str) -> list[str]:
+    """The compile diagnostics that drop a function (E602, E620)."""
+    compiled = pipeline.compile(source)
+    assert compiled.result is not None, [
+        e.format() for e in compiled.front.errors]
+    return [d.error_code for d in compiled.result.diagnostics
+            if d.error_code in ("E602", "E620")]
+
+
+# ---------------------------------------------------------------------
+# The issue's program and the two forms of 12 November
+# ---------------------------------------------------------------------
+
+_ISSUE = (
+    "public fn main(@Unit -> @Unit)\n"
+    "  requires(true)\n  ensures(true)\n  effects(<IO>)\n{\n"
+    "  match [][0] {\n"
+    '    _ -> IO.print("matched")\n'
+    "  }\n}\n")
+
+
+def test_repro_the_issue_s_match_over_an_empty_literal_s_index() -> None:
+    """At base: `vera check` OK, `vera verify` E602, `vera run` E907.  Now
+    the index is refused, once, and the `match` over it is not judged (no
+    E313)."""
+    assert _codes(_ISSUE) == ["E164"]
+
+
+def test_repro_an_untyped_index_as_an_element_at_a_typed_binding() -> None:
+    """`let @Array<Int> = [[][0]];`: the binding's type reaches the array
+    literal and not the index (12 November)."""
+    assert _codes(_main("Int", "let @Array<Int> = [[][0]];\n"
+                               "nat_to_int(array_length(@Array<Int>.0))")) == [
+        "E164"]
+
+
+def test_repro_an_untyped_index_as_a_tuple_component_at_a_typed_binding(
+) -> None:
+    """`let @Tuple<Int, Int> = Tuple([][0], 1);` (12 November)."""
+    assert _codes(_main("Int", "let @Tuple<Int, Int> = Tuple([][0], 1);\n0")
+                  ) == ["E164"]
+
+
+def test_repro_an_index_into_an_array_written_with_no_type_argument() -> None:
+    """`@Array.0[0]` over a parameter written `@Array`: checked clean at
+    base and its function dropped.  The index is refused; the type
+    accepted with no argument is issue #1732's."""
+    assert _codes(_fn("f", "@Array", "Int",
+                      "match @Array.0[0] {\n  _ -> 1\n}",
+                      visibility="private")) == ["E164"]
+
+
+def test_e164_reads_as_written() -> None:
+    """The whole diagnostic, for the empty literal and the bare type."""
+    error, = _errors(_ISSUE)
+    assert error.description == (
+        "The element type of [] is not known, so the index [][0] has no "
+        "type.")
+    assert error.fix == (
+        "Give the array its element type: bind it at its type first, "
+        "`let @Array<Int> = [];`, and index the binding, "
+        "`@Array<Int>.0[0]`; or index it where a type is expected, as in "
+        "`let @Int = [][0];`.  Write the element type the program means in "
+        "place of `Int`.")
+    assert error.spec_ref == 'Chapter 4, Section 4.12.2 "Array Indexing"'
+    assert error.rationale.startswith("An array's element type is fixed by")
+    bare, = _errors(_fn("f", "@Array", "Int", "@Array.0[0]",
+                        visibility="private"))
+    assert bare.fix == (
+        "Write the array's element type where its type is written: "
+        "`@Array<Int>` in place of `@Array`, with the element type the "
+        "program means in place of `Int`.")
+
+
+def test_repro_the_typed_neighbours_check_and_keep_their_function() -> None:
+    """The same index where a type is expected of it, or of an array bound
+    at its type first, checks and compiles with no function dropped."""
+    for body in ("let @Int = [][0];\n@Int.0",
+                 "let @Array<Int> = [];\n"
+                 "let @Array<Int> = [@Array<Int>.0[0]];\n0",
+                 "let @Array<Int> = [];\n"
+                 "let @Tuple<Int, Int> = Tuple(@Array<Int>.0[0], 1);\n0",
+                 "let @Array<Int> = [];\n"
+                 "match @Array<Int>.0[0] {\n  _ -> 1\n}"):
+        source = _main("Int", body)
+        assert _codes(source) == [], body
+        assert _dropped(source) == [], body
+
+
+# ---------------------------------------------------------------------
+# What stands behind the index: an error elsewhere, a hole inside it
+# ---------------------------------------------------------------------
+
+def test_repro_an_index_into_a_hole_s_literal_draws_the_hole_alone() -> None:
+    """`[?][0]`: the hole's W001 stands behind the unknown element type, so
+    the index draws nothing beside it, and the `match` over it nothing."""
+    source = _main("Int", "match [?][0] {\n  1 -> 1\n}")
+    assert _all_codes(source) == ["W001"]
+
+
+def test_repro_a_match_over_a_hole_s_operand_draws_the_hole_alone() -> None:
+    """`match ? + 1 { 1 -> 1 }` drew W001 and E313 at base: the `match`
+    over a value typed `Unknown` was judged unless the value was the hole
+    itself.  A diagnostic stands behind every `Unknown`, so it is never
+    judged, and the hole's W001 is the one diagnostic."""
+    source = _main("Int", "match ? + 1 {\n  1 -> 1\n}")
+    assert _all_codes(source) == ["W001"]
+
+
+def test_repro_a_destructure_of_a_hole_s_operand_draws_the_hole_alone(
+) -> None:
+    """`let Tuple<@Int, @Int> = ? + 1;` drew W001 and E313 at base, as the
+    `match` did: a value typed `Unknown` is not judged."""
+    source = _main("Int", "let Tuple<@Int, @Int> = ? + 1;\n@Int.0")
+    assert _all_codes(source) == ["W001"]
+
+
+def test_repro_a_position_typed_unknown_inside_a_scrutinee_is_not_judged(
+) -> None:
+    """`Tuple([?][0], 1)`: the component the hole's literal leaves
+    `Unknown` is not judged, so the arm draws no E311 beside the hole's
+    W001."""
+    source = _main("Int", "match Tuple([?][0], 1) {\n  Tuple(1, _) -> 1\n}")
+    assert _all_codes(source) == ["W001"]
+
+
+def test_repro_an_index_after_an_error_is_not_refused_again() -> None:
+    """An `Array<Nope>` element is unknown after E136, its own error: the
+    index draws no E164 beside it."""
+    source = _fn("f", "@Array<Nope>", "Int",
+                 "match @Array<Nope>.0[0] {\n  _ -> 1\n}",
+                 visibility="private")
+    assert set(_codes(source)) == {"E136"}
+
+
+# ---------------------------------------------------------------------
+# The matrix
+# ---------------------------------------------------------------------
+
+#: What leaves the element type unfixed: the collection text, its index,
+#: and the parameter the function takes (the bare type's).
+SOURCES: dict[str, tuple[str, str]] = {
+    "empty_literal": ("[]", ""),
+    "empty_read_from_an_index": ("[[]][0]", ""),
+    "no_type_argument": ("@Array.0", "@Array"),
+}
+
+#: Where the index stands: (the function's return type, the body with
+#: `{e}` for the value, whether the position's type reaches the value).
+POSITIONS: dict[str, tuple[str, str, bool]] = {
+    "let": ("Int", "let @Int = {e};\n@Int.0", True),
+    "argument": ("Int", "nat_to_int(string_length({e}))", True),
+    "return": ("Int", "{e}", True),
+    "if_branch": ("Int", "if true then {{\n  {e}\n}} else {{\n  1\n}}", True),
+    "element": ("Int", "let @Array<Int> = [{e}];\n"
+                       "nat_to_int(array_length(@Array<Int>.0))", False),
+    "component": ("Int", "let @Tuple<Int, Int> = Tuple({e}, 1);\n0", False),
+    "match": ("Int", "match {e} {{\n  _ -> 1\n}}", False),
+    "destructure": ("Int", "let Tuple<@Int, @Int> = {e};\n@Int.0", False),
+    "operand": ("Int", "{e} + 1", False),
+    "interpolation": ("String", '"v=\\({e})"', False),
+    "discard": ("Int", "{e};\n1", False),
+}
+
+#: Whether the position's type reaches the index or a generic call that
+#: leaves the index with nothing expected of it.
+FORMS = ("direct", "open_call")
+
+#: The element type the fix writes in place of its `Int`: the type the
+#: program means at the position.
+ELEMENT = {"argument": "String"}
+
+#: What an open call whose variable no argument fixes draws at a position
+#: that gives it no type, beside the index's E164, as it did at base beside
+#: any error behind its argument (`idg(nope(())) + 1` is E200 and E140).
+OPEN_CALL_ALSO = {"operand": ["E140"], "interpolation": ["E148"]}
+
+
+def _cell(source: str, position: str, form: str) -> tuple[str, bool]:
+    """The program and whether it is refused."""
+    coll, param = SOURCES[source]
+    ret, body, typed = POSITIONS[position]
+    value = f"{coll}[0]"
+    if form == "open_call":
+        value = f"idg({value})"
+    program = _IDG + _fn("main", param or "@Unit", ret,
+                         body.format(e=value),
+                         visibility="private" if param else "public")
+    if position == "destructure":
+        # A tuple is no array element: the neighbour is the value at a
+        # tuple's type, which only the bare type can be refused at.
+        typed = False
+    refused = source == "no_type_argument" or form == "open_call" or not typed
+    return program, refused
+
+
+def _apply_fix(program: str, source: str, position: str) -> str:
+    """The program with E164's fix applied as its text says, the element
+    type the program means written in place of `Int`."""
+    elem = ELEMENT.get(position, "Int")
+    if source == "no_type_argument":
+        return re.sub(r"@Array(?![<\w])", f"@Array<{elem}>", program)
+    coll, _ = SOURCES[source]
+    head, _, rest = program.partition("public fn main")
+    sig, _, body = rest.partition("{\n")
+    body = body.replace(f"{coll}[0]", f"@Array<{elem}>.0[0]", 1)
+    return (f"{head}public fn main{sig}{{\n  let @Array<{elem}> = {coll};\n"
+            f"{body}")
+
+
+_CELLS = [(s, p, f) for s in SOURCES for p in POSITIONS for f in FORMS]
+
+
+@pytest.mark.parametrize(("source", "position", "form"), _CELLS)
+def test_an_index_nothing_types_is_refused_and_its_fix_clears_it(
+        source: str, position: str, form: str) -> None:
+    """A refused cell draws E164 first and nothing else of its own (an open
+    call at a position that gives it no type draws what it drew at base
+    beside any error behind its argument); its fix, applied, leaves no
+    E164.  Where the fixed program is well typed it checks clean and keeps
+    every function at compile.  A cell whose position's type reaches the
+    index checks and compiles as it is."""
+    program, refused = _cell(source, position, form)
+    if not refused:
+        assert _codes(program) == []
+        assert _dropped(program) == []
+        return
+    also = OPEN_CALL_ALSO.get(position, []) if form == "open_call" else []
+    assert _codes(program) == ["E164", *also], program
+    fixed = _apply_fix(program, source, position)
+    codes = _codes(fixed)
+    assert "E164" not in codes, fixed
+    if position != "destructure":
+        assert codes == [], fixed
+        assert _dropped(fixed) == [], fixed
+
+
+# ---------------------------------------------------------------------
+# The census: no unreported `Unknown` in the corpus
+# ---------------------------------------------------------------------
+
+def _corpus() -> list[tuple[str, str, str | None]]:
+    """(label, source or path, file) for each program the census reads."""
+    spec = importlib.util.spec_from_file_location(
+        "check_doc_examples", ROOT / "scripts" / "check_doc_examples.py")
+    assert spec is not None and spec.loader is not None
+    cde = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cde)
+    out: list[tuple[str, str, str | None]] = []
+    for d in ("examples", "tests/conformance"):
+        for p in sorted((ROOT / d).rglob("*.vera")):
+            out.append((p.relative_to(ROOT).as_posix(), str(p), None))
+    for rel in cde.expand_gates(ROOT)[0]:
+        blocks, _ = cde.scan_document(ROOT / rel)
+        for i, b in enumerate(blocks):
+            if cde.selects(b):
+                out.append((f"{rel}#{i}", b.content, "doc_block.vera"))
+    return out
+
+
+_CORPUS = _corpus()
+
+
+def _unreported_unknowns(source: str | Path, file: str | None
+                         ) -> list[tuple[str, int]]:
+    """Each expression typed `Unknown` while no error is reported and no
+    typed hole stands inside it."""
+    found: list[tuple[str, int]] = []
+    original = TypeChecker._synth_expr
+
+    def hooked(self, expr, *, expected=None):  # type: ignore[no-untyped-def]
+        result = original(self, expr, expected=expected)
+        if (isinstance(base_type(result) if result is not None else None,
+                       UnknownType)
+                and not any(d.severity == "error" for d in self.errors)
+                and not any(isinstance(n, ast.HoleExpr)
+                            for n in fold.walk(expr))):
+            found.append((type(expr).__name__,
+                          expr.span.line if expr.span else 0))
+        return result
+
+    TypeChecker._synth_expr = hooked  # type: ignore[method-assign]
+    try:
+        pipeline.check(Path(source) if file is None else source, file=file)
+    finally:
+        TypeChecker._synth_expr = original  # type: ignore[method-assign]
+    return found
+
+
+@pytest.mark.parametrize(("label", "source", "file"), _CORPUS,
+                         ids=[c[0] for c in _CORPUS])
+def test_no_corpus_program_holds_an_unreported_unknown(
+        label: str, source: str, file: str | None) -> None:
+    assert _unreported_unknowns(source, file) == [], label
+
+
+def test_the_census_finds_an_unreported_unknown() -> None:
+    """The census's own control: an `Unknown` with nothing behind it is
+    found where one stands (the base's `[][0]`, made with the index's
+    refusal taken away)."""
+    from vera.checker.expressions import ExpressionsMixin
+    refuse = ExpressionsMixin._refuse_untyped_index
+    ExpressionsMixin._refuse_untyped_index = (  # type: ignore[method-assign]
+        lambda self, expr, *, bare: None)
+    try:
+        found = _unreported_unknowns(_ISSUE, "control.vera")
+    finally:
+        ExpressionsMixin._refuse_untyped_index = refuse  # type: ignore[method-assign]
+    assert ("IndexExpr", 6) in found, found

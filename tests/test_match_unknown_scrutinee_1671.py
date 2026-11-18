@@ -14,14 +14,14 @@ judgements that read only the arms still run: an arm after a catch-all is
 still reported (E310, §4.9.3), and the arms' patterns and bodies are still
 checked, so an error inside an arm is still reported.  The pattern-fit rule
 (E314, §4.9.1) already withholds itself from an `Unknown` scrutinee and is
-unchanged.  An `Unknown` scrutinee with no error reported (an index into
-an empty literal, `[][0]`, the one route left; it goes when #1684 fixes an
-empty literal's element type from its context) is judged as before, so the
-one error that refuses such a program stays.  The skip is keyed on the type, never on a list of codes, and
-every error reported by the time the scrutinee is typed counts, since the
-error behind an `Unknown` can sit at a declaration (E158) or an import
-(E155): an `Unknown` with no error of its own beside an earlier, unrelated
-error is not judged until that error is fixed.
+unchanged.  A diagnostic stands behind every `Unknown` (#1862): the last
+route to one with none, an index into an empty literal (`[][0]`), is
+refused at the index (E164), so a scrutinee typed `Unknown` is never
+judged.  The skip is keyed on the type, never on a list of codes.  The
+index's E164 itself counts every error reported by the time it is typed,
+since the error behind an `Unknown` can sit at a declaration (E158) or an
+import (E155): an index into an empty literal beside an earlier, unrelated
+error is not refused until that error is fixed.
 
 The class is every `match` whose scrutinee is typed `Unknown` after an
 error.  The instrument crosses how the scrutinee came to be in error (an
@@ -212,20 +212,20 @@ _GENERIC = """private forall<T> fn g(@T -> @Int)
 """
 
 
-def test_an_unknown_scrutinee_with_no_error_reported_is_still_judged() -> None:
-    """`[][0]` is `Unknown` with no error reported, and the E313 its
-    `match` draws is the one error that refuses the program.  It stands
-    on the one route to such an `Unknown` left (`apply_fn` over a type
-    variable is `E202` since #1684's first change), and goes with it."""
+def test_an_index_nothing_types_is_refused_and_its_match_not_judged(
+) -> None:
+    """`[][0]` is refused at the index (E164, #1862), the one error the
+    program owes: its `match` draws no E313 beside it, which it drew while
+    the index stood with no error behind it."""
     source = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
-    assert _report(pipeline.check(source)) == _errors("E313")
+    assert _report(pipeline.check(source)) == _errors("E164")
 
 
 def test_an_error_after_the_scrutinee_does_not_count() -> None:
-    """Whether the scrutinee is in error is read once it is typed: an error
-    inside an arm says nothing about it."""
+    """Whether the index is refused is read once it is typed: an error
+    inside an arm says nothing about it, and is reported after it."""
     source = _GENERIC.format(arms="Some(@Int) -> @String.0,\n    None -> 0")
-    assert _report(pipeline.check(source)) == _errors("E130", "E313")
+    assert _report(pipeline.check(source)) == _errors("E164", "E130")
 
 
 _UNRELATED = """public fn h(@Int -> @Int)
@@ -240,31 +240,31 @@ _UNRELATED = """public fn h(@Int -> @Int)
 
 
 def test_an_unrelated_error_withholds_the_judgement_of_an_unknown() -> None:
-    """The rule counts every error reported by the time the scrutinee is
+    """The index's rule counts every error reported by the time it is
     typed, not only those raised while typing it, because the error behind
     an `Unknown` can sit elsewhere (E158 at a declaration, E155 at an
-    import).  So an `Unknown` with no error of its own beside an
-    earlier, unrelated error is not judged: the program is refused by that
-    error alone, and the E313 returns once it is fixed.  An error reported
-    after the scrutinee is typed does not count."""
+    import).  So an index into an empty literal beside an earlier,
+    unrelated error is not refused: the program is refused by that error
+    alone, and the E164 returns once it is fixed.  An error reported after
+    the index is typed does not count."""
     generic = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
     broken = _UNRELATED.format(body="@Int.1")
     fixed = _UNRELATED.format(body="@Int.0")
     checked = pipeline.check(broken + generic)
     assert _at(checked) == [("E130", *_place(broken + generic, "@Int.1"))]
     assert not checked.ok
-    assert _report(pipeline.check(fixed + generic)) == _errors("E313")
+    assert _report(pipeline.check(fixed + generic)) == _errors("E164")
     assert _report(pipeline.check(generic + "\n" + broken)) == _errors(
-        "E313", "E130")
+        "E164", "E130")
 
 
 def test_a_warning_does_not_count() -> None:
-    """Only an error counts: a warning refuses nothing, so an `Unknown` with
-    no error reported beside an earlier warning is still judged."""
+    """Only an error counts: a warning refuses nothing, so an index into an
+    empty literal beside an earlier warning is still refused."""
     warned = _UNRELATED.format(body="match @Int.0 {\n    _ -> 0,\n    1 -> 1\n  }")
     generic = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
     assert _report(pipeline.check(warned + generic)) == [
-        ("E310", "warning"), ("E313", "error")]
+        ("E310", "warning"), ("E164", "error")]
 
 
 def test_a_call_two_imports_supply_is_reported_at_the_import_alone(
@@ -550,12 +550,13 @@ def test_a_scrutinee_whose_error_leaves_it_a_type_is_judged(
 
 
 @pytest.mark.parametrize("shape", list(SHAPES))
-def test_an_unknown_scrutinee_with_no_error_is_judged_as_unknown(
+def test_an_index_nothing_types_is_refused_whatever_the_arms(
         shape: str) -> None:
-    """With no error reported, `Unknown` is judged as it always was: what
-    the arms report, then E313 unless a catch-all makes coverage moot."""
+    """`[][0]` as the scrutinee is refused at the index (E164, #1862), and
+    the `match` over it is not judged for coverage: E164, then what the
+    arms report whatever the scrutinee, and never an E313."""
     s = SHAPES[shape]
     arms = ",\n    ".join(arm.format(v="1") for arm in s.arms)
     checked = pipeline.check(_GENERIC.format(arms=arms))
-    expected = list(s.arms_alone) + ([] if s.catch_all else _errors("E313"))
-    assert _report(checked) == expected, checked.diagnostics
+    assert _report(checked) == _errors("E164") + list(s.arms_alone), (
+        checked.diagnostics)

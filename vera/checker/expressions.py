@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 from vera import ast, fold, naming
 from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
-from vera.checker.resolution import same_type_and_facts
+from vera.checker.resolution import _span_text, same_type_and_facts
 from vera.lowering import (
     PREDICATE_ARITY,
     PREDICATE_PARAMETER,
@@ -1028,6 +1028,11 @@ class ExpressionsMixin:
                 elem_type = coll_base.type_args[0]
             else:
                 elem_type = UnknownType()
+            if (isinstance(base_type(elem_type), UnknownType)
+                    and not self._error_reported()
+                    and not any(isinstance(n, ast.HoleExpr)
+                                for n in fold.walk(expr.collection))):
+                self._refuse_untyped_index(expr, bare=not coll_base.type_args)
 
             # Index must be Int or Nat
             if idx_ty and not is_unknown_like(idx_ty):
@@ -1067,6 +1072,48 @@ class ExpressionsMixin:
             error_code="E161",
         )
         return UnknownType()
+
+    def _refuse_untyped_index(self, expr: ast.IndexExpr, *,
+                              bare: bool) -> None:
+        """E164 (#1862): an index into an array whose element type nothing
+        fixes has no type: no element, argument or expected type gives the
+        array one (an empty literal with no type around it, spec §4.12.1),
+        or the array's type is written with no element type (*bare*,
+        `@Array`).  Code generation cannot choose the element's
+        representation, so the program is refused here, with the type to
+        write, and not dropped there."""
+        coll = _span_text(self.source, expr.collection.span) or "[]"
+        idx = _span_text(self.source, expr.index.span) or "0"
+        if bare:
+            fix = ("Write the array's element type where its type is "
+                   "written: `@Array<Int>` in place of `@Array`, with the "
+                   "element type the program means in place of `Int`.")
+        else:
+            fix = (f"Give the array its element type: bind it at its type "
+                   f"first, `let @Array<Int> = {coll};`, and index the "
+                   f"binding, `@Array<Int>.0[{idx}]`; or index it where a "
+                   f"type is expected, as in `let @Int = {coll}[{idx}];`.  "
+                   f"Write the element type the program means in place of "
+                   f"`Int`.")
+        self._error(
+            expr,
+            f"The element type of {coll} is not known, so the index "
+            f"{coll}[{idx}] has no type.",
+            rationale=(
+                "An array's element type is fixed by its elements, by an "
+                "argument, or by the type the array or its index is "
+                "expected at.  Here nothing fixes it, so the indexed value "
+                "has no type and no representation to compile to."),
+            fix=fix,
+            spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
+            error_code="E164",
+        )
+
+    def _error_reported(self) -> bool:
+        """Whether an error-severity diagnostic has been reported: the
+        error behind a value the check typed `Unknown`, wherever it stands
+        (a declaration's E158, an import's E155; #1671)."""
+        return any(d.severity == "error" for d in self.errors)
 
     # -----------------------------------------------------------------
     # Blocks and statements
@@ -1168,7 +1215,7 @@ class ExpressionsMixin:
         # Read before the bindings are resolved, as a `match` reads it
         # before its arms: an error in a binding's type says nothing about
         # the value (#1671).
-        after_error = self._unknown_is_reported(stmt.value)
+        after_error = self._error_reported()
 
         resolved_types: list[Type] = []
         for te in stmt.type_bindings:
