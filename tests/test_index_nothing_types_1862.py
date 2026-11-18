@@ -279,6 +279,12 @@ def test_e189_reads_as_written_and_its_fix_clears_it() -> None:
     assert _codes(applied) == []
 
 
+def test_a_name_no_effect_declares_keeps_the_row_s_e177() -> None:
+    """`old(Qze)`, a name no effect declares: the row's E177 is the error
+    behind it, and no E189 says it has no state."""
+    assert _codes(_ensures("old(Qze) == 0", "pure")) == ["E177"]
+
+
 def test_e189_stands_in_place_of_the_row_s_e177() -> None:
     """An effect with no state the row does not declare is refused once,
     E189: the form names no cell whether the row declares it or not."""

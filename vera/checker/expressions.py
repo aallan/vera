@@ -2289,9 +2289,13 @@ class ExpressionsMixin:
         behind it.  Refused here, once, in place of the row's E177 too: the
         form names no cell whether the row declares the effect or not.
         Returns whether it refused."""
-        if ei.name == "State":
-            return False
         row = self.env.current_effect_row
+        in_row = (isinstance(row, ConcreteEffectRow) and ei in row.effects)
+        if ei.name == "State" or (self.env.lookup_effect(ei.name) is None
+                                  and not in_row):
+            # `State`'s cell, or a name no effect in scope declares and the
+            # row does not name: the row's E177 is the error behind it.
+            return False
         cells = sorted(
             (e for e in (row.effects if isinstance(row, ConcreteEffectRow)
                          else frozenset())
