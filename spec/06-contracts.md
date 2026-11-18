@@ -427,7 +427,7 @@ private fn apply_div(@Int, @Int, @SafeDiv -> @Int)
 }
 ```
 
-The refinement on `SafeDiv`'s **second** parameter serves as the contract. The call passes `@Int.1` into that refined position, so the compiler verifies `@Int.1 != 0` at the call site. `@Int.1` is `apply_div`'s first `@Int` parameter, and the fact follows from the precondition.
+The refinement on `SafeDiv`'s **second** parameter serves as the contract. The call passes `@Int.1` into that refined position, so the compiler verifies `@Int.1 != 0` at the call site. `@Int.1` is `apply_div`'s first `@Int` parameter, and the fact follows from the precondition. Where the solver can neither prove nor refute such an argument, the run-time check stands at the call too, against the function type's parameter, for every form of the function value (a slot, a call's result, a join), since the closure that runs can declare a wider parameter (Section 2.8, rule 5) and check nothing at its entry; where the closure declares the refined parameter itself, its entry check runs as well, after the call's ([#1861](https://github.com/aallan/vera/issues/1861)).
 
 ## 6.8 Summary of Verification Tiers
 
