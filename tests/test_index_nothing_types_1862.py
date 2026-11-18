@@ -241,6 +241,17 @@ def test_repro_a_type_the_index_stands_at_fixes_the_call_s_variable() -> None:
         assert "$:empty$Bool" not in compiled.result.wat, body
 
 
+def test_repro_a_destructure_of_an_open_variable_after_an_error() -> None:
+    """A destructuring `let` over a value its own variable leaves open is
+    judged (E313) where no error stands, and not after one: the error read
+    before the bindings is what left it open (#1671)."""
+    body = "let Tuple<@Int, @Int> = empty(())[0];\n@Int.0"
+    assert _codes(_EMPTY + _main("Int", body)) == ["E313"]
+    after = (_EMPTY + "private fn g(@Array<Nope> -> @Int)\n" + _SIG + "{\n"
+             + "".join(f"  {line}\n" for line in body.splitlines()) + "}\n")
+    assert _codes(after) == ["E136"]
+
+
 @pytest.mark.xfail(strict=True, reason=(
     "#1812: an empty literal handed to a built-in is typed by synthesis "
     "alone, so `array_reverse([])[0]`'s element is a hole variable code "
@@ -382,8 +393,18 @@ def test_e189_names_the_first_state_cell_as_the_row_writes_it() -> None:
             "in place of `old(IO)`."), row
 
 
+@pytest.mark.parametrize(("form", "when"), [("old", "before"),
+                                            ("new", "after")])
+def test_repro_e189_s_rationale_reads_as_written(form: str, when: str) -> None:
+    error, = _errors(_ensures(f"{form}(IO) == 0", "<IO>"))
+    assert error.rationale == (
+        f"{form}() refers to the value of a State effect's cell {when} the "
+        f"call.  IO holds no state, so there is no value for the form to "
+        f"name.")
+
+
 @pytest.mark.parametrize("form", ["old", "new"])
-def test_a_state_cell_the_row_does_not_declare_keeps_e177_as_written(
+def test_repro_a_state_cell_the_row_does_not_declare_keeps_e177_as_written(
         form: str) -> None:
     """A `State` cell is not refused by E189: the row's E177 reads it,
     naming the form it was written in."""

@@ -709,8 +709,19 @@ def test_repro_an_element_that_does_not_fit_the_context_leaves_it_untaken(
         assert _outcome(source) == _outcome(twin), order
 
 
-# ---------------------------------------------------------------------
-# B, nested: each level is the join, and the narrowing is the binding's
+def test_repro_a_variable_one_argument_fixes_does_not_stop_the_join(
+) -> None:
+    """`pick(true, @Nat.0, @Int.0)` with `pick: forall<A, B> (A, B, B -> B)`:
+    `A` has one argument and `B` two that disagree, so `B` takes their join,
+    `Int`, whatever order the variables are met in.  Killed: the loop over
+    the variables stopping at the first one argument fixes (`continue` as
+    `break` in `_settle_disagreement`), which leaves `B` at its first
+    binding, `Nat`, so the `Int` argument is refuted at `vera verify`
+    (E503)."""
+    source = (_fn("pick", "@A, @B, @B", "B", "@B.0", forall="forall<A, B> ")
+              + "\n" + _fn("main", "@Nat, @Int", "Int",
+                           "pick(true, @Nat.0, @Int.0)", visibility="public"))
+    assert _instances(source, "pick") == {("Bool", "Int")}
 # ---------------------------------------------------------------------
 
 _INT_FN = "fn(@Int -> @Int) effects(pure) { @Int.0 }"

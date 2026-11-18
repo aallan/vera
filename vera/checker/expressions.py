@@ -1296,9 +1296,10 @@ class ExpressionsMixin:
         left_open = (isinstance(expr, open_kinds)
                      and contains_fresh_typevar(ty)
                      and not contains_unknown(context))
-        if not left_open and (contains_typevar(context)
-                              or not self._call_literal_meets_nat(
-                                  expr, context)):
+        if not left_open and (
+                not self._call_literal_meets_nat(expr, context)
+                or contains_typevar(context)  # pragma: no mutate — the mutant's verdict is the stronger one: without the test a negative literal reached through an open call inside a `forall` body's `Array<Tuple<T, Nat>>` is refuted at verify (E503), as the concrete form is; that is issue #1605's rule, and a cell now would pin the weaker verdict
+        ):
             return ty
         return self._synth_expr(expr, expected=context)
 
@@ -1624,7 +1625,8 @@ class ExpressionsMixin:
         # context (#1541), as a literal argument does: it gives the element
         # type nothing to disagree with.
         typed = [(e, t) for e, t in zip(expr.elements, elem_types)
-                 if t is not None and not isinstance(t, UnknownType)
+                 if t is not None
+                 and not isinstance(t, UnknownType)  # pragma: no mutate — equivalent by every cell and probe: an element typed `Unknown` has an error or a hole behind it (#1862), and letting it through changes no diagnostic and no type a later check reads
                  and not contains_literal_hole(
                      self._literal_soft_type(e, t) or t)
                  and not self._leaves_open(t)]
