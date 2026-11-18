@@ -128,6 +128,74 @@ def test_repro_an_untyped_index_as_a_tuple_component_at_a_typed_binding(
                   ) == ["E164"]
 
 
+_PICK_FIRST = (f"private forall<T> fn pick_first(@T, @T -> @T)\n{_SIG}"
+               f"{{\n  @T.1\n}}\n\n")
+
+_E164_LITERAL_FIX = (
+    "Give the array its element type: bind it at its type first, "
+    "`let @Array<Int> = [];`, and index the binding, `@Array<Int>.0[0]`; or "
+    "index it where a type is expected, as in `let @Int = [][0];`.  Write "
+    "the element type the program means in place of `Int`.")
+
+
+@pytest.mark.parametrize(("helpers", "call"), [
+    (_IDG, "idg([][0])"),
+    (_PICK_FIRST, "pick_first([][0], 5)"),
+    (_IDG, "idg(idg([][0]))"),
+], ids=["argument", "argument_beside_one_that_fixes_the_variable",
+        "argument_of_a_nested_generic_call"])
+def test_repro_an_untyped_index_as_a_generic_call_s_argument(
+        helpers: str, call: str) -> None:
+    """A generic call's argument is typed on its own before the call's
+    variable is fixed, by the binding or by another argument, so the type
+    does not reach the index: at base `vera check` passed and code
+    generation dropped `main` (`E602`, then `vera run` `E907`).  Refused at
+    check with the literal's fix, which, applied, checks and keeps `main`.
+    Carrying the instantiated parameter type back to the argument is issue
+    #1812's mechanism."""
+    source = helpers + _main("Int", f"let @Int = {call};\n@Int.0")
+    error, = _errors(source)
+    assert error.error_code == "E164"
+    assert error.fix == _E164_LITERAL_FIX
+    fixed = helpers + _main(
+        "Int", "let @Array<Int> = [];\n"
+               f"let @Int = {call.replace('[][0]', '@Array<Int>.0[0]')};\n"
+               "@Int.0")
+    assert _codes(fixed) == []
+    assert _dropped(fixed) == []
+
+
+#: Where the type a position expects reaches an index written there (spec
+#: §4.12.2's first group): each checks and compiles with no function
+#: dropped.  The positions that type the index on their own first are the
+#: matrix's refused cells and the repros above.
+_CARRIERS = {
+    "typed_let": "let @Int = [][0];\n@Int.0",
+    "return": "[][0]",
+    "typed_if_branch": "if true then {\n  [][0]\n} else {\n  1\n}",
+    "non_generic_function_argument": "abs([][0])",
+    "generic_constructor_at_its_type": "let @Option<Int> = Some([][0]);\n1",
+}
+
+
+@pytest.mark.parametrize("body", list(_CARRIERS.values()), ids=list(_CARRIERS))
+def test_the_positions_whose_type_reaches_the_index(body: str) -> None:
+    source = _main("Int", body)
+    assert _codes(source) == [], body
+    assert _dropped(source) == [], body
+
+
+def test_repro_an_untyped_index_as_a_non_generic_constructor_s_argument(
+) -> None:
+    """`Box([][0])` with `Box` a constructor of a data type with no type
+    parameters: its field's type does not reach the argument, as a generic
+    constructor's does where its own type is expected.  Dropped at base
+    (`E602`), refused at check now."""
+    source = ("private data Box {\n  Box(Int)\n}\n\n"
+              + _main("Int", "let @Box = Box([][0]);\n1"))
+    assert _codes(source) == ["E164"]
+
+
 def test_repro_an_index_into_an_array_written_with_no_type_argument() -> None:
     """`@Array.0[0]` over a parameter written `@Array`: checked clean at
     base and its function dropped.  The index is refused; the type
@@ -391,6 +459,80 @@ def test_e189_names_the_first_state_cell_as_the_row_writes_it() -> None:
         assert error.fix == (
             "Name the State cell the postcondition means: `old(State<Bool>)` "
             "in place of `old(IO)`."), row
+
+
+_POSITIVE = "type Positive = { @Int | @Int.0 > 0 };\n\n"
+
+
+def test_repro_e189_names_a_refinement_alias_cell_as_the_row_writes_it(
+) -> None:
+    """A cell whose type is a refinement alias is written by the alias,
+    `old(State<Positive>)`, which pastes and checks; the resolved type's
+    rendering, `State<{@Int | ...}>`, elides the predicate and does not
+    parse."""
+    source = _POSITIVE + _ensures("old(IO) == 1", "<IO, State<Positive>>")
+    error, = _errors(source)
+    assert error.fix == (
+        "Name the State cell the postcondition means: "
+        "`old(State<Positive>)` in place of `old(IO)`.")
+    assert _codes(source.replace("old(IO)", "old(State<Positive>)")) == []
+
+
+def test_repro_e189_names_an_inline_refinement_cell_as_the_row_writes_it(
+) -> None:
+    """A refinement written in the row is written whole, in canonical
+    form."""
+    source = _ensures("new(IO) == 1", "<IO, State<{ @Int | @Int.0 > 0 }>>")
+    error, = _errors(source)
+    assert error.fix == (
+        "Name the State cell the postcondition means: "
+        "`new(State<{ @Int | @Int.0 > 0 }>)` in place of `new(IO)`.")
+    assert _codes(source.replace(
+        "new(IO)", "new(State<{ @Int | @Int.0 > 0 }>)")) == []
+
+
+def test_repro_e189_names_an_alias_of_a_composite_cell_by_the_alias() -> None:
+    """An alias of a composite type is written by the alias, as the row
+    writes it, not by the type it stands for."""
+    source = ("type MaybeInt = Option<Int>;\n\n"
+              + _ensures("old(IO) == None", "<IO, State<MaybeInt>>"))
+    error, = _errors(source)
+    assert error.fix == (
+        "Name the State cell the postcondition means: "
+        "`old(State<MaybeInt>)` in place of `old(IO)`.")
+    assert _codes(source.replace("old(IO)", "old(State<MaybeInt>)")) == []
+
+
+def test_repro_e189_in_a_where_helper_names_the_helper_s_own_cell() -> None:
+    """In a `where` helper the cell is the helper's row's, not its
+    parent's."""
+    source = (
+        "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO, State<Int>>)\n{\n  g(@Int.0)\n}\nwhere {\n"
+        "  fn g(@Int -> @Int)\n    requires(true)\n"
+        "    ensures(old(IO) == true)\n    effects(<IO, State<Bool>>)\n"
+        "  {\n    @Int.0\n  }\n}\n")
+    error, = [e for e in _errors(source) if e.error_code == "E189"]
+    assert error.fix == (
+        "Name the State cell the postcondition means: `old(State<Bool>)` in "
+        "place of `old(IO)`.")
+
+
+def test_repro_e189_writes_the_named_effect_as_the_form_writes_it() -> None:
+    """The effect the form names is written as the form writes it, a
+    refinement alias by its name, in the message and the fix."""
+    source = _POSITIVE + _ensures("old(Exn<Positive>) == 1",
+                                  "<Exn<Positive>, State<Int>>")
+    error, = _errors(source)
+    assert error.description == (
+        "old(Exn<Positive>) names an effect with no state: old() reads a "
+        "State cell.")
+    assert error.fix == (
+        "Name the State cell the postcondition means: `old(State<Int>)` in "
+        "place of `old(Exn<Positive>)`.")
+    assert error.rationale.endswith(
+        "Exn<Positive> holds no state, so there is no value for the form to "
+        "name.")
 
 
 @pytest.mark.parametrize(("form", "when"), [("old", "before"),

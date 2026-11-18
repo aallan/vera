@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
-from vera.formatter import format_expr_canonical
+from vera.formatter import format_effect_ref_canonical, format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
@@ -80,13 +80,6 @@ _STATE_FORM_PLACEMENT_FIX = (
     "(Section 7.9.1), and old()/new() are the only contract forms that "
     "name state."
 )
-
-
-def _render_effect(e: EffectInstance) -> str:
-    """An effect instance as a row writes it: `State<Int>`, `IO`."""
-    if not e.type_args:
-        return e.name
-    return f"{e.name}<{', '.join(pretty_type(a) for a in e.type_args)}>"
 
 
 # Widest `Available bindings:` table any diagnostic renders (#558).  The
@@ -2284,7 +2277,7 @@ class ExpressionsMixin:
         return UnknownType()
 
     def _refuse_stateless_effect(
-        self, expr: ast.Expr, ei: EffectInstance, form: str,
+        self, expr: ast.OldExpr | ast.NewExpr, ei: EffectInstance, form: str,
     ) -> bool:
         """E189 (#1862): ``old()`` and ``new()`` read a `State` cell, so
         their argument MUST name a stateful effect (spec §7.9.2).  An effect
@@ -2292,22 +2285,27 @@ class ExpressionsMixin:
         form to read, and the check gave it no type, with no diagnostic
         behind it.  Refused here, once, in place of the row's E177 too: the
         form names no cell whether the row declares the effect or not.
-        Returns whether it refused."""
+        Returns whether it refused.
+
+        The effect and the cell are written as the source writes them (the
+        form's argument, the function's row), in canonical form: the fix is
+        pasted, and a resolved type's rendering expands an alias and elides
+        a refinement's predicate (`State<{@Int | ...}>` does not parse)."""
         if ei.name == "State" or self.env.lookup_effect(ei.name) is None:
             # `State`'s cell, or a name no effect in scope declares (effect
             # declarations are module-local, spec §8.4.1, and a row naming
             # one is refused, E338 or an unknown effect): the row's E177 or
             # that refusal is the error behind it.
             return False
-        row = self.env.current_effect_row
+        row = self._fn_scope_stack[-1].effect
         cells = sorted(
-            (e for e in (row.effects if isinstance(row, ConcreteEffectRow)
-                         else frozenset())
-             if e.name == "State" and e.type_args),
-            key=_render_effect)
-        shown = _render_effect(ei)
+            format_effect_ref_canonical(r)
+            for r in (row.effects if isinstance(row, ast.EffectSet) else ())
+            if isinstance(r, ast.EffectRef)
+            and r.name == "State" and r.type_args)
+        shown = format_effect_ref_canonical(expr.effect_ref)
         if cells:
-            cell = _render_effect(cells[0])
+            cell = cells[0]
             fix = (f"Name the State cell the postcondition means: "
                    f"`{form}({cell})` in place of `{form}({shown})`.")
         else:

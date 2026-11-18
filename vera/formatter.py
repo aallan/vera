@@ -2084,6 +2084,17 @@ def format_type_canonical(te: TypeExpr) -> str:
     )._fmt_type_bare(te)
 
 
+def format_effect_ref_canonical(ref: EffectRefNode) -> str:
+    """One effect reference in canonical source form: ``State<Positive>``,
+    ``State<{ @Int | @Int.0 > 0 }>``, ``IO``.  For a diagnostic whose fix
+    writes an effect out to be pasted (E189's ``old()`` / ``new()``), where
+    a resolved effect's rendering expands an alias and elides a refinement's
+    predicate."""
+    return Formatter(
+        _Attached(before={}, inline=[], header=[], footer=[]),
+    )._fmt_effect_ref(ref)
+
+
 def format_source(source: str, file: str | None = None) -> str:
     """Format Vera source code to canonical form.
 
