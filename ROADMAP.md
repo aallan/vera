@@ -34,10 +34,10 @@ The stage's four remaining releases:
 
 | Release | What |
 |---|---|
-| v0.2.9 | The negation fix ([#1875](https://github.com/aallan/vera/issues/1875)), the nightly mutation sweep's results on one standing issue, tail calls under a postcondition ([#1851](https://github.com/aallan/vera/issues/1851)), the rest of the stage's bugs and the language-server batch. |
-| v0.2.10 | Housekeeping and the mutation sweep's declared oracle, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
-| v0.2.11 | The testing-hygiene batch. |
-| v0.2.12 | The host and runtime bugs; Stage 29 follows at v0.3.0. |
+| [v0.2.9](https://github.com/aallan/vera/milestone/8) | The negation fix ([#1875](https://github.com/aallan/vera/issues/1875)), the nightly mutation sweep's results on one standing issue, tail calls under a postcondition ([#1851](https://github.com/aallan/vera/issues/1851)), the rest of the stage's bugs and the language-server batch. |
+| [v0.2.10](https://github.com/aallan/vera/milestone/14) | Housekeeping and the mutation sweep's declared oracle, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
+| [v0.2.11](https://github.com/aallan/vera/milestone/11) | The testing-hygiene batch. |
+| [v0.2.12](https://github.com/aallan/vera/milestone/12) | The host and runtime bugs; Stage 29 follows at v0.3.0. |
 
 | Change | What |
 |---|---|

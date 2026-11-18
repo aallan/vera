@@ -32,8 +32,19 @@ def _rules(mod: object, source: str) -> list[str]:
     return [v.rule for v in mod.check_text(source)]
 
 
-def _row(text: str, version: str = "v0.9.1") -> str:
+TABLE_HEAD = (
+    "## Stage 40: A theme (1 December)\n\n"
+    "| Version | Date | What shipped |\n|---------|------|-------------|\n"
+)
+
+
+def _table_row(text: str, version: str = "v0.9.1") -> str:
     return f"| {version} | 1 Dec | {text} |\n"
+
+
+def _row(text: str, version: str = "v0.9.1") -> str:
+    """One row in a stage's "What shipped" table, the only place rows are held."""
+    return TABLE_HEAD + _table_row(text, version)
 
 
 ISSUE = "[#7](https://github.com/aallan/vera/issues/7)"
@@ -73,6 +84,32 @@ def test_a_full_stop_inside_a_name_is_not_a_sentence_end(mod: object) -> None:
     assert _rules(mod, _row("Specification Chapters 9 and 12, see spec/09.md for details.")) == []
 
 
+def test_a_second_sentence_opening_with_a_code_span_fails(mod: object) -> None:
+    text = "Parsing is fixed. `vera check` now succeeds."
+    assert _rules(mod, _row(text)) == ["row is more than one sentence"]
+
+
+def test_punctuation_inside_a_code_span_is_not_a_sentence_end(mod: object) -> None:
+    assert _rules(mod, _row("The pattern `a. B` matches as written.")) == []
+
+
+def test_a_path_in_a_code_span_is_one_sentence(mod: object) -> None:
+    assert _rules(mod, _row("One pass, `vera/binding.py`, binds every name.")) == []
+
+
+# --- Which rows are held ------------------------------------------------------
+
+def test_an_unversioned_row_over_the_cap_fails(mod: object) -> None:
+    text = " ".join(["word"] * (mod.ROW_CAP + 1)) + "."
+    assert _rules(mod, _row(text, version="–")) == ["row over the word cap"]
+
+
+def test_a_table_outside_a_stage_is_not_held(mod: object) -> None:
+    long = " ".join(["word"] * (mod.ROW_CAP + 1))
+    source = "## Stage index\n\n| Stage | Dates | Theme |\n|---|---|---|\n" + _table_row(long)
+    assert _rules(mod, source) == []
+
+
 # --- Rule 3: at most one issue link --------------------------------------------
 
 def test_one_issue_link_passes(mod: object) -> None:
@@ -101,7 +138,7 @@ def _stage(words: int, heading: str = "## Stage 40: A theme (1 December)") -> st
     return (
         f"{heading}\n\n*A tagline.*\n\n{prose}\n\n"
         "| Version | Date | What shipped |\n|---|---|---|\n"
-        + _row("**Theme**: one sentence.")
+        + _table_row("**Theme**: one sentence.")
         + "\n---\n\n## By the numbers\n\nNot a stage, " + " ".join(["word"] * 200) + "\n"
     )
 
@@ -135,4 +172,4 @@ def test_main_reports_the_line(mod: object, tmp_path: Path, capsys: pytest.Captu
     path = tmp_path / "HISTORY.md"
     path.write_text("# History\n\n" + _row("One.  Two."), encoding="utf-8")
     assert mod.main([str(path)]) == 1
-    assert "HISTORY.md:3: row is more than one sentence" in capsys.readouterr().err
+    assert "HISTORY.md:7: row is more than one sentence" in capsys.readouterr().err

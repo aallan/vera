@@ -82,7 +82,7 @@ python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rati
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
-python scripts/check_history_rows.py  # Verify HISTORY.md's version rows (one sentence, ≤35 words, ≤1 issue link, no em dash) and each stage's prose (≤85 words) (#1880)
+python scripts/check_history_rows.py  # Verify every row of HISTORY.md's stage tables (one sentence, ≤35 words, ≤1 issue link, no em dash) and each stage's prose (≤85 words) (#1880)
 python scripts/render_status.py      # The release PR: write TESTING.md's generated status (where the counts live) from the tree
 python scripts/check_doc_counts.py --release # The release PR: TESTING.md's generated status and every render_lists block are current (CI runs this mode on any change that raises [project].version, via --release-if-version-raised)
 python scripts/render_lists.py --write  # Write the lists that have one source between their render_lists markers: the effect names from the registry into the editor grammars and extension READMEs, the limitation tables from limitations.json
