@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import z3
 
 from vera import ast, naming
+from vera.binding import BODY_SUFFIX, SYMBOL_PREFIX
 from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
@@ -1060,7 +1061,12 @@ class _TrapIndex:
             return
         fired_in = trial.trap_frames[0][0]
         boundary = f"{decl.name}$exn_boundary"
-        at_entry = fired_in == decl.name and all(
+        # A function that transfers to itself by `return_call` leaves one
+        # frame for every hop, the trial's own call and each inner one alike
+        # (#1851: a split function's body and its entry are shown once), so
+        # its frames cannot say the trap fired at the trial's own call.
+        at_entry = fired_in == decl.name and not self._transfers_to_itself(
+            decl.name) and all(
             builtin or name == boundary
             for name, builtin in trial.trap_frames[1:]
         )
@@ -1233,6 +1239,23 @@ class _TrapIndex:
             return True
         return False
 
+    def _transfers_to_itself(self, name: str) -> bool:
+        """Whether the module's function *name* (its body, where it is split
+        into an entry and a body) leaves by a `return_call` to itself."""
+        own = {SYMBOL_PREFIX + name, SYMBOL_PREFIX + name + BODY_SUFFIX}
+        transfer = re.compile(
+            rf"\breturn_call \$(?:{'|'.join(map(re.escape, own))})(?=\s|$)")
+        headers = list(re.finditer(r"^\s*\(func \$(\S+)", self._wat,
+                                   re.MULTILINE))
+        for n, header in enumerate(headers):
+            if header.group(1) not in own:
+                continue  # another function's tail call of this one
+            end = (headers[n + 1].start() if n + 1 < len(headers)
+                   else len(self._wat))
+            if transfer.search(self._wat, header.end(), end):
+                return True
+        return False
+
     def reachable(self, start: str) -> set[str]:
         """The WASM functions a call of *start* can run: *start*, and every
         function it calls, directly or through the closure table, and so on
@@ -1264,13 +1287,17 @@ class _TrapIndex:
                 end = (headers[n + 1].start() if n + 1 < len(headers)
                        else len(self._wat))
                 body = self._wat[header.end():end]
-                callees = set(_WAT_CALL.findall(body))
+                # A split function's entry and body are one node (#1851):
+                # its checks are recorded under the declaration's name.
+                callees = {name.removesuffix(BODY_SUFFIX)
+                           for name in _WAT_CALL.findall(body)}
                 if "call_indirect" in body:
                     callees |= table
                 # A declaration's `$:alloc` and the runtime's `$alloc` are
                 # one node (#1694): it holds what either body calls, so a
                 # reach never loses a declaration's callees.
-                graph.setdefault(header.group(1), set()).update(callees)
+                graph.setdefault(header.group(1).removesuffix(BODY_SUFFIX),
+                                 set()).update(callees)
             self._graph = graph
         return self._graph
 
