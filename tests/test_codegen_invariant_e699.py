@@ -209,45 +209,57 @@ def test_postcondition_invariant_error_surfaces_as_e699(monkeypatch) -> None:
     assert "Internal compiler error" in e699[0].description
 
 
-_OLD_NON_STATE = """\
+_OLD_STATE = """\
 private fn bump(@Unit -> @Unit)
   requires(true)
-  ensures(old(IO))
-  effects(<IO>)
+  ensures(old(State<Int>) == old(State<Int>))
+  effects(<State<Int>>)
 {
-  IO.print("x")
+  ()
 }
 
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
-  effects(<IO>)
+  effects(pure)
 {
-  bump(());
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    bump(())
+  };
   7
 }
 """
 
 
-def test_old_of_a_non_state_effect_surfaces_as_e699() -> None:
+def test_old_of_a_non_state_effect_surfaces_as_e699(monkeypatch) -> None:
     """The snapshot boundary completes the net (PR #1283 review).
 
-    Unlike its three siblings above this needs no monkeypatch: the source
-    is `check`-green.  `old(E)` is typed `UnknownType`, which satisfies a
-    `Bool` postcondition, so `ensures(old(IO))` reaches
-    `_collect_old_types`, and `state_type_arg` raises
-    `CodegenInvariantError` ("State type ref name is not 'State'") for an
-    effect reference that is not `State<T>`.
-
-    The `_snapshot_old_state` boundary in `_compile_fn` caught `CodegenSkip`
+    `state_type_arg` raises `CodegenInvariantError` ("State type ref name
+    is not 'State'") for an effect reference that is not `State<T>`.  The
+    `_snapshot_old_state` boundary in `_compile_fn` caught `CodegenSkip`
     ALONE, while the precondition and `decreases` boundaries either side of
     it catch `CodegenInvariantError` too — so this one raise escaped as a
     raw Python traceback from `vera compile` on a program `vera check`
-    accepts.  The assertion is that SOMETHING structured comes back; the
-    `pytest.raises`-free call is the actual regression guard, since the
-    pre-fix failure was the compile call itself blowing up.
+    accepted, `ensures(old(IO))`.  The checker now refuses `old(IO)` (E189,
+    #1862), so, like its siblings above, the raise is injected: at
+    `state_type_arg` as `_collect_old_types` calls it, over a program whose
+    `old(State<Int>)` checks.  The assertion is that SOMETHING structured
+    comes back; the `pytest.raises`-free call is the actual regression
+    guard, since the pre-fix failure was the compile call itself blowing
+    up.
     """
-    result = _compile_source(_OLD_NON_STATE)
+    from vera.codegen import contracts
+
+    def _boom(effect_ref):  # type: ignore[no-untyped-def]
+        raise CodegenInvariantError(
+            "State type ref name is not 'State'", effect_ref)
+
+    assert pipeline.check(_OLD_STATE).ok
+    monkeypatch.setattr(contracts, "state_type_arg", _boom)
+    result = _compile_source(_OLD_STATE)
 
     e699 = [d for d in result.diagnostics if d.error_code == "E699"]
     assert e699, (
