@@ -240,7 +240,7 @@ After destructuring:
 
 ```
 private fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)

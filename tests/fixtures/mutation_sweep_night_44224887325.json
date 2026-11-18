@@ -1,0 +1,1040 @@
+{
+ "_source": "run 44224887325 (18 November 2026, e4cd3725): each slice's record cut to its decided statuses, and the night's report the stitch writes for it, re-stitched from the state of run 44009182371",
+ "slices": [
+  {
+   "slice": 0,
+   "stopped": "budget",
+   "first_mutant_s": 6889.1,
+   "statuses": {
+    "killed": 114,
+    "survived": 16,
+    "timeout": 9
+   }
+  },
+  {
+   "slice": 1,
+   "stopped": "budget",
+   "first_mutant_s": 6930.5,
+   "statuses": {
+    "killed": 116,
+    "survived": 12
+   }
+  },
+  {
+   "slice": 2,
+   "stopped": "budget",
+   "first_mutant_s": 8499.6,
+   "statuses": {
+    "killed": 99,
+    "no tests": 3,
+    "survived": 30,
+    "timeout": 3
+   }
+  },
+  {
+   "slice": 3,
+   "stopped": null,
+   "first_mutant_s": 6417.7,
+   "statuses": {
+    "killed": 134,
+    "survived": 17
+   }
+  },
+  {
+   "slice": 4,
+   "stopped": "budget",
+   "first_mutant_s": 6607.6,
+   "statuses": {
+    "killed": 110,
+    "survived": 25,
+    "timeout": 1
+   }
+  },
+  {
+   "slice": 5,
+   "stopped": "budget",
+   "first_mutant_s": 10854.0,
+   "statuses": {
+    "killed": 89,
+    "no tests": 3,
+    "survived": 11,
+    "timeout": 3
+   }
+  },
+  {
+   "slice": 6,
+   "stopped": "budget",
+   "first_mutant_s": 6659.3,
+   "statuses": {
+    "killed": 107,
+    "survived": 30
+   }
+  }
+ ],
+ "report": {
+  "cycle": 3,
+  "cycle_started": "2026-11-16",
+  "decided": {
+   "killed": 769,
+   "no_tests": 6,
+   "survived": 141,
+   "timeout": 16
+  },
+  "survivors": [
+   {
+    "path": "vera/checker/resolution.py",
+    "key": "x\u01c1ResolutionMixin\u01c1_apply_polarity_pins",
+    "n": 7,
+    "line": 1364
+   },
+   {
+    "path": "vera/checker/resolution.py",
+    "key": "x\u01c1ResolutionMixin\u01c1_apply_polarity_pins",
+    "n": 8,
+    "line": 1364
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x__internal_error_envelope",
+    "n": 86,
+    "line": 824
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x_cmd_serve",
+    "n": 1,
+    "line": 1109
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x_cmd_test",
+    "n": 17,
+    "line": 1757
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x_cmd_test",
+    "n": 18,
+    "line": 1757
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x_cmd_test",
+    "n": 21,
+    "line": 1757
+   },
+   {
+    "path": "vera/cli.py",
+    "key": "x_cmd_test",
+    "n": 22,
+    "line": 1757
+   },
+   {
+    "path": "vera/codegen/closures.py",
+    "key": "x\u01c1ClosureLiftingMixin\u01c1_compile_lifted_closure",
+    "n": 91,
+    "line": 437
+   },
+   {
+    "path": "vera/codegen/closures.py",
+    "key": "x\u01c1ClosureLiftingMixin\u01c1_compile_lifted_closure",
+    "n": 342,
+    "line": 721
+   },
+   {
+    "path": "vera/codegen/closures.py",
+    "key": "x\u01c1ClosureLiftingMixin\u01c1_compile_lifted_closure",
+    "n": 343,
+    "line": 721
+   },
+   {
+    "path": "vera/codegen/compilability.py",
+    "key": "x\u01c1CompilabilityMixin\u01c1_warn_unsupported_state_cell",
+    "n": 42,
+    "line": 333
+   },
+   {
+    "path": "vera/codegen/compilability.py",
+    "key": "x\u01c1CompilabilityMixin\u01c1_warn_unsupported_state_cell",
+    "n": 43,
+    "line": 333
+   },
+   {
+    "path": "vera/codegen/compilability.py",
+    "key": "x\u01c1CompilabilityMixin\u01c1_warn_unsupported_state_cell",
+    "n": 44,
+    "line": 333
+   },
+   {
+    "path": "vera/codegen/compilability.py",
+    "key": "x\u01c1CompilabilityMixin\u01c1_check_exn_type",
+    "n": 1,
+    "line": 357
+   },
+   {
+    "path": "vera/codegen/core.py",
+    "key": "x\u01c1CodeGenerator\u01c1_family_name_te",
+    "n": 7,
+    "line": 703
+   },
+   {
+    "path": "vera/codegen/functions.py",
+    "key": "x\u01c1FunctionCompilationMixin\u01c1_exn_boundary_report",
+    "n": 73,
+    "line": 277
+   },
+   {
+    "path": "vera/codegen/functions.py",
+    "key": "x\u01c1FunctionCompilationMixin\u01c1_emit_contract_predicate_skip",
+    "n": 20,
+    "line": 400
+   },
+   {
+    "path": "vera/codegen/functions.py",
+    "key": "x\u01c1FunctionCompilationMixin\u01c1_emit_contract_predicate_skip",
+    "n": 21,
+    "line": 400
+   },
+   {
+    "path": "vera/codegen/functions.py",
+    "key": "x\u01c1FunctionCompilationMixin\u01c1_emit_contract_predicate_skip",
+    "n": 22,
+    "line": 400
+   },
+   {
+    "path": "vera/codegen/monomorphize.py",
+    "key": "x\u01c1MonomorphizationMixin\u01c1_hoist_clone_where_fns",
+    "n": 28,
+    "line": 246
+   },
+   {
+    "path": "vera/codegen/wasi.py",
+    "key": "x__wat_literal_byte_len",
+    "n": 2,
+    "line": 705
+   },
+   {
+    "path": "vera/codegen/wasi.py",
+    "key": "x__wat_literal_byte_len",
+    "n": 4,
+    "line": 706
+   },
+   {
+    "path": "vera/codegen/wasi.py",
+    "key": "x__transform_main_server",
+    "n": 26,
+    "line": 3019
+   },
+   {
+    "path": "vera/codegen/wasi.py",
+    "key": "x__transform_main_server",
+    "n": 27,
+    "line": 3019
+   },
+   {
+    "path": "vera/fold.py",
+    "key": "x__check_order",
+    "n": 8,
+    "line": 156
+   },
+   {
+    "path": "vera/formatter.py",
+    "key": "x__attach_comments",
+    "n": 63,
+    "line": 324
+   },
+   {
+    "path": "vera/formatter.py",
+    "key": "x__collect_interior_anchors",
+    "n": 35,
+    "line": 447
+   },
+   {
+    "path": "vera/lowering.py",
+    "key": "x__resume_count",
+    "n": 2,
+    "line": 270
+   },
+   {
+    "path": "vera/lsp/extensions.py",
+    "key": "x_speculative_edit",
+    "n": 26,
+    "line": 274
+   },
+   {
+    "path": "vera/lsp/features.py",
+    "key": "x_analyze",
+    "n": 63,
+    "line": 153
+   },
+   {
+    "path": "vera/lsp/workflows.py",
+    "key": "x_supports_versioned_edits",
+    "n": 3,
+    "line": 299
+   },
+   {
+    "path": "vera/markdown.py",
+    "key": "x__parse_inlines",
+    "n": 110,
+    "line": 412
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x_canonicalize_type_aliases",
+    "n": 30,
+    "line": 285
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x_canonicalize_type_aliases",
+    "n": 31,
+    "line": 285
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x\u01c1Monomorphizer\u01c1monomorphize_fn",
+    "n": 37,
+    "line": 1295
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x\u01c1Monomorphizer\u01c1monomorphize_fn",
+    "n": 39,
+    "line": 1295
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x\u01c1Monomorphizer\u01c1monomorphize_fn",
+    "n": 41,
+    "line": 1295
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x\u01c1Monomorphizer\u01c1_substitute_in_ast",
+    "n": 98,
+    "line": 1722
+   },
+   {
+    "path": "vera/monomorphize.py",
+    "key": "x\u01c1Monomorphizer\u01c1_substitute_in_ast",
+    "n": 99,
+    "line": 1722
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_subcomponent_sources",
+    "n": 2,
+    "line": 624
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_subcomponent_sources",
+    "n": 7,
+    "line": 624
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_subcomponent_sources",
+    "n": 11,
+    "line": 624
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_without_paths",
+    "n": 18,
+    "line": 964
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_without_paths",
+    "n": 19,
+    "line": 964
+   },
+   {
+    "path": "vera/narrowing.py",
+    "key": "x_without_paths",
+    "n": 21,
+    "line": 964
+   },
+   {
+    "path": "vera/obligations/session.py",
+    "key": "x\u01c1VerificationSession\u01c1_verify_source_fixpoint",
+    "n": 72,
+    "line": 282
+   },
+   {
+    "path": "vera/obligations/session.py",
+    "key": "x\u01c1VerificationSession\u01c1_verify_source_fixpoint",
+    "n": 73,
+    "line": 282
+   },
+   {
+    "path": "vera/obligations/table.py",
+    "key": "x\u01c1_Builder\u01c1_decreases_guard",
+    "n": 28,
+    "line": 913
+   },
+   {
+    "path": "vera/obligations/table.py",
+    "key": "x\u01c1_Builder\u01c1_quotient_can_overflow",
+    "n": 9,
+    "line": 1415
+   },
+   {
+    "path": "vera/obligations/table.py",
+    "key": "x\u01c1_Builder\u01c1handle_rows",
+    "n": 70,
+    "line": 1793
+   },
+   {
+    "path": "vera/obligations/table.py",
+    "key": "x\u01c1_Builder\u01c1handle_rows",
+    "n": 79,
+    "line": 1796
+   },
+   {
+    "path": "vera/obligations/table.py",
+    "key": "x\u01c1_Builder\u01c1handle_rows",
+    "n": 80,
+    "line": 1796
+   },
+   {
+    "path": "vera/patterns.py",
+    "key": "x__uncovered_booleans",
+    "n": 11,
+    "line": 305
+   },
+   {
+    "path": "vera/patterns.py",
+    "key": "x__uncovered_booleans",
+    "n": 12,
+    "line": 305
+   },
+   {
+    "path": "vera/resolver.py",
+    "key": "x\u01c1ModuleResolver\u01c1_resolve_single",
+    "n": 102,
+    "line": 218
+   },
+   {
+    "path": "vera/resolver.py",
+    "key": "x\u01c1ModuleResolver\u01c1_resolve_single",
+    "n": 104,
+    "line": 218
+   },
+   {
+    "path": "vera/resolver.py",
+    "key": "x\u01c1ModuleResolver\u01c1_resolve_single",
+    "n": 105,
+    "line": 218
+   },
+   {
+    "path": "vera/runtime/decimal.py",
+    "key": "x_register_decimal",
+    "n": 82,
+    "line": 140
+   },
+   {
+    "path": "vera/runtime/decimal.py",
+    "key": "x_register_decimal",
+    "n": 83,
+    "line": 140
+   },
+   {
+    "path": "vera/runtime/decimal.py",
+    "key": "x_register_decimal",
+    "n": 84,
+    "line": 140
+   },
+   {
+    "path": "vera/runtime/heap.py",
+    "key": "x\u01c1_ShadowGuard\u01c1__init__",
+    "n": 11,
+    "line": 274
+   },
+   {
+    "path": "vera/runtime/heap.py",
+    "key": "x\u01c1_ShadowGuard\u01c1__init__",
+    "n": 12,
+    "line": 274
+   },
+   {
+    "path": "vera/runtime/html.py",
+    "key": "x_register_html",
+    "n": 404,
+    "line": 174
+   },
+   {
+    "path": "vera/runtime/html.py",
+    "key": "x_register_html",
+    "n": 406,
+    "line": 174
+   },
+   {
+    "path": "vera/runtime/html.py",
+    "key": "x_register_html",
+    "n": 409,
+    "line": 174
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x__same_call_site",
+    "n": 5,
+    "line": 475
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_translate_array_lit",
+    "n": 15,
+    "line": 2254
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_callee_precondition",
+    "n": 50,
+    "line": 2832
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_callee_precondition",
+    "n": 54,
+    "line": 2832
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_callee_precondition",
+    "n": 55,
+    "line": 2832
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_callee_precondition",
+    "n": 61,
+    "line": 2832
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_callee_precondition",
+    "n": 62,
+    "line": 2832
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_check_call_preconditions",
+    "n": 69,
+    "line": 3144
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_assume_callee_facts",
+    "n": 6,
+    "line": 3537
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_reads_digest",
+    "n": 12,
+    "line": 3816
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_reads_digest",
+    "n": 14,
+    "line": 3816
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_reads_digest",
+    "n": 15,
+    "line": 3816
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_reads_digest",
+    "n": 16,
+    "line": 3816
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_disclosed_calls_in",
+    "n": 10,
+    "line": 3965
+   },
+   {
+    "path": "vera/smt.py",
+    "key": "x\u01c1SmtContext\u01c1_disclosed_calls_in",
+    "n": 11,
+    "line": 3965
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 200,
+    "line": 428
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 201,
+    "line": 428
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 202,
+    "line": 428
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 238,
+    "line": 450
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 465,
+    "line": 576
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 466,
+    "line": 576
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 467,
+    "line": 576
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 481,
+    "line": 587
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 547,
+    "line": 616
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 548,
+    "line": 616
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 549,
+    "line": 616
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TestEngine\u01c1run",
+    "n": 749,
+    "line": 726
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TrapIndex\u01c1attribute",
+    "n": 91,
+    "line": 1102
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x\u01c1_TrapIndex\u01c1attribute",
+    "n": 92,
+    "line": 1102
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__assumed_premise",
+    "n": 26,
+    "line": 1413
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__assumed_premise",
+    "n": 31,
+    "line": 1413
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__assumed_premise",
+    "n": 36,
+    "line": 1413
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__classify_functions",
+    "n": 109,
+    "line": 1808
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__classify_functions",
+    "n": 110,
+    "line": 1808
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__classify_functions",
+    "n": 111,
+    "line": 1808
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__classify_functions",
+    "n": 112,
+    "line": 1808
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__classify_functions",
+    "n": 113,
+    "line": 1808
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__generate_inputs_and_search",
+    "n": 76,
+    "line": 2186
+   },
+   {
+    "path": "vera/tester.py",
+    "key": "x__seed_boundaries",
+    "n": 19,
+    "line": 2215
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__cell_refusals",
+    "n": 26,
+    "line": 758
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__cell_refusals",
+    "n": 29,
+    "line": 758
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__component_what",
+    "n": 1,
+    "line": 856
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__call_fix",
+    "n": 12,
+    "line": 909
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__call_fix",
+    "n": 15,
+    "line": 909
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__growth_fix",
+    "n": 22,
+    "line": 1148
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__growth_fix",
+    "n": 23,
+    "line": 1148
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__growth_fix",
+    "n": 32,
+    "line": 1151
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__growth_fix",
+    "n": 35,
+    "line": 1151
+   },
+   {
+    "path": "vera/typed.py",
+    "key": "x__growth_fix",
+    "n": 36,
+    "line": 1151
+   },
+   {
+    "path": "vera/types.py",
+    "key": "x_wasm_representation",
+    "n": 1,
+    "line": 725
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_aggregate_generic_instances",
+    "n": 156,
+    "line": 3509
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_verify_fn_contracts",
+    "n": 134,
+    "line": 4502
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_verify_fn_contracts",
+    "n": 309,
+    "line": 4625
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_premise_halves_disjoint",
+    "n": 8,
+    "line": 5409
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unestablished_premises",
+    "n": 44,
+    "line": 5624
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unestablished_premises",
+    "n": 45,
+    "line": 5624
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unsatisfiable_contract",
+    "n": 30,
+    "line": 5755
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unsatisfiable_contract",
+    "n": 31,
+    "line": 5755
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unsatisfiable_contract",
+    "n": 34,
+    "line": 5759
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unsatisfiable_contract",
+    "n": 35,
+    "line": 5759
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_report_unsatisfiable_contract",
+    "n": 36,
+    "line": 5759
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_enforce_premise_consistency",
+    "n": 184,
+    "line": 5988
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_obligate_construction_component",
+    "n": 63,
+    "line": 6098
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_descend_construction_arm",
+    "n": 23,
+    "line": 6415
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_obligate_measure_at_tail_calls",
+    "n": 10,
+    "line": 6661
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_record_call_obligations",
+    "n": 68,
+    "line": 6835
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_call_pre_recorded",
+    "n": 27,
+    "line": 6901
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_call_pre_recorded",
+    "n": 28,
+    "line": 6901
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_call_pre_recorded",
+    "n": 29,
+    "line": 6901
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_call_pre_recorded",
+    "n": 30,
+    "line": 6901
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_call_pre_recorded",
+    "n": 31,
+    "line": 6901
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_verify_decreases",
+    "n": 104,
+    "line": 7016
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_collect_top_level_assert_facts",
+    "n": 9,
+    "line": 7480
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_operation_fn_call",
+    "n": 9,
+    "line": 7652
+   },
+   {
+    "path": "vera/verifier.py",
+    "key": "x\u01c1ContractVerifier\u01c1_operation_fn_call",
+    "n": 12,
+    "line": 7652
+   }
+  ],
+  "sampled": 2321,
+  "undecided": 1106,
+  "night": {
+   "date": "2026-11-18",
+   "head": "e4cd3725ce05208dbe5c9e719c958c09fac69644",
+   "jobs": 7,
+   "moved": 932,
+   "lost": [],
+   "schema": 3,
+   "slices": [
+    {
+     "slice": 0,
+     "planned": 41,
+     "decided": 139,
+     "stopped": "budget",
+     "engine_s": 16206.6,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 1,
+     "planned": 41,
+     "decided": 128,
+     "stopped": "budget",
+     "engine_s": 16206.8,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 2,
+     "planned": 40,
+     "decided": 135,
+     "stopped": "budget",
+     "engine_s": 16208.4,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 3,
+     "planned": 41,
+     "decided": 151,
+     "stopped": null,
+     "engine_s": 13899.6,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 4,
+     "planned": 40,
+     "decided": 136,
+     "stopped": "budget",
+     "engine_s": 16206.3,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 5,
+     "planned": 42,
+     "decided": 106,
+     "stopped": "budget",
+     "engine_s": 16210.6,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    },
+    {
+     "slice": 6,
+     "planned": 41,
+     "decided": 137,
+     "stopped": "budget",
+     "engine_s": 16206.3,
+     "dropped_tests": [],
+     "subprocess_tests": 142,
+     "source_tests": 88,
+     "slow": 0
+    }
+   ],
+   "problems": [],
+   "notes": [
+    "slice 0: stopped by the budget with 139 mutant(s) decided; the rest of its bin waits for the next night",
+    "slice 1: stopped by the budget with 128 mutant(s) decided; the rest of its bin waits for the next night",
+    "slice 2: stopped by the budget with 135 mutant(s) decided; the rest of its bin waits for the next night",
+    "slice 4: stopped by the budget with 136 mutant(s) decided; the rest of its bin waits for the next night",
+    "slice 5: stopped by the budget with 106 mutant(s) decided; the rest of its bin waits for the next night",
+    "slice 6: stopped by the budget with 137 mutant(s) decided; the rest of its bin waits for the next night"
+   ],
+   "closed": false
+  },
+  "first_mutant_s": [
+   6417.7,
+   6607.6,
+   6659.3,
+   6889.1,
+   6930.5,
+   8499.6,
+   10854.0
+  ]
+ }
+}

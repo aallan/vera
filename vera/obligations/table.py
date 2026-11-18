@@ -347,6 +347,19 @@ def _strip(ty: Type | None) -> Type | None:
     return ty
 
 
+def negation_obligated(e: ast.UnaryExpr, operand_ty: Type | None) -> bool:
+    """Whether the negation *e* has the `int_overflow` row: it is `0 - x`,
+    whose result for `x = -2^63` is `2^63`, past the range (#1875).  A
+    negated literal is that literal's value (spec §4.2), the negation of a
+    `Nat` cannot leave the range, and a `Float64` negation is `f64.neg`.
+    An operand of no known type reads as an `Int`, as an arithmetic
+    operand does (#1417)."""
+    if e.op != ast.UnaryOp.NEG or isinstance(e.operand, ast.IntLit):
+        return False
+    base = _strip(operand_ty)
+    return base not in (NAT, FLOAT64)
+
+
 def _same_refinement(a: Type | None, b: Type) -> bool:
     """Whether the source type *a* already carries the target refinement
     *b* exactly."""
@@ -1277,6 +1290,9 @@ class _Builder:
     ) -> None:
         if isinstance(e, ast.BinaryExpr):
             self._binary_rows(e)
+        elif isinstance(e, ast.UnaryExpr):
+            if negation_obligated(e, self.sem(e.operand)):
+                self.add("int_overflow", e)
         elif isinstance(e, ast.IndexExpr):
             self.add("index_bounds", e)
         elif isinstance(e, ast.AssertExpr):
