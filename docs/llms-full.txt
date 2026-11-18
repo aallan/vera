@@ -383,7 +383,7 @@ Only valid inside `ensures` clauses. Refers to the function's return value:
 
 ```vera
 private fn absolute(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   effects(pure)
 {
@@ -394,6 +394,8 @@ private fn absolute(@Int -> @Nat)
   }
 }
 ```
+
+The `requires` excludes `-9223372036854775808`, whose magnitude `2^63` no `@Nat` holds.
 
 ### Index is mandatory
 
@@ -452,7 +454,7 @@ array, useful when processing diagnostics programmatically.
 ### Primitive types
 
 - `Bool`: `true`, `false`
-- `Int`: signed 64-bit integer; `+`, `-`, `*`, `abs` and `INT_MIN / -1` trap on overflow, and each has a verifier obligation (E528). Unary negation has neither ([#1875](https://github.com/aallan/vera/issues/1875)), so `-@Int.0` with `@Int.0` at `INT_MIN` returns `INT_MIN`; write `0 - @Int.0` where the operand can reach it
+- `Int`: signed 64-bit integer; `+`, `-`, `*`, `abs` and `INT_MIN / -1` trap on overflow, and each has a verifier obligation (E528). Negating an `@Int` is obligated like `0 - x`, so a function that writes `-@Int.0` either excludes `INT_MIN` with a precondition (`requires(@Int.0 > -9223372036854775808)`) or carries a run-time check that traps there
 - `Nat`: natural number, the non-negative half of the 64-bit `Int` (`0` to `2^63 - 1`)
 - `Float64`: 64-bit IEEE 754 floating-point
 - `Byte`: unsigned 8-bit integer (0–255)
@@ -1373,7 +1375,7 @@ Required on **every** recursive function whose effect row does not name `Diverge
 
 ```vera
 private fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)
@@ -2416,7 +2418,7 @@ private data Money {
 
 ```vera
 public fn absolute_value(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
   effects(pure)
@@ -2429,11 +2431,13 @@ public fn absolute_value(@Int -> @Nat)
 }
 ```
 
+The `requires` excludes `-9223372036854775808`, whose magnitude `2^63` no `@Nat` holds, so every obligation proves.
+
 ### Recursive function with termination proof
 
 ```vera
 public fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)
@@ -2580,7 +2584,6 @@ These are known limitations in the reference implementation. Most are tracked as
 | `parse_nat`, `parse_int`, `parse_float64` and `parse_bool` strip only spaces, so a tab or a `\r` beside the value is an error; `parse_float64` also accepts `"+1.0"` and `".5"` and refuses an exponent (`"1e3"`). | Strip the input first: `parse_float64(string_strip(@String.0))`.  An exponent has no workaround short of parsing it by hand. | [#1869](https://github.com/aallan/vera/issues/1869) |
 | A refuted contract's counterexample can be empty, list a `@Unit` parameter as `@Unit.0 = 0`, or name an internal constant such as `_call_take_14_3`. | The error, its code and its location are right: read the failing expression at the location given. | [#1871](https://github.com/aallan/vera/issues/1871) |
 | `vera check`, `vera verify` and `vera fmt --check` read only the first file named; `vera <command> --help` is read as a file name; a flag a command does not take is ignored. | Pass one file per command.  `vera` with no arguments prints the usage. | [#1872](https://github.com/aallan/vera/issues/1872) |
-| Unary negation of an `@Int` has no overflow obligation and no guard, so `-@Int.0` at `INT_MIN` returns `INT_MIN`, and a contract `vera verify` proves over the negation (a hand-written absolute value's `ensures(@Nat.result >= 0)`) fails at run time at that input. | Write `0 - @Int.0`, or `abs(@Int.0)` for a magnitude.  Each has an `int_overflow` obligation and traps with `Integer overflow` at `INT_MIN`. | [#1875](https://github.com/aallan/vera/issues/1875) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you cannot explain, read its diagnostic. Each trap has a `kind` label naming its cause (`contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown`), a message describing the failure, which names the failing site wherever the check has one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line rather than a bare `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating and allocating tail calls; for the latter, code generation restores the shadow-stack pointer before each `return_call`, so the shadow stack stays bounded across iterations.
 
@@ -3399,7 +3402,7 @@ The guarantee is exactly as wide as the query path, and no wider. Every string t
 
 ## Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?
 
-Where the solver can decide the operation, yes; where it cannot, a runtime guard catches it. The verifier auto-synthesises a proof obligation at every primitive operation whose well-definedness depends on operand values, and discharges it from the surrounding preconditions and path conditions.  **Integer** division and modulo by zero have a `b != 0` obligation (E526); float division is exempt, since `f64.div` by zero yields inf or NaN rather than trapping; array indexing has a `0 <= i < array_length(arr)` obligation (E527); `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing have `>=` / `>= 0` obligations (E502 / E503).  Unary negation of an `@Int` is the exception ([#1875](https://github.com/aallan/vera/issues/1875)), with no obligation and no guard, so `-@Int.0` with `@Int.0` at `INT_MIN` returns `INT_MIN`, where `0 - @Int.0` traps.  A function that declares `requires(@Int.1 != 0)` and performs `@Int.0 / @Int.1` is statically proven free of a zero divisor (its overflow obligation for `INT_MIN / -1`, E528, stays Tier 3, guarded by the run-time overflow trap); a function that declares `requires(true)` and performs `@Int.1 / @Int.0` is refused by `vera verify` (E526), not left to a runtime trap.  (An operation inside a closure body, quantifier predicate, or handler clause is walked under a fresh slot scope: a slot-dependent obligation is reported as a Tier-3 entry (runtime-guarded at the codegen-guarded sites, while the few unguarded sites have no codegen guard and say so in the stream as `tier3_unguarded` warnings such as `E504`, `E506` and `E543`), and a manifest violation like `5 / 0` is the same loud compile error as direct position. A quantifier domain and a handler's state-init and body are enclosing-scope positions and prove at full precision.)
+Where the solver can decide the operation, yes; where it cannot, a runtime guard catches it. The verifier auto-synthesises a proof obligation at every primitive operation whose well-definedness depends on operand values, and discharges it from the surrounding preconditions and path conditions.  **Integer** division and modulo by zero have a `b != 0` obligation (E526); float division is exempt, since `f64.div` by zero yields inf or NaN rather than trapping; array indexing has a `0 <= i < array_length(arr)` obligation (E527); `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing have `>=` / `>= 0` obligations (E502 / E503).  Negating an `@Int` is obligated like `0 - x` (E528), so a function that writes `-@Int.0` either excludes `INT_MIN` with a precondition or carries a run-time check that traps there.  A function that declares `requires(@Int.1 != 0)` and performs `@Int.0 / @Int.1` is statically proven free of a zero divisor (its overflow obligation for `INT_MIN / -1`, E528, stays Tier 3, guarded by the run-time overflow trap); a function that declares `requires(true)` and performs `@Int.1 / @Int.0` is refused by `vera verify` (E526), not left to a runtime trap.  (An operation inside a closure body, quantifier predicate, or handler clause is walked under a fresh slot scope: a slot-dependent obligation is reported as a Tier-3 entry (runtime-guarded at the codegen-guarded sites, while the few unguarded sites have no codegen guard and say so in the stream as `tier3_unguarded` warnings such as `E504`, `E506` and `E543`), and a manifest violation like `5 / 0` is the same loud compile error as direct position. A quantifier domain and a handler's state-init and body are enclosing-scope positions and prove at full precision.)
 
 You discharge an obligation by encoding the constraint in a precondition (`requires(...)`), a guarding `if` (whose path condition holds in the relevant branch), or a refinement type (`{ @Int | @Int.0 != 0 }`); the verifier then proves it at every call site.  Integer division and modulo are decidable, so an unguarded divisor the solver can show may be zero is a compile error (E526); a divisor the solver cannot translate (opaque, like a value behind an uninterpreted call) falls to a Tier-3 runtime guard instead, the same way array bounds do.  Array bounds depend on `array_length`, which the solver treats as opaque, so they are proven at Tier 1 only where a literal length, refinement, precondition, or path condition pins it, and a provably out-of-range index (e.g. `[1, 2, 3][5]`) is a compile error (E527).
 

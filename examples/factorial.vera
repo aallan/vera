@@ -1,6 +1,7 @@
 -- Factorial: demonstrates recursion with a decreases clause.
+-- 21! is past the @Nat range, so the precondition admits 0 to 20.
 public fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)

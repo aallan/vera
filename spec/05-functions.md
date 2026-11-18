@@ -60,7 +60,7 @@ The same one-canonical-form reasoning rejects redefining a built-in function (**
 <!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```
 public fn absolute_value(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result == if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 })
   effects(pure)
 {
@@ -71,6 +71,8 @@ public fn absolute_value(@Int -> @Nat)
   }
 }
 ```
+
+The precondition excludes `-2^63`, whose negation `2^63` is outside the `Int` range (Chapter 6, Section 6.4.3).
 
 ### 5.2.2 Multiple Preconditions and Postconditions
 
@@ -152,7 +154,7 @@ A contract, or a refinement predicate in a type the function names or in a field
 <!-- vera:run fn="factorial" args="5" stdout="120" -->
 ```
 public fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)

@@ -1,7 +1,8 @@
 -- Conformance: postconditions with ensures (Chapter 6)
 -- Tests: ensures clause, @T.result, multiple ensures
+-- The precondition excludes -2^63, whose magnitude no @Nat holds.
 public fn absolute(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
   effects(pure)
