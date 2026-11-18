@@ -62,7 +62,7 @@ FILE = "entry_body.vera"
 DEEP = 1_000_000
 #: The precondition's bound on the accumulator: a loop from 0 past it
 #: violates `requires` at the hop where the accumulator reaches it.
-LIMIT = 2_500_000
+LIMIT = 4_000_000
 
 
 # =====================================================================
@@ -88,6 +88,9 @@ class Check:
     #: The step that makes `violate` fail, where the check is the step's.
     bad_step: str | None = None
     kind: str = "contract_violation"
+    #: What the trap at `violate` says: the check's own message, never the
+    #: precondition's.
+    message: str = "Postcondition violation in "
 
 
 _SMALL = """\
@@ -105,7 +108,7 @@ CHECKS = (
     Check("proved", ensures="@Nat.result >= @Nat.1"),
     Check("unproved", ensures="small(@Nat.result)", decls=_SMALL,
           violate=(3_000_001, 0)),
-    Check("refined", ret="Small",
+    Check("refined", ret="Small", message="Refinement violation in ",
           decls="type Small = { @Nat | @Nat.0 <= 3000000 };\n\n",
           violate=(3_000_001, 0)),
     Check("state",
@@ -232,6 +235,7 @@ def test_a_violation_at_the_callers_arguments_traps_at_the_entry(
     ran = _run(program(check, form, bad=True), list(check.violate))
     assert ran.trap is not None
     assert ran.trap.kind == check.kind
+    assert check.message in str(ran.trap), str(ran.trap)
     assert "loop" in str(ran.trap)
     assert "@body" not in str(ran.trap)
     # The trap fires in the entry, which the backtrace names once: the
@@ -638,3 +642,37 @@ def test_the_entry_holds_no_return_call_and_the_body_transfers_to_itself() -> No
     # A function with no check after its body is not split.
     assert "$:count_plain@body" not in fns
     assert "return_call $:count_plain" in fns["$:count_plain"]
+
+
+_WASI = """\
+private fn count(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.1 + @Nat.0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Nat.1
+  } else {
+    count(@Nat.1 + 1, @Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(nat_to_string(count(0, 1000000)))
+}
+"""
+
+
+def test_a_split_loop_runs_under_the_wasi_target(tmp_path: Path) -> None:
+    """The WASI Preview 2 component carries the entry and the body as the
+    core module does, and runs the loop a million steps."""
+    path = tmp_path / FILE
+    path.write_text(_WASI, encoding="utf-8")
+    out = pipeline.cli("run", "--target", "wasi-p2", path)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "1000000"
