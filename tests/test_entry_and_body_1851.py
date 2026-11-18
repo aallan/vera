@@ -1043,8 +1043,9 @@ public fn risky(@Nat -> @Nat)
     ("source", "names"),
     [(_generic("@Nat.result >= @Nat.1"), {"gcount$Bool", "gcount$Int"}),
      (program(CHECKS[0], "where"), {"go$where$loop"}),
-     (_EXN, {"risky", "risky$exn_boundary"})],
-    ids=["generic-clones", "where-helper", "exn-boundary"])
+     (_EXN, {"risky", "risky$exn_boundary"}),
+     (_HEAP_RESULT, {"build"})],
+    ids=["generic-clones", "where-helper", "exn-boundary", "after-the-runtime"])
 def test_repro_the_join_reads_each_function_under_its_declaration(
     source: str, names: set[str],
 ) -> None:
@@ -1052,10 +1053,15 @@ def test_repro_the_join_reads_each_function_under_its_declaration(
     from a declaration as the record of checks names them: a split
     clone's entry and body as the clone, a `where` helper by its own
     name, an exported function's exception boundary under the function's
-    region."""
+    region, and a split function of a module that allocates, whose text
+    puts the runtime's functions (no declaration's, so no region's) first."""
     from vera.reconcile import _function_regions
     compiled = pipeline.compile(source, file=FILE)
     assert compiled.ok
+    if source is _HEAP_RESULT:
+        # The cell's point: a function with no region precedes `build`.
+        assert (compiled.wat.index("(func $alloc")
+                < compiled.wat.index("(func $:build"))
     regions = set(_function_regions(compiled.result).values())
     assert frozenset(names) in regions, regions
 
