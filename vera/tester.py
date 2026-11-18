@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import z3
 
 from vera import ast, naming
-from vera.binding import BODY_SUFFIX
+from vera.binding import BODY_SUFFIX, SYMBOL_PREFIX
 from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
@@ -1061,7 +1061,12 @@ class _TrapIndex:
             return
         fired_in = trial.trap_frames[0][0]
         boundary = f"{decl.name}$exn_boundary"
-        at_entry = fired_in == decl.name and all(
+        # A function that transfers to itself by `return_call` leaves one
+        # frame for every hop, the trial's own call and each inner one alike
+        # (#1851: a split function's body and its entry are shown once), so
+        # its frames cannot say the trap fired at the trial's own call.
+        at_entry = fired_in == decl.name and not self._transfers_to_itself(
+            decl.name) and all(
             builtin or name == boundary
             for name, builtin in trial.trap_frames[1:]
         )
@@ -1233,6 +1238,14 @@ class _TrapIndex:
                 continue
             return True
         return False
+
+    def _transfers_to_itself(self, name: str) -> bool:
+        """Whether the module's function *name* (its body, where it is split
+        into an entry and a body) leaves by a `return_call` to itself."""
+        target = re.escape(SYMBOL_PREFIX + name)
+        return re.search(
+            rf"\breturn_call \${target}(?:{re.escape(BODY_SUFFIX)})?(?=\s|$)",
+            self._wat, re.MULTILINE) is not None
 
     def reachable(self, start: str) -> set[str]:
         """The WASM functions a call of *start* can run: *start*, and every

@@ -676,3 +676,83 @@ def test_a_split_loop_runs_under_the_wasi_target(tmp_path: Path) -> None:
     out = pipeline.cli("run", "--target", "wasi-p2", path)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "1000000"
+
+
+# =====================================================================
+# --distrust reads a trap in a function that transfers to itself
+# =====================================================================
+
+
+_DISTRUST = """\
+public fn walk(@Nat, @Nat -> @Nat)
+  requires(@Nat.1 < 100)
+  ensures(@Nat.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Nat.1
+  } else {
+    walk(@Nat.1 + 1, @Nat.0 - 1)
+  }
+}
+"""
+
+
+def _attributed(args: list[int]) -> tuple[str, str]:
+    """What `--distrust` makes of a trial of `walk` at *args*: the trap,
+    attributed by the index `vera test` builds."""
+    from vera.tester import TrialResult, _TrapIndex
+    compiled = pipeline.compile(_DISTRUST, file=FILE)
+    verified = pipeline.verify(_DISTRUST, file=FILE)
+    index = _TrapIndex.joined(
+        verified.result, compiled.result,
+        program=compiled.checked.program, file=FILE, resolved_modules=[])
+    ran = pipeline.run(compiled, "walk", args)
+    assert ran.trap is not None
+    trial = TrialResult(
+        fn_name="walk", args={}, status="fail", message=str(ran.trap),
+        trap_kind=ran.trap.kind,
+        trap_frames=[(f.func, f.is_builtin) for f in ran.trap.frames])
+    decl = next(d.decl for d in compiled.checked.program.declarations
+                if getattr(d.decl, "name", None) == "walk")
+    index.attribute(trial, decl)
+    return trial.status, trial.attribution
+
+
+def test_repro_a_precondition_trap_at_an_inner_hop_refutes_no_proof() -> None:
+    """`walk(99, 3)` passes its own `requires` and fails it at the next
+    hop, which the body reaches by `return_call`, so the backtrace holds
+    one `walk` frame, as at the trial's own call.  The trap is the
+    `requires` check's, which stands for a call the verifier did not
+    prove: it must not be read as the proved postcondition's or the
+    proved measure's, which would report a refutation (E703) of a proof
+    that held."""
+    status, attribution = _attributed([99, 3])
+    assert status == "unattributed", (status, attribution)
+
+
+
+_STRING = """\
+public fn cs(@String, @Nat -> @String)
+  requires(true)
+  ensures(string_length(@String.result) >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @String.0
+  } else {
+    cs(@String.0, @Nat.0 - 1)
+  }
+}
+"""
+
+
+def test_repro_a_string_postcondition_with_no_check_is_not_split() -> None:
+    """A non-trivial `ensures` on a `String` result is compiled into no
+    check (spec §11.8), so nothing runs after the body and the function
+    is not split: one function, keeping its own `return_call`."""
+    compiled = pipeline.compile(_STRING, file=FILE)
+    assert "@body" not in compiled.wat
+    assert "return_call $:cs\n" in compiled.wat + "\n"

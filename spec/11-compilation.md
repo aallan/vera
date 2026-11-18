@@ -376,7 +376,7 @@ The same holds for every check that runs after the body: a non-trivial `ensures`
 )
 ```
 
-Every value a caller receives has passed the checks at the arguments that caller passed (Chapter 6, Section 6.2.2). Each check is the one the function's `ensures` clause or return type obligates; the entry holds it once. A self call that is not in tail position calls the entry, so its value is checked. Any other function, one with no check after its body or with no self call in tail position, compiles as one function, as above.
+Every value a caller receives has passed the checks at the arguments that caller passed (Chapter 6, Section 6.2.2); a contract code generation does not compile into a check, such as a non-trivial `ensures` on a function that returns a `String` or an `Array` (Section 11.8), makes no check after the body, so such a function is not split for it. Each check is the one the function's `ensures` clause or return type obligates; the entry holds it once. A self call that is not in tail position calls the entry, so its value is checked. Any other function, one with no check after its body or with no self call in tail position, compiles as one function, as above.
 
 ### 11.8.4 State Expressions in Postconditions
 
