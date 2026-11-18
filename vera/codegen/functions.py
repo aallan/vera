@@ -915,7 +915,7 @@ class FunctionCompilationMixin:
         split = ctx.obligations.is_split(decl)
         ctx.set_tail_call_context(
             ctx.obligations.tail_calls(decl),
-            self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
+            self_ret_wt=ret_wt,
             split_name=decl.name if split else None,
         )
 
@@ -1580,7 +1580,7 @@ class FunctionCompilationMixin:
                 f"    local.get {i}" for i in range(len(param_parts)))
             entry_lines.append(f"    call ${body_symbol(decl.name)}")
             entry_lines.extend(f"    {i}" for i in post_instrs)
-            entry_lines.extend(f"    {i}" for i in gc_epilogue)
+            entry_lines.extend(f"    {i}" for i in gc_epilogue)  # pragma: no mutate — equivalent in process: every caller in the module restores the shadow stack's top it saved before the call, so only a host calling the export twice in one instance sees the entry's own restore
             entry_lines.append("  )")
             header = f"  (func ${body_symbol(decl.name)}{signature}"
             snapshot_instrs, post_instrs = [], []

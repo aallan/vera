@@ -216,7 +216,9 @@ def _function_regions(
     for match in _WAT_FN_DEF_RE.finditer(compile_result.wat):
         # A split function's body is the declaration's region (#1851).
         name = match.group(1).removesuffix(BODY_SUFFIX)
-        entry = source.get(name) or source.get(name.rsplit("$", 1)[0])
+        entry = source.get(name) or source.get(
+            name.rsplit("$", 1)[0],  # pragma: no mutate — equivalent: a name the map misses is an exported function's `$exn_boundary`, one `$` past a declared name, or a prelude clone, none of whose prefixes the map holds, so the split's direction and count read the same
+        )
         if entry is None:
             continue
         key = _file_key(entry[0])

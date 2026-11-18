@@ -510,10 +510,10 @@ class WasmContext(
         # without these set (e.g. closure bodies — see
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
-        self._self_ret_wt: str | None = None
+        self._self_ret_wt: str | None = None  # pragma: no mutate — equivalent: read only beside a tail-call site, and the empty default set holds none until `set_tail_call_context` sets this too
         #: The link name of the function being compiled when it is split
         #: into an entry and a body (#1851; ``set_tail_call_context``).
-        self._split_name: str | None = None
+        self._split_name: str | None = None  # pragma: no mutate — equivalent: compared with a call's link name, which is never empty, so "" matches none as None does
         # #630 Tier 2 — interpolation-segment inference failures.
         # When `_translate_interpolated_string` can't classify a segment's
         # Vera type, it appends the offending `Expr` here and returns

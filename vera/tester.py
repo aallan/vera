@@ -1244,8 +1244,7 @@ class _TrapIndex:
         into an entry and a body) leaves by a `return_call` to itself."""
         own = {SYMBOL_PREFIX + name, SYMBOL_PREFIX + name + BODY_SUFFIX}
         transfer = re.compile(
-            rf"\breturn_call \$(?:{'|'.join(map(re.escape, own))})(?=\s|$)",
-            re.MULTILINE)
+            rf"\breturn_call \$(?:{'|'.join(map(re.escape, own))})(?=\s|$)")
         headers = list(re.finditer(r"^\s*\(func \$(\S+)", self._wat,
                                    re.MULTILINE))
         for n, header in enumerate(headers):

@@ -804,3 +804,328 @@ def test_repro_another_functions_tail_call_does_not_hide_a_refutation() -> None:
                 if getattr(d.decl, "name", None) == "f")
     index.attribute(trial, decl)
     assert trial.status == "refuted", (trial.status, trial.attribution)
+
+
+@pytest.mark.parametrize(
+    ("frames", "status"),
+    [([("f", False), ("f$exn_boundary", False)], "refuted"),
+     ([("f", False), ("vera.print", True)], "refuted"),
+     ([("f", False), ("g", False)], "unattributed")],
+    ids=["exn-boundary-caller", "builtin-caller", "declared-caller"])
+def test_repro_the_frames_after_the_trials_own_call_say_where_it_fired(
+    frames: list[tuple[str, bool]], status: str,
+) -> None:
+    """The frames after `f`'s say whether the trap fired at the trial's
+    own call: the exported wrapper `f$exn_boundary` and a built-in are
+    the trial's way in, so the entry check of `f`'s `requires` is set
+    aside and the proved `ensures` check is what fired (refuted); a
+    declared caller `g` makes the `requires` check stand for `g`'s call,
+    which the trial did not make (unattributed)."""
+    from vera.tester import TrialResult, _TrapIndex
+    compiled = pipeline.compile(_TAIL_CALLER, file=FILE)
+    verified = pipeline.verify(_TAIL_CALLER, file=FILE)
+    index = _TrapIndex.joined(
+        verified.result, compiled.result,
+        program=compiled.checked.program, file=FILE, resolved_modules=[])
+    trial = TrialResult(
+        fn_name="f", args={}, status="fail", message="",
+        trap_kind="contract_violation", trap_frames=frames)
+    decl = next(d.decl for d in compiled.checked.program.declarations
+                if getattr(d.decl, "name", None) == "f")
+    index.attribute(trial, decl)
+    assert trial.status == status, (trial.status, trial.attribution)
+
+
+#: A module text for `--distrust`'s index: a split function `f` (its entry
+#: calls its body, the body calls `helper` and transfers to itself), after
+#: another function's tail call of it, then `g`, which calls `lone` and the
+#: closure table, the closure, and `last`, whose call no earlier function
+#: makes.
+_SPLIT_WAT = """\
+  (table 1 funcref)
+  (elem (i32.const 0) func $anon_0)
+  (func $:caller (param $p0 i64) (result i64)
+    local.get 0
+    return_call $:f
+  )
+  (func $:f (param $p0 i64) (result i64)
+    local.get 0
+    call $:f@body
+  )
+  (func $:f@body (param $p0 i64) (result i64)
+    call $:helper
+    local.get 0
+    return_call $:f@body
+  )
+  (func $:g (result i64)
+    call $:lone
+    call_indirect (type $closure_sig_0)
+  )
+  (func $anon_0 (param $env i32) (result i64)
+    call $:deep
+  )
+  (func $:lone (result i64)
+    i64.const 1
+  )
+  (func $:helper (result i64)
+    i64.const 1
+  )
+  (func $:last (result i64)
+    call $:tail
+  )
+"""
+
+
+def test_repro_distrust_reads_a_split_function_as_one_node() -> None:
+    """`--distrust`'s call graph reads each function's own text: the split
+    `f`'s entry and body are one node, `f`, holding what the body calls;
+    a closure-table call adds the table to the function that makes it and
+    keeps its direct calls; no function holds a later one's calls.  And
+    `f` transfers to itself (its body's `return_call`, found after another
+    function's tail call of `f`), where `helper` does not."""
+    from vera.tester import _TrapIndex
+    index = _TrapIndex([], [], _SPLIT_WAT)
+    assert index.reachable("f") == {"f", "helper"}
+    assert index.reachable("caller") == {"caller", "f", "helper"}
+    assert index.reachable("g") == {"g", "lone", "anon_0", "deep"}
+    assert index.reachable("lone") == {"lone"}
+    assert index.reachable("helper") == {"helper"}
+    assert index._transfers_to_itself("f")
+    assert not index._transfers_to_itself("helper")
+    assert not index._transfers_to_itself("caller")
+    # A transfer that ends the module text, with no line after it.
+    assert _TrapIndex([], [], "  (func $:h@body\n    return_call $:h@body"
+                      )._transfers_to_itself("h")
+
+
+# =====================================================================
+# The backtrace and the join read a split function as its declaration
+# =====================================================================
+
+
+_CALLED = _NAMED + """
+public fn go(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = walk(0, @Nat.0);
+  @Nat.0
+}
+
+public fn down(@Int, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    10 / @Int.0
+  } else {
+    down(@Int.0, @Nat.0 - 1) + 1
+  }
+}
+"""
+
+
+def test_repro_the_backtrace_names_a_split_function_once_and_its_callers() -> None:
+    """A trap in `walk`'s body, reached from `go`, shows `walk` once (its
+    body's frame and its entry's) and then `go`; a function that is not
+    split shows a frame for every call of itself."""
+    ran = pipeline.run(_CALLED, "go", [200], file=FILE)
+    assert ran.trap is not None
+    assert [f.func for f in ran.trap.frames] == ["walk", "go"]
+    ran = pipeline.run(_CALLED, "down", [0, 3], file=FILE)
+    assert ran.trap is not None and ran.trap.kind == "divide_by_zero"
+    assert [f.func for f in ran.trap.frames] == ["down"] * 4
+
+
+def test_repro_the_backtrace_reader_normalises_each_frame() -> None:
+    """The reader's own handling of a frame's name, by wasmtime frame
+    stand-ins: a leading `$` stripped once (a split body's and its entry's
+    shown once, as `walk`), a frame with no name or none at all skipped."""
+    from vera.runtime.traps import _resolve_trap_frames
+
+    class Frame:
+        def __init__(self, name: str | None) -> None:
+            self.func_name = name
+
+    class Nameless:
+        pass
+
+    trap = Exception()
+    trap.frames = [  # type: ignore[attr-defined]
+        Frame("$:walk@body"), Frame("$:walk"), Frame(None), Nameless(),
+        Frame("$:go")]
+    got = _resolve_trap_frames(
+        trap, {"walk": (FILE, 1, 12), "go": (FILE, 14, 21)})
+    assert [(f.func, f.file, f.line_start) for f in got] == [
+        ("walk", FILE, 1), ("go", FILE, 14)]
+
+
+_EXN = """\
+public fn risky(@Nat -> @Nat)
+  requires(@Nat.0 < 1000)
+  ensures(@Nat.result >= @Nat.0)
+  effects(<Exn<String>>)
+{
+  if @Nat.0 == 0 then {
+    throw("zero")
+  } else {
+    @Nat.0
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "names"),
+    [(_generic("@Nat.result >= @Nat.1"), {"gcount$Bool", "gcount$Int"}),
+     (program(CHECKS[0], "where"), {"go$where$loop"}),
+     (_EXN, {"risky", "risky$exn_boundary"})],
+    ids=["generic-clones", "where-helper", "exn-boundary"])
+def test_repro_the_join_reads_each_function_under_its_declaration(
+    source: str, names: set[str],
+) -> None:
+    """The reconciliation's regions name the module functions compiled
+    from a declaration as the record of checks names them: a split
+    clone's entry and body as the clone, a `where` helper by its own
+    name, an exported function's exception boundary under the function's
+    region."""
+    from vera.reconcile import _function_regions
+    compiled = pipeline.compile(source, file=FILE)
+    assert compiled.ok
+    regions = set(_function_regions(compiled.result).values())
+    assert frozenset(names) in regions, regions
+
+
+def test_repro_the_entry_tripwire_refuses_a_transfer_in_the_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A test double of a check after the body that leaves by
+    `return_call`: the split `walk`'s entry would hold it, and skip the
+    check, so the compile stops with one [E699] naming `walk` and the
+    call; the body, which may transfer, is not what the tripwire reads."""
+    from vera.codegen.contracts import ContractsMixin
+    original = ContractsMixin._compile_postconditions
+
+    def planted(self, ctx, decl, *args):  # type: ignore[no-untyped-def]
+        out = original(self, ctx, decl, *args)
+        return [*out, "return_call $:walk"] if decl.name == "walk" else out
+
+    monkeypatch.setattr(ContractsMixin, "_compile_postconditions", planted)
+    compiled = pipeline.compile(_NAMED, file=FILE)
+    refusals = [d for d in compiled.diagnostics if d.error_code == "E699"]
+    assert len(refusals) == 1, [d.description for d in compiled.diagnostics]
+    (refusal,) = refusals
+    assert refusal.description == (
+        "Internal compiler error while compiling 'walk': the entry of a "
+        "split function holds the tail call 'return_call $:walk', which "
+        "would skip the check after its body (#1851)")
+    assert refusal.rationale == (
+        "This is a codegen invariant violation — a split function's entry "
+        "calls its body and runs the check once; only the body may leave "
+        "by return_call.")
+    assert refusal.fix == (
+        "No change to the program is the remedy: report it, with this "
+        "diagnostic, at https://github.com/aallan/vera/issues")
+    assert refusal.spec_ref == (
+        'Chapter 0, Section 0.5.1 "Diagnostic Structure"')
+
+
+def test_repro_the_entry_tripwire_refuses_an_indirect_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tripwire reads an instruction's first word as a transfer when
+    it starts with `return_call`, so a `return_call_indirect` in the entry
+    is refused too."""
+    from vera.codegen.contracts import ContractsMixin
+    original = ContractsMixin._compile_postconditions
+    transfer = "return_call_indirect (type $closure_sig_0)"
+
+    def planted(self, ctx, decl, *args):  # type: ignore[no-untyped-def]
+        out = original(self, ctx, decl, *args)
+        return [*out, transfer] if decl.name == "walk" else out
+
+    monkeypatch.setattr(ContractsMixin, "_compile_postconditions", planted)
+    compiled = pipeline.compile(_NAMED, file=FILE)
+    refusals = [d for d in compiled.diagnostics if d.error_code == "E699"]
+    assert len(refusals) == 1, [d.description for d in compiled.diagnostics]
+    assert f"'{transfer}'" in refusals[0].description
+
+
+_EXN_MEASURE = """\
+public fn countdown(@Nat -> @Nat)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  decreases(@Nat.0 - 1)
+  effects(<Exn<String>>)
+{
+  if @Nat.0 == 1 then {
+    0
+  } else {
+    countdown(@Nat.0 - 1)
+  }
+}
+"""
+
+
+def test_repro_a_measure_with_no_check_gives_its_operations_its_reason() -> None:
+    """A measure on an `Exn` row has no check, and every row its
+    operations draw, at the entry evaluation and at the self tail call,
+    carries the measure's reason, never none."""
+    from vera.obligations.table import REASON_EXN_DECREASES
+    table = pipeline.verify(_EXN_MEASURE, file=FILE).result.table
+    rows = [r for r in table.rows if not r.guard.check]
+    assert rows
+    assert all(isinstance(r.guard.reason, str) and r.guard.reason
+               for r in rows), [(r.kind, r.guard.reason) for r in rows]
+    assert sum(r.guard.reason == REASON_EXN_DECREASES for r in rows) >= 3, [
+        (r.kind, r.guard.reason) for r in rows]
+
+
+_STATE_FROM_FIVE = """\
+private fn tick(@Nat -> @Nat)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + nat_to_int(@Nat.0))
+  decreases(@Nat.0)
+  effects(<State<Int>>)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    let @Int = get(());
+    put(@Int.0 + 1);
+    tick(@Nat.0 - 1)
+  }
+}
+
+public fn go(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<State<Int>>)
+{
+  put(5);
+  tick(@Nat.0)
+}
+"""
+
+
+def test_repro_the_entry_takes_the_old_state_its_check_reads() -> None:
+    """The entry takes the `old()` snapshot before it calls the body: from
+    a state of 5, three hops leave 8, which the postcondition reads as 5
+    plus 3.  A snapshot never taken would read 0 and trap."""
+    compiled = pipeline.compile(_STATE_FROM_FIVE, file=FILE)
+    assert "return_call $:tick@body" in compiled.wat
+    ran = pipeline.run(compiled, "go", [3])
+    assert ran.trap is None, str(ran.trap)
+    assert ran.value == 0
+
+
+def test_repro_a_private_split_function_is_not_exported() -> None:
+    """The entry carries the declaration's export, and only a public
+    declaration has one: the private `count` is exported under no name,
+    entry or body, and the public `main` is."""
+    wat = pipeline.compile(_WASI, file=FILE).wat
+    assert '(export "count")' not in wat
+    assert '(export "main")' in wat

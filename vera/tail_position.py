@@ -83,7 +83,7 @@ def self_tail_calls(
     (*typed*) resolves it to the clone, as code generation does."""
     if decl.body is None:
         return []
-    sites = compute_tail_call_sites(decl, None)
+    sites = compute_tail_call_sites(decl)
 
     def resolves_to_decl(call: ast.FnCall) -> bool:
         if call.name == decl.name:

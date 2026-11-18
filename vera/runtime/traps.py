@@ -286,7 +286,7 @@ def _resolve_trap_frames(
     #: The entry symbol of the split function whose body the previous
     #: frame was (#1851): that entry's own frame, which called the body,
     #: is the same function's call and is shown once.
-    entry_of_body: str | None = None
+    entry_of_body: str | None = None  # pragma: no mutate — equivalent: no name is empty where it is compared (an empty one is skipped first), so "" matches no frame, as None does
     for frame in iter_frames:
         name = getattr(frame, "func_name", None) or ""
         # Some wasmtime versions return the name with a leading `$`
@@ -304,7 +304,7 @@ def _resolve_trap_frames(
         if name.startswith("$"):
             name = name[1:]
         if name == entry_of_body:
-            entry_of_body = None
+            entry_of_body = None  # pragma: no mutate — equivalent: no name is empty where it is compared (an empty one is skipped first), so "" matches no frame, as None does
             continue
         entry_of_body = (name.removesuffix(BODY_SUFFIX)
                          if name.startswith(SYMBOL_PREFIX)

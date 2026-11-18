@@ -314,7 +314,7 @@ class ObligationTable:
         if body is None or (self._key(body) in self.epilogue
                             and not self.is_split(decl)):
             return set()
-        sites = compute_tail_call_sites(decl, None)
+        sites = compute_tail_call_sites(decl)
         if not sites:
             return set()
         return {
@@ -791,14 +791,12 @@ class _Builder:
             self.walk(d.body, d, handed=ret_ty, under_join=True)
             self._return_rows(d.return_type, ret_ty, d.body)
         epilogue = self._has_epilogue(d, ensures_checked)
-        split = False
         if epilogue and d.body is not None:
             self.epilogue.add(ObligationTable._key(d.body))
-            split = bool(self_tail_calls(d, self.typed))
-            if split:
+            if self_tail_calls(d, self.typed):
                 self.split.add(ObligationTable._key(d.body))
         if measure is not None:
-            self._measure_rows(d, *measure, transfers=split or not epilogue)
+            self._measure_rows(d, *measure)
         # A generic helper's template compiles too, as a top-level
         # generic's does (its clones are the instances'), so it has rows.
         for h in d.where_fns or ():
@@ -839,16 +837,15 @@ class _Builder:
                 and isinstance(c.expr, ast.BoolLit) and c.expr.value)
 
     def _measure_rows(
-        self, d: ast.FnDecl, c: ast.Decreases, guard: Guard, *,
-        transfers: bool,
+        self, d: ast.FnDecl, c: ast.Decreases, guard: Guard,
     ) -> None:
         """The measure's operations at the entry evaluation, and the
-        clause and its operations again at each self tail call the
-        function transfers to (the spliced prefix): none where the self
-        tail calls do not transfer (*transfers* false: a check runs after
-        the body and the function is not split, so every hop re-enters
-        through the entry check).  A split function's self tail calls
-        transfer to its body (#1851), so the hop is checked at the call."""
+        clause and its operations again at each self tail call, which the
+        function transfers to (the spliced prefix).  A function with a
+        check after its body that calls itself in tail position is split,
+        and its self tail calls transfer to its body (#1851), so the hop is
+        checked at the call; one that is not split has no self tail call,
+        so every hop re-enters through the entry check."""
         if not guard.check:
             self._unevaluated.append(guard.reason)
         try:
@@ -858,8 +855,6 @@ class _Builder:
                     self.walk(e, d, in_contract=True)
             finally:
                 self._evaluation.pop()
-            if d.body is None or not transfers:
-                return
             for n in self_tail_calls(d, self.typed):
                 self._evaluation.append(("measure_call", n.node_id))
                 try:
