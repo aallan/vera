@@ -88,6 +88,10 @@ class Check:
     #: The step that makes `violate` fail, where the check is the step's.
     bad_step: str | None = None
     kind: str = "contract_violation"
+    #: The depth the loop runs to: far past the call stack's (a few tens of
+    #: thousands of frames), and less for the state check, whose every hop
+    #: is two host calls.
+    deep: int = DEEP
     #: What the trap at `violate` says: the check's own message, never the
     #: precondition's.
     message: str = "Postcondition violation in "
@@ -115,7 +119,7 @@ CHECKS = (
           ensures="new(State<Int>) == old(State<Int>) + nat_to_int(@Nat.0)",
           effect="<State<Int>>",
           step="let @Int = get(());\nput(@Int.0 + 1);\n",
-          violate=(0, 3), bad_step="let @Int = get(());\nput(@Int.0 + 2);\n"),
+          violate=(0, 3), deep=200_000, bad_step="let @Int = get(());\nput(@Int.0 + 2);\n"),
 )
 
 FORMS = ("counting", "accumulator", "allocating", "where", "reached")
@@ -217,9 +221,9 @@ def test_a_million_steps_run_to_the_twins_value(check: Check, form: str) -> None
     compiled = pipeline.compile(source, file=FILE)
     assert compiled.ok
     assert re.search(r"return_call \$:\S*loop@body\b", compiled.wat)
-    assert _outcome(source, [0, DEEP]) == ("value", DEEP)
-    assert _outcome(program(check, form, twin=True), [0, DEEP]) == (
-        "value", DEEP)
+    assert _outcome(source, [0, check.deep]) == ("value", check.deep)
+    assert _outcome(program(check, form, twin=True), [0, check.deep]) == (
+        "value", check.deep)
 
 
 VIOLATING = [(c, f) for c, f in CELLS if c.violate is not None]
@@ -248,9 +252,11 @@ def test_a_violation_at_the_callers_arguments_traps_at_the_entry(
 def test_a_precondition_false_at_an_inner_hop_traps_there(
     check: Check, form: str,
 ) -> None:
-    """`acc` passes `LIMIT` after `LIMIT + 1` hops: the hop's `requires`
-    traps, in the split function as in its twin."""
-    args = [0, LIMIT + 5]
+    """The call starts five below `LIMIT` and `acc` passes it at the sixth
+    hop: that hop's `requires` traps, in the split function as in its
+    twin.  Starting near the bound keeps the run to a few hops: the trap
+    is at an inner hop all the same."""
+    args = [LIMIT - 5, 10]
     got = _outcome(program(check, form), args)
     assert got == ("trap", "contract_violation")
     assert got == _outcome(program(check, form, twin=True), args)
