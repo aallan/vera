@@ -336,7 +336,7 @@ The precondition expression is compiled to a Boolean value. If it is false (`i32
 
 ### 11.8.3 Postcondition Checks
 
-Non-trivial `ensures` clauses compile to checks after the function body:
+Non-trivial `ensures` clauses compile to checks after the function body, except one on a function that returns a `String` or an `Array`, which code generation does not compile into a check (Section 11.8):
 
 ```wat
 ;; body computes result
@@ -357,6 +357,26 @@ local.get $result    ;; push result back for return
 ```
 
 The body's return value is stored in a temporary local. The `@T.result` reference in the ensures clause resolves to this local. After the check passes, the result is pushed back onto the stack for return; a failed check reports through `vera.contract_fail` and traps, as a precondition does.
+
+The same holds for every check that runs after the body: a non-trivial `ensures`, the guard of a refined return type, and the guards of a returned tuple's components and a returned collection's elements. A call in tail position compiles to `return_call` only where no check runs after it, so a function with such a check that calls itself in tail position is compiled as two functions:
+
+- the **entry**, under the function's own name and export, which calls the body once with the arguments its caller passed and runs the checks on what the body returns. It holds no `return_call`.
+- the **body**, which holds everything that runs before the body on each call (the refined parameters' guards, the preconditions, the `decreases` check) and the body itself. It keeps its tail calls: a self call in tail position transfers to the body by `return_call`, and a tail call of another function transfers to that function's entry.
+
+```wat
+(func $count (export "count") (param i64 i64) (result i64)
+  local.get 0
+  local.get 1
+  call $count_body     ;; the loop, whose self tail calls transfer
+  [postcondition checks, as above]
+)
+(func $count_body (param i64 i64) (result i64)
+  [precondition checks]
+  [body: ... return_call $count_body ...]
+)
+```
+
+Every value a caller receives has passed the checks at the arguments that caller passed (Chapter 6, Section 6.2.2); a contract code generation does not compile into a check, such as a non-trivial `ensures` on a function that returns a `String` or an `Array` (Section 11.8), makes no check after the body, so such a function is not split for it. Each check is the one the function's `ensures` clause or return type obligates; the entry holds it once. A self call that is not in tail position calls the entry, so its value is checked. Any other function, one with no check after its body or with no self call in tail position, compiles as one function, as above.
 
 ### 11.8.4 State Expressions in Postconditions
 
@@ -386,7 +406,7 @@ if
 end
 ```
 
-`old(State<T>)` resolves to a `local.get` of the saved snapshot. `new(State<T>)` resolves to a fresh `call $vera.state_get_<Type>` that reads the current value. The snapshot local is allocated only when the function's ensures clauses reference `old()`.
+`old(State<T>)` resolves to a `local.get` of the saved snapshot. `new(State<T>)` resolves to a fresh `call $vera.state_get_<Type>` that reads the current value. The snapshot local is allocated only when the function's ensures clauses reference `old()`. In a function compiled as an entry and a body (Section 11.8.3), the entry takes the snapshot before it calls the body and reads `new(State<T>)` after the body returns, so `old` is the state when the caller called and `new` the state when the function returns to it.
 
 ### 11.8.5 Trap Handling
 

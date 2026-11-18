@@ -721,19 +721,21 @@ def _stack_fix() -> str:
     return TRAP_KINDS["stack_exhausted"].fix
 
 
-def test_the_stack_fix_names_the_check_at_the_exit() -> None:
-    """The condition is a check after the call returns, from any of its
-    three sources, whatever the verdict; the cells below pin each."""
+def test_the_stack_fix_names_what_still_costs_a_tail_call() -> None:
+    """A postcondition and a refined return no longer cost a function its
+    self tail calls (#1851): the text says so, and names what still
+    compiles a tail call to a plain call.  The cells below pin each."""
     fix = " ".join(_stack_fix().split())
-    assert "when something is checked after it returns" in fix
-    assert "a postcondition the compiled code checks at run time" in fix
-    assert "the guard of a refined return type" in fix
-    assert ("the guard on the call's result where it becomes a type with "
+    assert ("A postcondition or a refined return type does not cost a "
+            "function its self tail calls") in fix
+    assert "where the function returns to its caller" in fix
+    assert ("a guard on the call's result where it becomes a type with "
             "a `Nat` component") in fix
-    assert "does not by itself remove it" in fix
+    assert "mutual recursion is bounded by the call stack" in fix
     assert "`array_fold` / `array_map`" in fix
     assert "Tier 1" not in fix and "Tier-3" not in fix
     assert "ensures(true)" not in fix
+    assert "does not by itself remove it" not in fix
 
 
 _COUNT = """\
@@ -765,18 +767,17 @@ public fn count_proved(@Nat, @Nat -> @Nat)
 """
 
 
-def test_repro_1851_a_proved_postcondition_exhausts_the_stack() -> None:
+def test_repro_1851_a_proved_postcondition_keeps_the_tail_call() -> None:
     """What the text now states: `count_proved`'s `ensures` is proved, and
-    its recursion still exhausts the stack where `ensures(true)` does not."""
+    its recursion runs as deep as `ensures(true)`'s, the check made once
+    where it returns to its caller."""
     verified = pipeline.verify(_COUNT)
     assert verified.ok
     assert {ob["status"] for ob in verified.envelope()["obligations"]
             if ob["kind"] == "ensures"} == {"verified"}
-    assert pipeline.run(_COUNT, fn="count_plain",
-                        args=[0, 1000000]).value == 1000000
-    ran = pipeline.run(_COUNT, fn="count_proved", args=[0, 1000000])
-    assert not ran.ok
-    assert ran.trap is not None and ran.trap.kind == "stack_exhausted"
+    for fn in ("count_plain", "count_proved"):
+        assert pipeline.run(_COUNT, fn=fn,
+                            args=[0, 1000000]).value == 1000000
 
 
 _EXIT_CHECKS = """\
@@ -810,13 +811,12 @@ public fn cs(@String, @Nat -> @String)
 """
 
 
-def test_repro_1851_a_refined_return_s_guard_costs_the_tail_call() -> None:
+def test_repro_1851_a_refined_return_s_guard_keeps_the_tail_call() -> None:
     """`cp` says `ensures(true)`, and its refined return's guard, a check
-    at the exit, still costs its tail calls: the text's second source."""
+    at the exit, runs once in the entry: its tail calls are kept."""
     verified = pipeline.verify(_EXIT_CHECKS)
     assert verified.ok
-    ran = pipeline.run(_EXIT_CHECKS, fn="cp", args=[1, 1000000])
-    assert ran.trap is not None and ran.trap.kind == "stack_exhausted"
+    assert pipeline.run(_EXIT_CHECKS, fn="cp", args=[1, 1000000]).value == 1
 
 
 def test_a_postcondition_with_no_check_at_the_exit_keeps_the_tail_call() -> None:

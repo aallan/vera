@@ -5298,3 +5298,45 @@ class TestMdGrammarSharedTable1301:
             "  python -c \"from vera.markdown_grammar import "
             "js_grammar_block; print(js_grammar_block())\""
         )
+
+
+class TestEntryAndBody1851:
+    """A function with a check after its body that calls itself in tail
+    position is an entry and a body (#1851): the same module runs a
+    million steps under Node as under wasmtime, and traps at the entry
+    on a violating input under both."""
+
+    _SRC = """\
+private fn count(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.1 + @Nat.0 && @Nat.result != 7)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Nat.1
+  } else {
+    count(@Nat.1 + 1, @Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(nat_to_string(count(0, N)))
+}
+"""
+
+    def test_a_million_steps_under_both_runtimes(self, tmp_path: Path) -> None:
+        out = _parity_stdout(self._SRC.replace("N)", "1000000)"), tmp_path,
+                             "entry_body")
+        assert out == "1000000"
+
+    def test_the_entry_traps_under_both_runtimes(self, tmp_path: Path) -> None:
+        native, browser = _both_failures(
+            self._SRC.replace("N)", "7)"), tmp_path, "entry_body_trap")
+        assert "Postcondition violation in count" in native
+        assert "Postcondition violation in count" in browser
+        assert "@body" not in native + browser
