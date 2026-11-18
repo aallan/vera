@@ -367,7 +367,7 @@ The same holds for every check that runs after the body: a non-trivial `ensures`
 (func $count (export "count") (param i64 i64) (result i64)
   local.get 0
   local.get 1
-  call $count_body     ;; the loop, at constant stack depth
+  call $count_body     ;; the loop, whose self tail calls transfer
   [postcondition checks, as above]
 )
 (func $count_body (param i64 i64) (result i64)
