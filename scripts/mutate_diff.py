@@ -182,6 +182,11 @@ NO_WINDOW_EXIT = 3
 #: plans its sample from.
 COUNT_ARG = "count"
 
+#: The engine's command that shows named mutants' code (:func:`show_mutants`),
+#: a name of its own: mutmut's ``show <mutant>``, which the lane asks for a
+#: survivor's diff, reaches mutmut unchanged.
+SHOW_ARG = "show-mutations"
+
 #: The exit status of a ``count`` the engine could not make.
 NO_COUNT_EXIT = 4
 
@@ -967,6 +972,56 @@ def count_units(request: str) -> str:
     return json.dumps(counts)
 
 
+def show_mutants(request: str) -> str:
+    """The engine's ``show`` command: for each named mutant of ``request``
+    (JSON, ``{"sources": {path: source}, "mutants": {path: {key: [n, ...]}}}``,
+    ``n`` the number mutmut gives a mutant in a run over the whole unit), the
+    code mutmut's own visitor changes and what it changes it to, as JSON
+    ``{path: {key: {n: {"line": l, "original": text, "mutated": text}}}}``.
+    mutmut numbers a unit's mutants from one in the order its visitor makes
+    them (``mutmut.mutation.file_mutation``), the order :func:`_unit_line_counts`
+    counts them in; a number past the unit's mutants is left out."""
+    import libcst as cst
+    from libcst.metadata import MetadataWrapper, PositionProvider
+    from mutmut.mutation.file_mutation import MutationVisitor
+    from mutmut.mutation.mutators import mutation_operators
+    from mutmut.mutation.pragma_handling import get_ignored_lines
+
+    data = json.loads(request)
+    shown: dict[str, dict[str, dict[str, Any]]] = {}
+    for path, wanted in data["mutants"].items():
+        source = data["sources"][path]
+        wrapper = MetadataWrapper(cst.parse_module(source))
+        visitor = MutationVisitor(mutation_operators, get_ignored_lines(path, source, wrapper, None), None)
+        wrapper.visit(visitor)
+        positions = wrapper.resolve(PositionProvider)
+        keys: dict[Any, str] = {}
+        for stmt in wrapper.module.body:
+            if isinstance(stmt, cst.FunctionDef):
+                keys[stmt] = _key(stmt.name.value, None)
+            elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+                keys.update({m: _key(m.name.value, stmt.name.value) for m in stmt.body.body
+                             if isinstance(m, cst.FunctionDef)})
+        by_key: dict[str, list[Any]] = {}
+        for mutation in visitor.mutations:
+            key = keys.get(mutation.contained_by_top_level_function)
+            if key is not None:
+                by_key.setdefault(key, []).append(mutation)
+
+        def text(node: Any) -> str:
+            return wrapper.module.code_for_node(node) if isinstance(node, cst.CSTNode) else ""
+
+        shown[path] = {}
+        for key, numbers in wanted.items():
+            made = by_key.get(str(key), [])
+            shown[path][str(key)] = {
+                str(n): {"line": positions[made[n - 1].original_node].start.line,
+                         "original": text(made[n - 1].original_node),
+                         "mutated": text(made[n - 1].mutated_node)}
+                for n in (int(v) for v in numbers) if 1 <= n <= len(made)}
+    return json.dumps(shown)
+
+
 def engine_main(args: Sequence[str]) -> int:
     """mutmut's command line, its ``run`` generating only the window's
     mutants when :data:`WINDOW_ENV` names the lane's window file: the lane's
@@ -978,6 +1033,13 @@ def engine_main(args: Sequence[str]) -> int:
             sys.stdout.write(count_units(sys.stdin.read()))
         except (ImportError, KeyError, TypeError, ValueError) as exc:
             print(f"mutate_diff: the units cannot be counted: {exc}", file=sys.stderr)
+            return NO_COUNT_EXIT
+        return 0
+    if args[:1] == [SHOW_ARG]:
+        try:
+            sys.stdout.write(show_mutants(sys.stdin.read()))
+        except (ImportError, KeyError, TypeError, ValueError) as exc:
+            print(f"mutate_diff: the mutants cannot be shown: {exc}", file=sys.stderr)
             return NO_COUNT_EXIT
         return 0
     import mutmut.__main__ as engine
