@@ -373,6 +373,14 @@ def test_an_index_nothing_types_is_refused_and_its_fix_clears_it(
         return
     also = OPEN_CALL_ALSO.get(position, []) if form == "open_call" else []
     assert _codes(program) == ["E164", *also], program
+    # The edit `_apply_fix` makes is the one the fix's text writes.
+    fix = _errors(program)[0].fix
+    coll, _ = SOURCES[source]
+    written = ("`@Array<Int>` in place of `@Array`"
+               if source == "no_type_argument"
+               else f"`let @Array<Int> = {coll};`, and index the binding, "
+                    f"`@Array<Int>.0[0]`")
+    assert written in fix, fix
     fixed = _apply_fix(program, source, position)
     codes = _codes(fixed)
     assert "E164" not in codes, fixed
