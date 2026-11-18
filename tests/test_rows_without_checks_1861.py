@@ -351,19 +351,25 @@ public fn f(@Bool, @Int -> @Int)
 """
 
 
-@pytest.mark.parametrize("body", [
-    "[@Int.0]",
-    "if @Bool.0 then { [@Int.0] } else { [0] }",
-    "match @Bool.0 { true -> [@Int.0], false -> [0] }",
-    "let @NE = if @Bool.0 then { [@Int.0] } else { [0] };\n  @NE.0",
+@pytest.mark.parametrize(("body", "positions"), [
+    ("[@Int.0]", 1),
+    ("if @Bool.0 then { [@Int.0] } else { [0] }", 1),
+    ("match @Bool.0 { true -> [@Int.0], false -> [0] }", 1),
+    ("let @NE = if @Bool.0 then { [@Int.0] } else { [0] };\n  @NE.0", 2),
 ])
-def test_repro_a_literal_built_at_a_result_is_checked_once(body: str) -> None:
+def test_repro_a_literal_built_at_a_result_is_checked_once(
+        body: str, positions: int) -> None:
     source = _RETURNED.replace("BODY", body)
     assert _mismatches(source) == []
     verified = _verified_clean(source)
-    # One row of the refinement, the return's (and the `let`'s), each tier3.
+    # One record of the refinement per position the value reaches (the
+    # return, and the `let`), each `tier3` and each with its check.
     rows = [o for o in verified.obligations if o.kind == "refine_bind"]
-    assert rows and all(o.status == "tier3" for o in rows), rows
+    assert len(rows) == positions, rows
+    assert all(o.status == "tier3" for o in rows), rows
+    reconciled = verified.reconciled
+    assert reconciled is not None and reconciled.reconciliation is not None
+    assert len(reconciled.reconciliation.pairs) == positions
     assert pipeline.run(source, fn="f", args=[1, 4]).value == 1
 
 
