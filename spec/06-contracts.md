@@ -47,6 +47,8 @@ public fn absolute_value(@Int -> @Nat)
 
 The special reference `@T.result` (where `T` is the return type) refers to the function's return value within `ensures` clauses.
 
+A postcondition is checked where the function returns to its caller, at the arguments that caller passed: every value a caller receives has passed it, whether the verifier proved the clause or left it to run time. A self call in tail position does not return to a caller, since the value it computes is the function's own, so the hops of a tail-recursive loop are not checked one by one: the loop runs at constant stack depth and its answer is checked once, when it leaves the function (Chapter 11, Section 11.8.3). A hop whose own instance of the postcondition would fail therefore does not trap inside a call whose result satisfies the postcondition at the caller's arguments; a direct call at that hop's arguments does. A self call that is not in tail position returns to the function itself, so its value is checked.
+
 Postconditions on stateful functions also have `old(State<T>)` and `new(State<T>)`, which name an effect's state before and after the call. Both are specified in Chapter 7, Section 7.9.2. Like `@T.result`, both are valid only inside `ensures` clauses.
 
 ### 6.2.3 Invariants (`invariant`)

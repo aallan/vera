@@ -120,11 +120,30 @@ def symbol(link_name: str) -> str:
     return SYMBOL_PREFIX + link_name
 
 
+#: What a split function's body symbol adds to its declaration's (#1851).
+#: A function whose return runs a check after its body and which calls
+#: itself in tail position compiles as two WASM functions: the entry,
+#: under the declaration's own symbol, which calls the body and runs the
+#: check once, and the body, under this symbol, which keeps its tail calls.
+#: ``@`` is spelt by no Vera identifier and so by no link name.
+BODY_SUFFIX = "@body"
+
+
+def body_symbol(link_name: str) -> str:
+    """The WASM symbol of the body of the split function whose linked name
+    is *link_name*, without its ``$`` (#1851)."""
+    return SYMBOL_PREFIX + link_name + BODY_SUFFIX
+
+
 def source_name(wasm_name: str) -> str:
     """*wasm_name* with the declarations' prefix removed: the name a trap
     frame or a diagnostic shows for a declaration's symbol, and *wasm_name*
-    itself for a generated function."""
-    return wasm_name.removeprefix(SYMBOL_PREFIX)
+    itself for a generated function.  A split function's body is shown
+    under its declaration's name (#1851): the body symbol is code
+    generation's, never a name a user reads."""
+    if wasm_name.startswith(SYMBOL_PREFIX):
+        return wasm_name[len(SYMBOL_PREFIX):].removesuffix(BODY_SUFFIX)
+    return wasm_name
 
 
 @dataclass

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import z3
 
 from vera import ast, naming
+from vera.binding import BODY_SUFFIX
 from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
@@ -1264,13 +1265,17 @@ class _TrapIndex:
                 end = (headers[n + 1].start() if n + 1 < len(headers)
                        else len(self._wat))
                 body = self._wat[header.end():end]
-                callees = set(_WAT_CALL.findall(body))
+                # A split function's entry and body are one node (#1851):
+                # its checks are recorded under the declaration's name.
+                callees = {name.removesuffix(BODY_SUFFIX)
+                           for name in _WAT_CALL.findall(body)}
                 if "call_indirect" in body:
                     callees |= table
                 # A declaration's `$:alloc` and the runtime's `$alloc` are
                 # one node (#1694): it holds what either body calls, so a
                 # reach never loses a declaration's callees.
-                graph.setdefault(header.group(1), set()).update(callees)
+                graph.setdefault(header.group(1).removesuffix(BODY_SUFFIX),
+                                 set()).update(callees)
             self._graph = graph
         return self._graph
 

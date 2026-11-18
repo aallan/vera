@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from vera.binding import SYMBOL_PREFIX, display_name, source_name
+from vera.binding import BODY_SUFFIX, SYMBOL_PREFIX, display_name, source_name
 
 from vera.trap_registry import (
     NATIVE_TRAP_OPCODES,
@@ -283,6 +283,10 @@ def _resolve_trap_frames(
     except Exception:  # pragma: no cover — defensive  # noqa: BLE001
         return []
 
+    #: The entry symbol of the split function whose body the previous
+    #: frame was (#1851): that entry's own frame, which called the body,
+    #: is the same function's call and is shown once.
+    entry_of_body: str | None = None
     for frame in iter_frames:
         name = getattr(frame, "func_name", None) or ""
         # Some wasmtime versions return the name with a leading `$`
@@ -299,6 +303,12 @@ def _resolve_trap_frames(
         # strip would otherwise silently break every lookup below.
         if name.startswith("$"):
             name = name[1:]
+        if name == entry_of_body:
+            entry_of_body = None
+            continue
+        entry_of_body = (name.removesuffix(BODY_SUFFIX)
+                         if name.startswith(SYMBOL_PREFIX)
+                         and name.endswith(BODY_SUFFIX) else None)
         # #1694: a declaration's function is `$:` + its link name; every
         # other name is one code generation generated for itself, so a user
         # function named `alloc` is not the allocator.

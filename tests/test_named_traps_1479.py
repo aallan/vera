@@ -1768,7 +1768,10 @@ _RUNTIME_FUNCTIONS = {"alloc", "gc_collect"}
 
 def _signals_by_function(wat: str) -> Counter[tuple[str, str]]:
     kinds = {k.code: k.name for k in TRAP_KINDS.values() if k.code}
-    starts = [(m.start(), m.group(1)) for m in _FUNC.finditer(wat)]
+    # A split function's body is recorded under its declaration (#1851).
+    from vera.binding import BODY_SUFFIX
+    starts = [(m.start(), m.group(1).removesuffix(BODY_SUFFIX))
+              for m in _FUNC.finditer(wat)]
     found: Counter[tuple[str, str]] = Counter()
     for n, (pos, name) in enumerate(starts):
         if name in _RUNTIME_FUNCTIONS:

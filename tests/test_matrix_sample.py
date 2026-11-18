@@ -724,6 +724,7 @@ MARKED_FILES = (
     "test_tail_call_guards_1849.py",
     "test_diagnostic_text_reads_back_1573.py",
     "test_expected_type_fixes_open_1684.py",
+    "test_entry_and_body_1851.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
