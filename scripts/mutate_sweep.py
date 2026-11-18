@@ -3391,7 +3391,9 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
                          units: Sequence[SweepUnit] = (), at_import: frozenset[str] = frozenset(),
                          mutations: Mapping[tuple[str, str, int], tuple[str, str]] | None = None,
                          lines: Mapping[tuple[str, int], str] | None = None,
-                         earlier: Mapping[str, Any] | None = None, generation: str | None = None) -> list[str]:
+                         earlier: Mapping[str, Any] | None = None,
+                         earlier_at_import: frozenset[str] = frozenset(),
+                         generation: str | None = None) -> list[str]:
     """A closed cycle's comment on the standing issue, in parts of at most
     ``COMMENT_LIMIT`` characters: the score by module beside the cycle
     before's, the survivors as a task list grouped by module, each line its
@@ -3401,7 +3403,9 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     (``at_import``, by ident, the rule's at the cycle's head) is evaluated
     at import: no task, named apart, and outside the score's total, as it
     is in the cycle before's when that cycle's record is at hand
-    (``earlier``).  Every other mutant is reported as the engine decided it."""
+    (``earlier``), by the rule at that cycle's own head
+    (``earlier_at_import``), so its score reads as its own comment gave it.
+    Every other mutant is reported as the engine decided it."""
     cycle = int(last["cycle"])
     started = str(last["started"])
     modules = reported_modules(last, at_import)
@@ -3425,7 +3429,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     before: dict[str, float] = {}
     if previous:
         p_total = p_caught = 0
-        p_modules = (reported_modules(earlier, at_import)
+        p_modules = (reported_modules(earlier, earlier_at_import)
                      if earlier is not None and earlier["cycle"] == previous["cycle"] else previous["modules"])
         for module, row in p_modules.items():
             t = row["killed"] + row["survived"] + row["timeout"]
@@ -3451,7 +3455,8 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
             f"evidence that no cell can tell the code from its absence ([the rule](https://github.com/{repo}/"
             f"blob/main/{BURNDOWN})). Tick it in the pull request that does.", "",
             f"The score reaches the badge through a pull request: `gh run download {run_id} --name "
-            "mutation-sweep-state --dir state`, then `python scripts/mutate_sweep.py summary --state state` "
+            "mutation-sweep-state --dir state`, then `python scripts/mutate_sweep.py summary --state state "
+            f"--cycle {cycle}` "
             f"([this run]({run}) holds the state).", ""]
     table = ["| Module | Scored | Caught | Survived | Slow | Score | 95% interval"
              + (" | Before |" if previous else " |"),
@@ -3968,8 +3973,19 @@ def render_kept(entry: Mapping[str, Any], kept: Sequence[Mapping[str, Any]], *, 
              for p, _, _, line, _ in rows if p in sources and 0 < line <= len(sources[p].splitlines())}
     previous = record.get("previous")
     earlier = next((c["record"] for c in kept if previous and c["cycle"] == previous["cycle"]), None)
+    earlier_at_import: frozenset[str] = frozenset()
+    if earlier is not None:
+        # The cycle before is reported by the rule at its own head.
+        try:
+            earlier_at_import = (at_import if str(earlier["head"]) == head else
+                                 at_import_at(repo_dir, str(earlier["head"]),
+                                              vera_sources(repo_dir, str(earlier["head"]))))
+        except md.LaneError as exc:
+            print(f"warning: cycle {earlier['cycle']}'s head is not in this checkout ({exc}); the comparison "
+                  "counts its survivors as the engine decided them", file=sys.stderr)
     return render_cycle_comment(record, run_id=run_id, repo=repo, units=units, at_import=at_import,
-                                mutations=shown, lines=lines, earlier=earlier, generation=generation)
+                                mutations=shown, lines=lines, earlier=earlier,
+                                earlier_at_import=earlier_at_import, generation=generation)
 
 
 def cmd_comment(args: argparse.Namespace) -> int:
@@ -4114,10 +4130,22 @@ def cmd_matrix(args: argparse.Namespace) -> int:
 
 
 def cmd_summary(args: argparse.Namespace) -> int:
+    """The committed summary from the last closed cycle, or with ``--cycle``
+    from that kept closed cycle's record (the state's ``comments``)."""
     state = load_state(_state_file(args.state), _today())
     last = state["last_complete"]
     if not last:
         raise StateError("no cycle has closed yet, so there is no summary to write")
+    cycle = getattr(args, "cycle", None)
+    if cycle is not None and cycle != last["cycle"]:
+        record = next((c["record"] for c in state.get("comments") or [] if c["cycle"] == cycle), None)
+        if record is None:
+            kept = ", ".join(str(c["cycle"]) for c in state.get("comments") or []) or "none"
+            print(f"error: the state keeps no closed cycle {cycle} (last closed {last['cycle']}; kept: {kept})",
+                  file=sys.stderr)
+            return 2
+        last = record
+        state = {**state, "last_complete": record}
     # The rule at the cycle's head reports its survivors evaluated at import
     # apart; a checkout without that commit cannot say which they are.
     repo = Path(args.repo_dir)
@@ -4200,6 +4228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary.add_argument("--state", required=True, help="the directory holding the state")
     summary.add_argument("--out", default=str(ROOT), help="where to write them (default: the "
                          "repository root)")
+    summary.add_argument("--cycle", type=int, help="the kept closed cycle to write (default: the last closed)")
     summary.add_argument("--repo-dir", default=str(ROOT), help="the repository holding the cycle's head "
                          "(default: this one)")
     comment = sub.add_parser("comment", help="write the standing issue's comments for this run")

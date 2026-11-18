@@ -4547,6 +4547,63 @@ class TestCycleComment:
     def test_with_no_earlier_cycle_the_change_line_says_so(self) -> None:
         assert "No earlier cycle has closed, so there is no change to compare." in self._parts()[0]
 
+    @staticmethod
+    def _two_cycles() -> tuple[dict[str, Any], dict[str, Any]]:
+        """Cycle 1 at head ``1...``: `f` one killed, one survived; cycle 2 at
+        head ``2...``: `f` the same, with cycle 1 as its ``previous``."""
+        state = _state(f=2, m=2, g=2)
+        records = []
+        for cycle in (1, 2):
+            _decide(state, A, killed=1, survived=1, survivors=("2@2:survived",))
+            _decide(state, B, killed=2)
+            _decide(state, C, killed=2)
+            assert sw.close_cycle(state, UNITS, head=str(cycle) * 40, today=f"2026-11-1{cycle}")
+            records.append(state["last_complete"])
+        return state, records[0]
+
+    def test_repro_the_cycle_before_is_scored_by_the_rule_at_its_own_head(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`f` is observable at cycle 1's head and evaluated at import at
+        cycle 2's: cycle 1's score in cycle 2's comparison stays what it was,
+        5 of 6, not cycle 2's rule's 5 of 5 (PR #1882 review)."""
+        state, _ = self._two_cycles()
+        rules = {"1" * 40: frozenset(), "2" * 40: frozenset({A.ident})}
+        monkeypatch.setattr(sw, "vera_sources", lambda repo, rev, prefix="vera": {})
+        monkeypatch.setattr(sw, "at_import_at", lambda repo, rev, sources: rules[rev])
+        text = "".join(sw.render_kept(state["comments"][0], state["comments"], run_id=1, repo="o/r",
+                                      repo_dir=tmp_path, mutations=False, deadline=0.0))
+        assert "Against cycle 1: 83.3% then, 100.0% now" in text
+        assert "| `vera/a.py` | 3 | 3 | 0 | 0 | 100.0% |" in text and " 75.0% |" in text
+
+    def test_repro_summary_writes_the_cycle_it_is_asked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A kept cycle's comment names its own cycle in the command; the
+        summary writes that kept cycle's files, the last closed by default,
+        and refuses a cycle the state does not keep (PR #1882 review)."""
+        state, first = self._two_cycles()
+        state["units"][A.ident]["window"] = None
+        state["last_complete"] = {**state["last_complete"], "survivors": [],
+                                  "modules": {**state["last_complete"]["modules"], "vera/a.py": {
+                                      **state["last_complete"]["modules"]["vera/a.py"], "survived": 0, "killed": 4}}}
+        state["comments"][0]["record"] = state["last_complete"]
+        sw.save_state(state, tmp_path / "state")
+        heads: list[str] = []
+        monkeypatch.setattr(sw, "vera_sources", lambda repo, rev, prefix="vera": heads.append(rev) or {})
+        monkeypatch.setattr(sw, "at_import_at", lambda repo, rev, sources: frozenset())
+        for cycle, total, head in ((None, "TOTAL (vera),6,6,0,0,100.0,", "2"), ("1", "TOTAL (vera),6,5,1,0,83.3,", "1")):
+            out = tmp_path / f"out{cycle}"
+            argv = ["summary", "--state", str(tmp_path / "state"), "--out", str(out)]
+            assert sw.main([*argv, "--cycle", cycle] if cycle else argv) == 0
+            assert out.joinpath("mutation-summary.csv").read_text(encoding="utf-8").splitlines()[-1].startswith(total)
+            assert heads[-1] == head * 40
+        assert sw.main(["summary", "--state", str(tmp_path / "state"), "--out", str(tmp_path / "o"),
+                        "--cycle", "7"]) == 2
+        for record in (first, state["last_complete"]):
+            text = sw.render_cycle_comment(record, run_id=5, repo="o/r")[0]
+            assert f"`python scripts/mutate_sweep.py summary --state state --cycle {record['cycle']}`" in text
+
     def test_the_cycle_before_is_compared_module_by_module(self) -> None:
         previous = {"cycle": 1, "modules": {"vera/verifier.py": {"killed": 8, "survived": 2, "timeout": 0,
                                                                  "no_tests": 0, "other": 0}}}

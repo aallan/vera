@@ -128,19 +128,38 @@ The release-prep PR must:
    issue before it has a row.  At release time they must agree, because
    the file is then the published list.
 6. Write the committed mutation score from the nightly sweep's last closed
-   cycle: take the newest scheduled run on `main` whose state artifact
-   holds a closed cycle (a run whose setup failed has no state, and a
-   state's `last_complete` is null until a cycle has closed), download it
-   (`gh run download <run-id> --name mutation-sweep-state --dir state`,
-   checking `last_complete` in `state/sweep-state.json`, and trying the run
-   before it when it is null or the artifact has expired), then
-   `python scripts/mutate_sweep.py summary --state state` writes
-   `mutation.json`, which the README badge reads, and `mutation-summary.csv`
-   at the repository root; commit both (MUTATION.md § The measure-all
-   baseline, The score and the badge).  Its `mutation-survivors.csv` is
-   gitignored.  The summary reads the tree at the cycle's head, which the
-   checkout must hold.  When no such run exists, the committed score stays
-   as it is, and the release notes say it was not updated.
+   cycle, read from the newest scheduled run on `main` whose state holds a
+   closed cycle.  List those runs, newest first:
+
+   ```bash
+   gh run list --workflow mutation-nightly.yml --branch main --event schedule --limit 20 --json databaseId,createdAt
+   ```
+
+   Take each run id in that order.  Download its state into a new
+   directory of its own (`gh run download` does not overwrite a file, and
+   a run whose setup failed, or whose artifact has expired, has no state,
+   so the download fails and the next run is tried), and check whether the
+   state holds a closed cycle:
+
+   ```bash
+   gh run download <run-id> --name mutation-sweep-state --dir ../mutation-state-<run-id>
+   python -c "import json, sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['last_complete'] is not None)" ../mutation-state-<run-id>/sweep-state.json
+   ```
+
+   The first run that prints `True` is the one.  From the repository root,
+   with `main`'s history fetched (`git fetch origin`: the summary reads the
+   tree at the cycle's head), write the score from that run's directory:
+
+   ```bash
+   python scripts/mutate_sweep.py summary --state ../mutation-state-<run-id>
+   ```
+
+   It writes `mutation.json`, which the README badge reads, and
+   `mutation-summary.csv` at the repository root; commit both (MUTATION.md
+   § The measure-all baseline, The score and the badge).  Its
+   `mutation-survivors.csv` is gitignored.  When no run prints `True`, the
+   committed score stays as it is, and the release notes say it was not
+   updated.
 7. Pass the ordinary protected-branch CI and review process.
 
 The release PR merges by merge commit or squash, the only methods the
