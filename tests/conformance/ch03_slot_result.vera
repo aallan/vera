@@ -8,8 +8,9 @@ public fn double(@Int -> @Int)
   @Int.0 * 2
 }
 
+-- The precondition excludes -2^63, whose magnitude no @Nat holds.
 public fn magnitude(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   effects(pure)
 {

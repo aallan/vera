@@ -221,7 +221,7 @@ The commutative-operations trap is more dangerous with same-type parameters. If 
 
 ```vera
 private fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)

@@ -377,7 +377,7 @@ Only valid inside `ensures` clauses. Refers to the function's return value:
 
 ```vera
 private fn absolute(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   effects(pure)
 {
@@ -388,6 +388,8 @@ private fn absolute(@Int -> @Nat)
   }
 }
 ```
+
+The `requires` excludes `-9223372036854775808`, whose magnitude `2^63` no `@Nat` holds.
 
 ### Index is mandatory
 
@@ -446,7 +448,7 @@ array, useful when processing diagnostics programmatically.
 ### Primitive types
 
 - `Bool`: `true`, `false`
-- `Int`: signed 64-bit integer; `+`, `-`, `*`, `abs` and `INT_MIN / -1` trap on overflow, and each has a verifier obligation (E528). Unary negation has neither ([#1875](https://github.com/aallan/vera/issues/1875)), so `-@Int.0` with `@Int.0` at `INT_MIN` returns `INT_MIN`; write `0 - @Int.0` where the operand can reach it
+- `Int`: signed 64-bit integer; `+`, `-`, `*`, `abs` and `INT_MIN / -1` trap on overflow, and each has a verifier obligation (E528). Negating an `@Int` is obligated like `0 - x`, so a function that writes `-@Int.0` either excludes `INT_MIN` with a precondition (`requires(@Int.0 > -9223372036854775808)`) or carries a run-time check that traps there
 - `Nat`: natural number, the non-negative half of the 64-bit `Int` (`0` to `2^63 - 1`)
 - `Float64`: 64-bit IEEE 754 floating-point
 - `Byte`: unsigned 8-bit integer (0–255)
@@ -1367,7 +1369,7 @@ Required on **every** recursive function whose effect row does not name `Diverge
 
 ```vera
 private fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)
@@ -2410,7 +2412,7 @@ private data Money {
 
 ```vera
 public fn absolute_value(@Int -> @Nat)
-  requires(true)
+  requires(@Int.0 > -9223372036854775808)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
   effects(pure)
@@ -2423,11 +2425,13 @@ public fn absolute_value(@Int -> @Nat)
 }
 ```
 
+The `requires` excludes `-9223372036854775808`, whose magnitude `2^63` no `@Nat` holds, so every obligation proves.
+
 ### Recursive function with termination proof
 
 ```vera
 public fn factorial(@Nat -> @Nat)
-  requires(true)
+  requires(@Nat.0 <= 20)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
   effects(pure)
@@ -2573,7 +2577,6 @@ These are known limitations in the reference implementation. Most are tracked as
 | A `decreases` over a data type is ranked at run time by walking the whole structure at every recursive call, proved or not, so a tail-recursive loop over a 32,000-element list takes seconds and one past about 32,750 elements exhausts the call stack inside the guard. | Measure the loop by a `Nat` it carries, or use an `Array` with `array_fold`. | [#1883](https://github.com/aallan/vera/issues/1883) |
 | A refuted contract's counterexample can be empty, list a `@Unit` parameter as `@Unit.0 = 0`, or name an internal constant such as `_call_take_14_3`. | The error, its code and its location are right: read the failing expression at the location given. | [#1871](https://github.com/aallan/vera/issues/1871) |
 | `vera check`, `vera verify` and `vera fmt --check` read only the first file named; `vera <command> --help` is read as a file name; a flag a command does not take is ignored. | Pass one file per command.  `vera` with no arguments prints the usage. | [#1872](https://github.com/aallan/vera/issues/1872) |
-| Unary negation of an `@Int` has no overflow obligation and no guard, so `-@Int.0` at `INT_MIN` returns `INT_MIN`, and a contract `vera verify` proves over the negation (a hand-written absolute value's `ensures(@Nat.result >= 0)`) fails at run time at that input. | Write `0 - @Int.0`, or `abs(@Int.0)` for a magnitude.  Each has an `int_overflow` obligation and traps with `Integer overflow` at `INT_MIN`. | [#1875](https://github.com/aallan/vera/issues/1875) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you cannot explain, read its diagnostic. Each trap has a `kind` label naming its cause (`contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown`), a message describing the failure, which names the failing site wherever the check has one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line rather than a bare `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating and allocating tail calls; for the latter, code generation restores the shadow-stack pointer before each `return_call`, so the shadow stack stays bounded across iterations.
 
