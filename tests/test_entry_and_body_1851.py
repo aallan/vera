@@ -572,6 +572,67 @@ def test_repro_the_entry_roots_what_its_check_reads(
     assert ran.value == 2000
 
 
+_HEAP_RESULT = """\
+private data Lst {
+  Nil,
+  Cons(Nat, Lst)
+}
+
+private fn len(@Lst -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Lst.0)
+  effects(pure)
+{
+  match @Lst.0 {
+    Nil -> 0,
+    Cons(@Nat, @Lst) -> 1 + len(@Lst.0)
+  }
+}
+
+private fn build(@String, @Lst, @Nat -> @Lst)
+  requires(true)
+  ensures(string_contains(string_concat(@String.0, "!"), "hello!")
+    && len(Cons(7, @Lst.result)) >= 1
+    && len(@Lst.result) == len(@Lst.0) + @Nat.0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Lst.0
+  } else {
+    build(@String.0, Cons(@Nat.0, @Lst.0), @Nat.0 - 1)
+  }
+}
+
+public fn go(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  len(build(string_concat("hel", "lo"), Nil, @Nat.0))
+}
+"""
+
+
+@pytest.mark.parametrize("eager", [False, True], ids=["lazy", "eager"])
+def test_repro_the_entry_roots_the_heap_result_its_check_reads(
+    eager: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A split `build` that returns a list, under a postcondition that
+    allocates (a `String`, a `Cons`) before it reads the result: the
+    result the body returns survives a collection at every allocation."""
+    if eager:
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+    else:
+        monkeypatch.delenv("VERA_EAGER_GC", raising=False)
+    compiled = pipeline.compile(_HEAP_RESULT, file=FILE)
+    assert "return_call $:build@body" in compiled.wat
+    ran = pipeline.run(compiled, "go", [50])
+    assert ran.trap is None, str(ran.trap)
+    assert ran.value == 50
+
+
 _NAMED = """\
 public fn walk(@Nat, @Nat -> @Nat)
   requires(@Nat.1 < 100)
@@ -1120,6 +1181,64 @@ def test_repro_the_entry_takes_the_old_state_its_check_reads() -> None:
     ran = pipeline.run(compiled, "go", [3])
     assert ran.trap is None, str(ran.trap)
     assert ran.value == 0
+
+
+_RECURSING_CALLER = """\
+private data Lst {
+  Nil,
+  Cons(Nat, Lst)
+}
+
+private fn keep(@String, @Lst, @Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.1 + @Nat.0 && string_length(@String.0) == 2)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Nat.1
+  } else {
+    keep(@String.0, Cons(@Nat.0, @Lst.0), @Nat.1 + 1, @Nat.0 - 1)
+  }
+}
+
+public fn deep(@String, @Lst, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    keep(@String.0, @Lst.0, 0, 1) + deep(@String.0, @Lst.0, @Nat.0 - 1)
+  }
+}
+
+public fn go(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  deep("ab", Nil, @Nat.0)
+}
+"""
+
+
+def test_repro_the_entry_leaves_the_shadow_stack_as_it_found_it() -> None:
+    """The entry of `keep`, which allocates, roots its pointer parameters
+    on the collector's shadow stack and gives the slots back when it
+    returns.  `deep` calls it once per level with arguments that root
+    nothing, so no scope around the call restores the stack's top
+    (`WasmContext._scope_shadow_roots`), and then recurses outside tail
+    position (`deep` allocates nothing and roots nothing of its own): an
+    entry that kept its two roots would hold 6,000 at 3,000 levels, past
+    the 4,096 the stack holds, and trap."""
+    compiled = pipeline.compile(_RECURSING_CALLER, file=FILE)
+    assert "return_call $:keep@body" in compiled.wat
+    ran = pipeline.run(compiled, "go", [3000])
+    assert ran.trap is None, str(ran.trap)
+    assert ran.value == 3000
 
 
 def test_repro_a_private_split_function_is_not_exported() -> None:
