@@ -398,6 +398,7 @@ jobs:
     timeout-minutes: 40
     outputs:
       comments: ${{ steps.keep_comments.outputs.artifact-id }}
+      state: ${{ steps.keep_state.outputs.artifact-id }}
     steps:
       # The whole history: a cycle's close comment reads the tree at the
       # head the cycle closed at, which can be older than this run's.
@@ -432,10 +433,13 @@ jobs:
       # charges no loss for it.  A job's own timeout cannot be told from a
       # lost runner; the sweep job's timeout holds the budget, the engine's
       # grace and the legs, so it does not arise.
+      # A state this night creates (there was none) takes the run's id as
+      # its generation, which every close comment's marker carries.
       - name: Fold the night into the state
         env:
           JOBS: ${{ needs.setup.outputs.jobs }}
           SWEEP_RESULT: ${{ needs.sweep.result }}
+          MUTATION_SWEEP_GENERATION: ${{ github.run_id }}
         run: >-
           python scripts/mutate_sweep.py stitch
           --sweep-result "$SWEEP_RESULT"
@@ -483,7 +487,10 @@ jobs:
       # After the render, which writes a cycle's close comment parts into
       # the state; the two steps before it are bounded, so the job is alive
       # to keep the state whatever they did.
+      # Its id, the job's `state` output, tells the results job the state
+      # holding the night's close comment parts was kept.
       - name: Keep the state
+        id: keep_state
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -510,8 +517,10 @@ jobs:
   # rendered, posted as they are.  A night whose stitch rendered none (it
   # failed, or never ran) posts a marked two-line comment linking the run;
   # comments that exist and fail to download fail the job, to be rerun.
-  # Only a run on main posts a cycle's close comment; a dispatched run on
-  # another ref posts its night's comment alone.
+  # Only a run on main posts a cycle's close comment, and only when its
+  # state, which keeps the parts as cut, was uploaded (a later night would
+  # otherwise render them again under the same markers); a dispatched run
+  # on another ref posts its night's comment alone.
   results:
     needs: [setup, stitch]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.post) }}
@@ -533,6 +542,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           DIR: ${{ runner.temp }}/comment
           COMMENTS: ${{ needs.stitch.outputs.comments }}
+          STATE: ${{ needs.stitch.outputs.state }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REF: ${{ github.ref }}
@@ -545,7 +555,9 @@ jobs:
               > "$DIR/1-stopped.md"
           fi
           title="Mutation sweep results (standing)"
-          number=$(gh issue list --state open --label mutation-sweep --limit 100 \
+          # By its exact title among every open issue, whatever its labels,
+          # which it is given at creation alone.
+          number=$(gh issue list --state open --limit 1000 \
             --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -z "$number" ]; then
             gh label create testing --color C2E0C6 --description "Test suite structure and coverage" 2>/dev/null || true
@@ -567,6 +579,10 @@ jobs:
               "$DIR"/2-*)
                 if [ "$REF" != "refs/heads/main" ]; then
                   echo "not posted from $REF: $(basename "$file")"
+                  continue
+                fi
+                if [ -z "$STATE" ]; then
+                  echo "not posted, the state was not kept: $(basename "$file")"
                   continue
                 fi ;;
             esac

@@ -128,12 +128,19 @@ The release-prep PR must:
    issue before it has a row.  At release time they must agree, because
    the file is then the published list.
 6. Write the committed mutation score from the nightly sweep's last closed
-   cycle: download the state of the newest scheduled night
-   (`gh run download <run-id> --name mutation-sweep-state --dir state`),
-   then `python scripts/mutate_sweep.py summary --state state` writes
+   cycle: take the newest scheduled run on `main` whose state artifact
+   holds a closed cycle (a run whose setup failed has no state, and a
+   state's `last_complete` is null until a cycle has closed), download it
+   (`gh run download <run-id> --name mutation-sweep-state --dir state`,
+   checking `last_complete` in `state/sweep-state.json`, and trying the run
+   before it when it is null or the artifact has expired), then
+   `python scripts/mutate_sweep.py summary --state state` writes
    `mutation.json`, which the README badge reads, and `mutation-summary.csv`
    at the repository root; commit both (MUTATION.md § The measure-all
-   baseline, The score and the badge).  Its `mutation-survivors.csv` is gitignored.
+   baseline, The score and the badge).  Its `mutation-survivors.csv` is
+   gitignored.  The summary reads the tree at the cycle's head, which the
+   checkout must hold.  When no such run exists, the committed score stays
+   as it is, and the release notes say it was not updated.
 7. Pass the ordinary protected-branch CI and review process.
 
 The release PR merges by merge commit or squash, the only methods the

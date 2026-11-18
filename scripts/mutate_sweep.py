@@ -97,8 +97,9 @@ Usage:
 Every scheduled night's result goes to one standing issue as a comment
 (``comment``, rendered from the ``night-report.json`` the stitch writes), and
 a closed cycle's survivors go there as a task list (MUTATION.md § The
-cycle's survivors).  A function evaluated at import alone is decided
-``at_import`` by rule (:func:`at_import_units`, #1740).
+cycle's survivors).  Every mutant is run and kept as the engine decides
+it; a survivor of a function evaluated at import alone is reported apart, by
+rule, where a result is reported (:func:`at_import_units`, #1740).
 """
 
 from __future__ import annotations
@@ -259,8 +260,9 @@ LEGS = 9
 #: counted apart and listed, never caught and never survived.
 MEMORY = "memory"
 LOST = "lost"
-#: A mutant of a function evaluated at import alone (#1740): decided by
-#: rule, never run, counted apart (:func:`at_import_units`).
+#: A survivor of a function evaluated at import alone (#1740): a report's
+#: column, never a state's; the engine ran the mutant and recorded it
+#: survived, and the rule reports it apart (:func:`evaluated_at_import`).
 AT_IMPORT = "at_import"
 
 #: The losses that decide a mutant ``lost``.
@@ -317,7 +319,7 @@ STATE_EVENTS = frozenset({"schedule", "workflow_dispatch"})
 
 #: The statuses a state records: every one mutmut prints bar the undecided,
 #: the cap's, the bound's and the loss rule's.
-DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST, AT_IMPORT}
+DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST}
 
 
 class StateError(ValueError):
@@ -411,6 +413,14 @@ def _postponed(tree: ast.Module) -> bool:
                and any(alias.name == "annotations" for alias in node.names) for node in tree.body)
 
 
+def _suspends(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether calling the function runs none of its body: it is ``async``,
+    or its body holds ``yield``, ``yield from`` or ``await`` (one in a
+    nested definition counts too, which errs towards later)."""
+    return isinstance(node, ast.AsyncFunctionDef) or any(
+        isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await)) for stmt in node.body for n in ast.walk(stmt))
+
+
 def _main_guard(node: ast.AST) -> tuple[list[ast.stmt], list[ast.stmt]] | None:
     """For ``if __name__ == "__main__":`` (either operand first, or ``!=``),
     its two branches as (the script's, the import's): the script's runs only
@@ -450,23 +460,34 @@ def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None 
     annotation in a module that does not postpone annotations, the body of
     another such function, or the import branch of a ``__main__`` guard.
     mutmut forks a mutant's worker after the modules are imported, so such
-    a function never runs under its mutant: its mutants are not observable
-    in process, and every one would score as a survivor.
+    a function does not run under its mutant, and its mutants survive.
 
     Any other mention can run later, and makes the function observable: an
     import of its name into another module or a test (a re-export, aliased
     or not, or ``*``), its name as a string (``__all__``, ``getattr``, a
     test's ``monkeypatch``), an attribute of that name anywhere, a name
     stored, passed or returned, a decorator, a call in the body of a
-    method, a nested function or a lambda, in a generator expression past
-    its leftmost iterable, in an annotation under ``from __future__ import
-    annotations``, or in the script branch of a ``__main__`` guard.  A
-    name, import, attribute or string is matched by the bare name, so it
-    makes every function of that name observable.  Where in doubt, a
-    mention is one that runs later: calling a function at import wrongly
-    hides mutants a test could kill, where the converse costs a survivor's
-    line.  A method is never one."""
+    method, a nested function, a lambda, a generator or coroutine function
+    (one that is ``async`` or whose body holds ``yield`` or ``await``, whose
+    call runs none of its body) or a decorated function (whose call runs
+    what its decorator returned), a call of such a function, a call in a
+    generator expression past its leftmost iterable, in an annotation under
+    ``from __future__ import annotations``, in a ``type`` alias's value, or
+    in the script branch of a ``__main__`` guard.  A name, import,
+    attribute or string is matched by the bare name, so it makes every
+    function of that name observable.  A method is never one.
+
+    The rule decides nothing the engine runs: every mutant is planned, run
+    and kept as the engine decides it, and the rule is applied only where a
+    result is reported, to a mutant the engine recorded as survived
+    (:func:`evaluated_at_import`).  So a misreading can at worst move a real
+    survivor from the task list to the at-import line; it can never hide a
+    killed or killable mutant.  Where in doubt, a mention is one that runs
+    later, which keeps the survivor on the task list."""
     defined: dict[tuple[str, str], str] = {}  # (path, name) -> ident
+    # The generator and coroutine functions, whose call runs none of the
+    # body, and the decorated ones, whose call runs what the decorator made.
+    lazy: set[str] = set()
     trees: dict[str, ast.Module] = {}
     for path in sorted(sources):
         try:
@@ -475,7 +496,9 @@ def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None 
             continue
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                defined[(path, node.name)] = f"{path}::{md._key(node.name, None)}"
+                ident = defined[(path, node.name)] = f"{path}::{md._key(node.name, None)}"
+                if _suspends(node) or node.decorator_list:
+                    lazy.add(ident)
     by_name: dict[str, list[str]] = {}
     by_module: dict[str, list[str]] = {}
     for (path, name), ident in defined.items():
@@ -522,7 +545,11 @@ def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None 
             # (a name stored in a table, passed on, returned) can be called
             # later, from anywhere, so it is never one run at import alone.
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in visible:
-                note(visible[node.func.id], context)
+                # A generator or coroutine function's call makes an object
+                # and runs its body as the object is advanced; a decorated
+                # function's runs what its decorator returned: later.
+                callee = visible[node.func.id]
+                note(callee, _LATER if callee in lazy else context)
                 for child in [*node.args, *node.keywords]:
                     walk(child, context)
                 return
@@ -548,9 +575,13 @@ def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None 
                 if node.returns is not None:
                     walk(node.returns, annotated or context)
                 # A top-level function's body runs as that function; any other
-                # (a method, a nested function, which can escape) runs later.
+                # (a method, a nested function, which can escape) runs later,
+                # and so does a generator's or a coroutine's, whose call runs
+                # none of it, and a decorated one's, whose call runs what the
+                # decorator returned.
                 inner = (f"{path}::{md._key(node.name, None)}"
-                         if context == _AT_IMPORT and node in tree.body else _LATER)
+                         if context == _AT_IMPORT and node in tree.body and not _suspends(node)
+                         and not node.decorator_list else _LATER)
                 for stmt in node.body:
                     walk(stmt, inner)
                 return
@@ -569,6 +600,13 @@ def at_import_units(sources: Mapping[str, str], tests: Mapping[str, str] | None 
                 for i, gen in enumerate(node.generators):
                     for part in [gen.target, *([gen.iter] if i else []), *gen.ifs]:
                         walk(part, _LATER)
+                return
+            if isinstance(node, getattr(ast, "TypeAlias", ())):
+                # A ``type`` statement's value (and its parameters' bounds)
+                # is evaluated when something reads it (Python 3.12; 3.11
+                # has no such node).
+                for child in ast.iter_child_nodes(node):
+                    walk(child, _LATER)
                 return
             if isinstance(node, ast.AnnAssign) and annotated is not None:
                 walk(node.annotation, annotated)
@@ -608,51 +646,42 @@ def at_import_at(repo: Path, rev: str, sources: Mapping[str, str]) -> frozenset[
     return at_import_units(sources, vera_sources(repo, rev, "tests"))
 
 
-def release_at_import(state: dict[str, Any], units: Iterable[SweepUnit], idents: frozenset[str]) -> None:
-    """Clear each window the rule alone decided (every mutant ``at_import``)
-    of a unit the rule no longer names (a later commit added a test that
-    calls it), so the cycle plans its mutants, and a slice's results for
-    them, run under the same rule, are kept."""
-    for unit in units:
-        rec = state["units"].get(unit.ident)
-        window = rec["window"] if rec is not None else None
-        if (unit.ident not in idents and window is not None and window["mutants"]
-                and window.get(AT_IMPORT) == window["mutants"]):
-            rec["window"] = None
+def _selected(at_import: Iterable[str]) -> set[tuple[str, str]]:
+    """The rule's units as (module, unit key), the names a survivor carries."""
+    return {(md.module_name(path), key) for path, _, key in (i.partition("::") for i in at_import)}
 
 
-def settle_at_import(state: dict[str, Any], units: Iterable[SweepUnit], idents: frozenset[str],
-                     taken: list[tuple[str, int, str]] | None = None) -> int:
-    """Decide each sampled mutant of a unit evaluated at import
-    (:func:`at_import_units`) as ``at_import``: counted apart, outside the
-    score's total and the survivor list, never planned.  A window decided,
-    whole or in part, before the rule (its mutants scored as survivors) is
-    decided again by it.  A window the rule alone decided, of a unit it no
-    longer names, is cleared first (:func:`release_at_import`).  Returns
-    the mutants newly decided, those no earlier night decided; each goes
-    into ``taken`` as (ident, window number, status)."""
-    release_at_import(state, units, idents)
-    added = 0
-    for unit in units:
-        rec = state["units"].get(unit.ident)
-        if rec is None or rec["lines"] is None or unit.ident not in idents:
-            continue
-        size = sum(window_counts(state, unit)[1])
-        window = rec["window"]
-        if not size or (window is not None and window.get(AT_IMPORT) == window["mutants"]):
-            continue
-        before = ({str(n): True for n in range(1, size + 1)} if window is not None
-                  else (rec.get("partial") or {}).get("decided", {}))
-        for number in range(1, size + 1):
-            if str(number) not in before:
-                added += 1
-                if taken is not None:
-                    taken.append((unit.ident, number, AT_IMPORT))
-        rec["window"] = fold_window({"decided": {str(n): AT_IMPORT for n in range(1, size + 1)},
-                                     "survivors": []}, size)
-        rec["partial"] = None
-        rec.pop("losses", None)
-    return added
+def evaluated_at_import(survivors: Iterable[str], at_import: Iterable[str]) -> list[str]:
+    """The entries of a closed cycle's survivors (``module.key__mutmut_n@line:
+    status``) a report counts and lists as evaluated at import: each the
+    engine recorded ``survived``, of a unit the rule selects
+    (:func:`at_import_units`).  A mutant the engine killed, timed out, found
+    no test for or ended otherwise is reported as the engine decided it,
+    whatever the rule says."""
+    selected = _selected(at_import)
+    found = []
+    for entry in survivors:
+        name, _, status = entry.rpartition(":")
+        if status == "survived" and md.unit_of_mutant(name.partition("@")[0]) in selected:
+            found.append(entry)
+    return found
+
+
+def reported_modules(last: Mapping[str, Any], at_import: Iterable[str]) -> dict[str, dict[str, int]]:
+    """A closed cycle's per-module counts as a report gives them: each of
+    its survivors evaluated at import (:func:`evaluated_at_import`) moved
+    from ``survived`` to ``at_import``, outside the score's total."""
+    paths = {md.module_name(path): path for path in last["modules"]}
+    modules = {path: dict(row) for path, row in last["modules"].items()}
+    for entry in evaluated_at_import(last["survivors"], at_import):
+        module, _ = md.unit_of_mutant(entry.rpartition(":")[0].partition("@")[0])
+        row = modules.get(paths.get(module, ""))
+        if row is not None and row["survived"] > 0:
+            row["survived"] -= 1
+            row[AT_IMPORT] = row.get(AT_IMPORT, 0) + 1
+    return modules
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -660,10 +689,24 @@ def settle_at_import(state: dict[str, Any], units: Iterable[SweepUnit], idents: 
 # ---------------------------------------------------------------------------
 
 
+#: The environment variable the workflow sets to the run's id where the
+#: stitch may create a state: the state's ``generation``, written once.
+GENERATION_ENV = "MUTATION_SWEEP_GENERATION"
+_GENERATION = re.compile(r"[1-9][0-9]{0,19}")
+
+
 def empty_state(today: str) -> dict[str, Any]:
-    """The state before the first night of the first cycle."""
-    return {"schema": SCHEMA, "engine": None, "cycle": 1, "cycle_started": today,
-            "calibration": 1.0, "units": {}, "last_complete": None, "nights": []}
+    """The state before the first night of the first cycle, with its
+    ``generation`` (``GENERATION_ENV``, the creating run's id) when one is
+    given: a reset state starts another, so its close comments' markers
+    never match an earlier state's, even for a cycle of the same number
+    begun on the same day.  A state that predates the field has none."""
+    state: dict[str, Any] = {"schema": SCHEMA, "engine": None, "cycle": 1, "cycle_started": today,
+                             "calibration": 1.0, "units": {}, "last_complete": None, "nights": []}
+    generation = os.environ.get(GENERATION_ENV, "")
+    if _GENERATION.fullmatch(generation):
+        state["generation"] = generation
+    return state
 
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -694,7 +737,7 @@ COLUMNS_2 = ("killed", "survived", "timeout", "no_tests", "other")
 #: The columns a decided window carries only when they count a mutant: a
 #: state with none of them is shaped as the schema 3 states before them,
 #: which an older reader loads; one with them it refuses rather than misread.
-OPTIONAL_COLUMNS = (MEMORY, LOST, AT_IMPORT)
+OPTIONAL_COLUMNS = (MEMORY, LOST)
 #: The statuses a window lists its mutants of, with their records.
 LISTED = frozenset({"survived", "timeout", SLOW, MEMORY, LOST})
 #: The most test files a survivor's record names.
@@ -768,7 +811,7 @@ def check_window(window: Any, what: str) -> None:
            f"{what}'s window columns do not sum to its size")
     _check_survivors(rec["survivors"], size, what)
     _check(len(rec["survivors"]) == rec["survived"] + rec["timeout"] + rec["slow"]
-           + sum(rec[c] for c in optional if c in LISTED),
+           + sum(rec[c] for c in optional),
            f"{what}'s survivors are not its survived, timeout, slow, memory and lost mutants")
 
 
@@ -893,8 +936,8 @@ def _check_module_rows(modules: Any, what: str) -> None:
     for module, row in modules.items():
         _text(module, _PATH, f"module {module!r}")
         columns = set(COLUMNS_2)
-        # The population (#1827), the slow (#1838), and the memory, lost and
-        # at-import mutants, present when the cycle counted one (#1838, #1740).
+        # The population (#1827), the slow (#1838), and the memory and lost
+        # mutants, present when the cycle counted one (#1838).
         for optional in ("mutants", "slow", *OPTIONAL_COLUMNS):
             if isinstance(row, dict) and optional in row:
                 columns.add(optional)
@@ -903,38 +946,88 @@ def _check_module_rows(modules: Any, what: str) -> None:
             _int(n, 0, MAX_MUTANTS * 10_000, f"{module}'s {column}")
 
 
-#: The closed cycles whose close comments the state keeps, newest first; a
-#: comment's most parts; a part's most characters (GitHub's limit on a
-#: comment).  The kept text is at most 3 x 10 x 65,536 characters, about
-#: 2 MB; cycle 2's comment, the first, was two parts and 82 KB.
+#: The closed cycles the state keeps, newest first, each its record and,
+#: once rendered, its close comment's parts; a comment's most parts; a
+#: part's most characters (GitHub's limit on a comment); a closed cycle's
+#: most listed mutants, and the most characters of one.  The kept text is
+#: at most 3 records of 10,000 listed mutants of 300 characters (9 MB)
+#: and 3 x 10 x 65,536 characters of parts (2 MB); cycle 2, the first
+#: cycle closed, is a 43 KB record of 338 listed mutants and two parts of
+#: 82 KB.
 KEPT_CYCLES = 3
 MAX_PARTS = 10
 PART_MAX = 65_536
+MAX_LISTED = 10_000
+LISTED_MAX = 300
 
 
-def check_parts(parts: Any, cycle: Any, started: Any) -> None:
+def check_parts(parts: Any, cycle: Any, started: Any, generation: str | None = None) -> None:
     """A closed cycle's comment parts: one to ``MAX_PARTS`` texts, each at
     most ``PART_MAX`` characters, part ``k`` opening with its marker's line."""
     _check(isinstance(parts, list) and 1 <= len(parts) <= MAX_PARTS, "the close comment's parts")
     for k, part in enumerate(parts, 1):
         _check(isinstance(part, str) and len(part) <= PART_MAX
-               and part.startswith(cycle_mark(int(cycle), str(started), k) + "\n"),
+               and part.startswith(cycle_mark(int(cycle), str(started), k, generation) + "\n"),
                f"the close comment's part {k}")
 
 
-def check_comments(comments: Any) -> None:
-    """The state's kept close comments: at most ``KEPT_CYCLES`` closed
-    cycles, newest first, each its number, the date of its first night
-    (``from``) and its parts (:func:`check_parts`)."""
-    _check(isinstance(comments, list) and len(comments) <= KEPT_CYCLES, "the kept close comments")
-    cycles = []
+def check_closed(last: Any, what: str) -> Mapping[str, Any]:
+    """A closed cycle's record (``last_complete``, or a kept cycle's)."""
+    last_keys = {"cycle", "started", "finished", "head", "engine", "modules", "survivors"}
+    # The sample's size entered the record with the sample (#1827); a
+    # cycle closed before carries none of the three.
+    sample_keys = {"sampled", "population", "fraction"} & (set(last) if isinstance(last, dict) else set())
+    # The cycle before it entered the record with the results loop.
+    if isinstance(last, dict) and "previous" in last:
+        sample_keys.add("previous")
+    rec = _keys(last, last_keys | sample_keys, what)
+    if "previous" in rec:
+        prev = _keys(rec["previous"], {"cycle", "modules"}, f"the cycle before {what}")
+        _int(prev["cycle"], 1, 10**6, f"the cycle before {what}")
+        _check_module_rows(prev["modules"], f"the cycle before {what}")
+    _int(rec["cycle"], 1, 10**6, f"{what}'s number")
+    if "sampled" in rec:
+        _int(rec["sampled"], 0, MAX_MUTANTS * 10_000, f"{what}'s sample")
+    if "population" in rec:
+        _int(rec["population"], 0, MAX_MUTANTS * 10_000, f"{what}'s population")
+    if "fraction" in rec:
+        _check(type(rec["fraction"]) in (int, float) and 0 < rec["fraction"] <= 1,
+               f"{what}'s fraction is not a share from 0 to 1")
+    _text(rec["started"], _DATE, f"{what}'s start")
+    _text(rec["finished"], _DATE, f"{what}'s end")
+    _text(rec["head"], _HEX40, f"{what}'s head")
+    _text(rec["engine"], _VERSION, f"{what}'s engine")
+    _check_module_rows(rec["modules"], what)
+    _check(isinstance(rec["survivors"], list) and len(rec["survivors"]) <= MAX_LISTED,
+           f"{what}'s survivors are not a list of at most {MAX_LISTED:,}")
+    for entry in rec["survivors"]:
+        _check(isinstance(entry, str) and len(entry) <= LISTED_MAX, f"{what}'s survivor {entry!r}")
+        _text(entry, _SURVIVOR, f"survivor {entry!r}")
+    return rec
+
+
+def check_comments(comments: Any, generation: str | None = None) -> None:
+    """The state's kept closed cycles: at most ``KEPT_CYCLES``, newest
+    first, each its number, the date of its first night (``from``), its
+    record (:func:`check_closed`), whose number and first night they are,
+    and, once rendered, its close comment's parts (:func:`check_parts`)."""
+    _check(isinstance(comments, list) and len(comments) <= KEPT_CYCLES, "the kept closed cycles")
+    pairs = []
     for entry in comments:
-        rec = _keys(entry, {"cycle", "from", "parts"}, "a kept close comment")
-        cycles.append(_int(rec["cycle"], 1, 10**6, "a kept close comment's cycle"))
-        _text(rec["from"], _DATE, "a kept close comment's first night")
-        check_parts(rec["parts"], rec["cycle"], rec["from"])
-    _check(cycles == sorted(cycles, reverse=True) and len(set(cycles)) == len(cycles),
-           "the kept close comments are not newest first")
+        keys = {"cycle", "from", "record"} | ({"parts"} if isinstance(entry, dict) and "parts" in entry else set())
+        rec = _keys(entry, keys, "a kept closed cycle")
+        _int(rec["cycle"], 1, 10**6, "a kept closed cycle's number")
+        _text(rec["from"], _DATE, "a kept closed cycle's first night")
+        pairs.append((rec["cycle"], rec["from"]))
+        record = check_closed(rec["record"], f"kept cycle {rec['cycle']}")
+        _check(record["cycle"] == rec["cycle"] and record["started"] == rec["from"],
+               f"kept cycle {rec['cycle']}'s record is another cycle's")
+        if "parts" in rec:
+            check_parts(rec["parts"], rec["cycle"], rec["from"], generation)
+    # One sequence, newest first: each pair before the one ahead of it in
+    # its number and no later in its first night (keep_closed).
+    _check(all(a[0] > b[0] and a[1] >= b[1] for a, b in zip(pairs, pairs[1:])),
+           "the kept closed cycles are not one sequence, newest first")
 
 
 def check_state(data: Any) -> dict[str, Any]:
@@ -943,8 +1036,10 @@ def check_state(data: Any) -> dict[str, Any]:
     keys = {"schema", "engine", "cycle", "cycle_started", "calibration", "units", "last_complete", "nights"}
     if isinstance(data, dict) and "converted_from" in data:
         keys.add("converted_from")  # an older state read (convert_state); the stitch notes it
+    if isinstance(data, dict) and "generation" in data:
+        keys.add("generation")  # the creating run's id, since the results loop (empty_state)
     if isinstance(data, dict) and "comments" in data:
-        keys.add("comments")  # the close comments' parts, kept since the results loop
+        keys.add("comments")  # the closed cycles kept since the results loop, with their comments' parts
     state = _keys(data, keys, "the state")
     _check(state["schema"] == SCHEMA and type(state["schema"]) is int, f"not a schema {SCHEMA} state")
     if "converted_from" in state:
@@ -963,36 +1058,11 @@ def check_state(data: Any) -> dict[str, Any]:
         check_unit(ident, record, int(state["cycle"]))
     last = state["last_complete"]
     if last is not None:
-        last_keys = {"cycle", "started", "finished", "head", "engine", "modules", "survivors"}
-        # The sample's size entered the record with the sample (#1827); a
-        # cycle closed before carries none of the three.
-        sample_keys = {"sampled", "population", "fraction"} & (set(last) if isinstance(last, dict) else set())
-        # The cycle before it entered the record with the results loop.
-        if isinstance(last, dict) and "previous" in last:
-            sample_keys.add("previous")
-        rec = _keys(last, last_keys | sample_keys, "the last closed cycle")
-        if "previous" in rec:
-            prev = _keys(rec["previous"], {"cycle", "modules"}, "the cycle before the last closed one")
-            _int(prev["cycle"], 1, 10**6, "the cycle before the last closed one")
-            _check_module_rows(prev["modules"], "the cycle before the last closed one")
-        _int(rec["cycle"], 1, 10**6, "the last closed cycle's number")
-        if "sampled" in rec:
-            _int(rec["sampled"], 0, MAX_MUTANTS * 10_000, "the last closed cycle's sample")
-        if "population" in rec:
-            _int(rec["population"], 0, MAX_MUTANTS * 10_000, "the last closed cycle's population")
-        if "fraction" in rec:
-            _check(type(rec["fraction"]) in (int, float) and 0 < rec["fraction"] <= 1,
-                   "the last closed cycle's fraction is not a share from 0 to 1")
-        _text(rec["started"], _DATE, "the last closed cycle's start")
-        _text(rec["finished"], _DATE, "the last closed cycle's end")
-        _text(rec["head"], _HEX40, "the last closed cycle's head")
-        _text(rec["engine"], _VERSION, "the last closed cycle's engine")
-        _check_module_rows(rec["modules"], "the last closed cycle")
-        _check(isinstance(rec["survivors"], list), "the last closed cycle's survivors")
-        for entry in rec["survivors"]:
-            _text(entry, _SURVIVOR, f"survivor {entry!r}")
+        check_closed(last, "the last closed cycle")
+    if "generation" in state:
+        _text(state["generation"], _GENERATION, "the state's generation")
     if "comments" in state:
-        check_comments(state["comments"])
+        check_comments(state["comments"], state.get("generation"))
     _check(isinstance(state["nights"], list) and len(state["nights"]) <= KEPT_NIGHTS, "the nights")
     for night in state["nights"]:
         _check_night(night)
@@ -2117,9 +2187,6 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     state = reconcile(load_state(state_path, today), units, version)
     counts = engine_counts(engine, env, sources, uncounted(state, units))
     apply_counts(state, counts)
-    # A function evaluated at import alone is decided by rule, as the stitch
-    # decides it, and never planned (#1740).
-    settle_at_import(state, units, at_import_at(repo, head, sources))
     bins = plan(state, units, jobs=args.of, budget_s=args.budget)
     picks = bins[args.slice]
     record: dict[str, Any] = {
@@ -2556,7 +2623,7 @@ def _column(status: str) -> str:
     """Where a decided mutant counts in the committed summary."""
     if status in ("killed", "caught by type check"):
         return "killed"
-    if status in ("timeout", "survived", SLOW, MEMORY, LOST, AT_IMPORT):
+    if status in ("timeout", "survived", SLOW, MEMORY, LOST):
         return status
     if status == "no tests":
         return "no_tests"
@@ -2586,16 +2653,39 @@ def complete(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> bool:
     return all(sampled_undecided(state, u) == 0 for u in units)
 
 
+def keep_closed(state: dict[str, Any], record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Keep a closed cycle's record (``last_complete``'s shape: its counts
+    by module, each listed mutant's module, unit, number, line and engine
+    status, the engine's version) first in the state's ``comments``, the
+    last ``KEPT_CYCLES`` closed cycles newest first, unless it is kept
+    already; its close comment's parts join it when they are rendered
+    (:func:`cmd_comment`).  A kept cycle is named by the pair of its number
+    and its first night (:func:`_is_kept`); one that is not before the
+    record in both is an earlier sequence's and is dropped.  The kept list,
+    as the state now holds it."""
+    kept = list(state.get("comments") or [])
+    if not any(_is_kept(c, record) for c in kept):
+        # A kept cycle is one of this record's sequence only if it came
+        # before it in both its number and its first night; any other (a
+        # state reset counts from 1 again) is an earlier sequence's, and goes.
+        older = [c for c in kept if c["cycle"] < record["cycle"] and c["from"] <= record["started"]]
+        kept = [{"cycle": int(record["cycle"]), "from": str(record["started"]), "record": dict(record)},
+                *older][:KEPT_CYCLES]
+    state["comments"] = kept
+    return kept
+
+
 def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
                 today: str) -> bool:
     """Close the cycle when it is complete: its per-module totals, its
     survivors (``module.key__mutmut_n@line:status``, ``n`` the number mutmut
     gives the mutant over the whole unit, the line the file's at ``head``)
-    and its sample's size become ``last_complete``, and the next cycle
+    and its sample's size become ``last_complete``, which is kept first in
+    the state's ``comments`` too (:func:`keep_closed`), and the next cycle
     starts with every window undecided."""
     if not complete(state, units):
         return False
-    survivors = []
+    survivors = []  # every listed mutant: survived, timeout, slow, memory, lost
     for u in units:
         for entry in (state["units"][u.ident]["window"] or {}).get("survivors", []):
             survivors.append(f"{u.module}.{u.key}__mutmut_{entry['n']}@{u.start + entry['line'] - 1}:"
@@ -2612,6 +2702,9 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
         # The cycle before, per module, for the close's comparison; its own
         # ``previous`` is not carried, so the record holds two cycles at most.
         state["last_complete"]["previous"] = {"cycle": earlier["cycle"], "modules": earlier["modules"]}
+    # The closed cycle's inventory, kept until its close comment is rendered,
+    # however many cycles close before that (KEPT_CYCLES).
+    keep_closed(state, state["last_complete"])
     state["cycle"] += 1
     state["cycle_started"] = today
     for rec in state["units"].values():
@@ -2758,9 +2851,12 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     :func:`apply_losses`).  On a run that was ``cancelled`` no
     slice's end is a loss: its legs' decisions are kept and nothing more.
 
-    The units of ``at_import`` are decided by rule (:func:`settle_at_import`).
     With ``report``, the night's report is filled in (:func:`night_report`):
-    what the state took tonight, for the standing issue's comment."""
+    what the state took tonight, for the standing issue's comment, where a
+    survivor of a unit of ``at_import`` (the rule's, :func:`at_import_units`)
+    counts as evaluated at import.  The rule decides nothing in the state.
+    A cycle the night closes is kept in the state's ``comments`` too
+    (:func:`close_cycle`)."""
     problems: list[str] = []
     taken: list[tuple[str, int, str]] = []
     valid: list[Mapping[str, Any]] = []
@@ -2837,10 +2933,6 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     for record in [*valid, *taken_legs]:
         merge_counts(state, record, problems)
     by_ident = {u.ident: u for u in units}
-    # A window the rule let go (a test now calls its function) reopens
-    # before the verdicts merge: the slice ran its mutants under the same
-    # rule, and tonight's results are kept.  The rule settles after.
-    release_at_import(state, units, at_import)
     added = 0
     lost_plans: dict[str, str] = {}
     before = (state_in.get("nights") or [{}])[-1].get("lost_plans", {})
@@ -2877,7 +2969,6 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
             # mutant by mutant, and the rest is planned again.
             notes.append(f"slice {record['slice']}: stopped by the budget with {decided_count(record)} "
                          f"mutant(s) decided; the rest of its bin waits for the next night")
-    added += settle_at_import(state, units, at_import, taken)
     if (added == 0 and (any(r.get("planned") for r in valid) or lost) and not complete(state, units)
             and empty_night(state_in.get("nights", []))):
         # One night that decides nothing is weather (a bin of slow
@@ -2889,7 +2980,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         problems.append("the night planned nothing while the cycle is open")
     calibrate(state, [*valid, *taken_legs], {u.ident: u for u in units})
     if report is not None:
-        report.update(night_report(state, units, taken))  # before the close resets the windows
+        report.update(night_report(state, units, taken, at_import))  # before the close resets the windows
     # Only validated records merge, so a lost or failed slice cannot close
     # a cycle wrongly: the cycle closes when its sample is decided.
     closed = close_cycle(state, units, head=head, today=today)
@@ -2913,17 +3004,23 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
 
 
 def night_report(state: Mapping[str, Any], units: Sequence[SweepUnit],
-                 taken: Sequence[tuple[str, int, str]]) -> dict[str, Any]:
+                 taken: Sequence[tuple[str, int, str]],
+                 at_import: frozenset[str] = frozenset()) -> dict[str, Any]:
     """What the state took tonight, read before a close resets the windows:
     each decided mutant's column counted, the new survivors (path, unit key,
     the file's line, the number mutmut gives the mutant over the whole unit),
-    and the cycle's progress after the night."""
+    and the cycle's progress after the night.  A survivor of a unit of
+    ``at_import`` counts as evaluated at import (``at_import``) and is no
+    new survivor; every other mutant counts as the engine decided it."""
     by_ident = {u.ident: u for u in units}
     columns: Counter[str] = Counter()
     survivors = []
     for ident, number, status in taken:
-        columns[_column(status)] += 1
         unit = by_ident.get(ident)
+        if status == "survived" and ident in at_import:
+            columns[AT_IMPORT] += 1
+            continue
+        columns[_column(status)] += 1
         if status != "survived" or unit is None:
             continue
         lines, counts, before = window_counts(state, unit)
@@ -2960,19 +3057,23 @@ def wilson(caught: int, total: int) -> tuple[float, float]:
     return (round(max(0.0, centre - half) * 100, 1), round(min(1.0, centre + half) * 100, 1))
 
 
-def write_summary(state: Mapping[str, Any], directory: Path) -> float:
+def write_summary(state: Mapping[str, Any], directory: Path,
+                  at_import: frozenset[str] = frozenset()) -> float:
     """``mutation-summary.csv``, ``mutation.json`` and ``mutation-survivors.csv``
     from the last closed cycle, the score with its 95% interval.  A module's
     total is its sampled mutants an in-process test reaches with a known
     outcome (killed, survived, timeout): its ``no tests`` mutants are not
     observable in process, and its ``segfault`` and ``suspicious`` ones have
     no outcome to score; ``mutants`` is the module's population, which the
-    sample's ``total`` is drawn from."""
+    sample's ``total`` is drawn from.  A survivor of a unit of ``at_import``
+    (the rule's at the cycle's head) is evaluated at import: outside the
+    total, and listed with the status ``at_import``
+    (:func:`evaluated_at_import`)."""
     last = state.get("last_complete")
     if not last:
         raise StateError("no cycle has closed yet, so there is no summary to write")
     rows = []
-    for module, row in last["modules"].items():
+    for module, row in reported_modules(last, at_import).items():
         total = row["killed"] + row["survived"] + row["timeout"]
         if total:
             low, high = wilson(row["killed"] + row["timeout"], total)
@@ -2997,8 +3098,10 @@ def write_summary(state: Mapping[str, Any], directory: Path) -> float:
         "schemaVersion": 1, "label": "mutation", "message": f"{score}% ±{round((high - low) / 2, 1)}",
         "color": _badge_color(score)}) + "\n", encoding="utf-8")
     inventory_lines = ["module,mutant,status"]
+    apart = set(evaluated_at_import(last["survivors"], at_import))
     for entry in last["survivors"]:
         name, _, status = entry.rpartition(":")
+        status = AT_IMPORT if entry in apart else status
         name, at, line = name.partition("@")
         module, key = md.unit_of_mutant(name)
         inventory_lines.append(f"{module},{key}__mutmut_{md._mutant_number(name)}{'@L' + line if at else ''},{status}")
@@ -3170,11 +3273,13 @@ def night_mark(run_id: int) -> str:
     return f"<!-- mutation-sweep-night run={run_id} -->"
 
 
-def cycle_mark(cycle: int, started: str, part: int) -> str:
+def cycle_mark(cycle: int, started: str, part: int, generation: str | None = None) -> str:
     """The first line of each part of a cycle's close comment: the cycle's
-    number and the date of its first night, so a state reset that counts
+    number, the date of its first night and the state's generation (where
+    the state has one, :func:`empty_state`), so a state reset that counts
     from 1 again cannot take an older cycle's comment for its own."""
-    return f"<!-- mutation-sweep-cycle cycle={cycle} from={started} part={part} -->"
+    gen = f" gen={generation}" if generation else ""
+    return f"<!-- mutation-sweep-cycle cycle={cycle} from={started}{gen} part={part} -->"
 
 
 #: The branch whose runs post a cycle's close comment (MUTATION.md § The
@@ -3189,7 +3294,7 @@ def _count(n: int, noun: str) -> str:
 
 
 def _label(column: str) -> str:
-    return column.replace("_", " ")
+    return "evaluated at import" if column == AT_IMPORT else column.replace("_", " ")
 
 
 def _code(text: str, width: int = 100) -> str:
@@ -3231,7 +3336,9 @@ def render_night_comment(report: Mapping[str, Any], *, run_id: int, repo: str,
     sampled, left = int(report["sampled"]), int(report["undecided"])
     if night["closed"]:
         out.append(f"Cycle {report['cycle']} closed tonight (from {report['cycle_started']}): its "
-                   "score and survivors are in the next comment.")
+                   + ("score and survivors are in the next comment." if ref == POSTING_REF else
+                      "score and survivors are in this run's `mutation-sweep-comment` artifact, not posted "
+                      f"from {_code(ref.removeprefix('refs/heads/'))}."))
     elif sampled:
         out.append(f"Cycle {report['cycle']} (from {report['cycle_started']}): {sampled - left:,} of "
                    f"{sampled:,} sampled mutants decided ({100 * (sampled - left) / sampled:.0f}%), "
@@ -3283,19 +3390,23 @@ def _survivor_rows(last: Mapping[str, Any], units: Sequence[SweepUnit],
 def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
                          units: Sequence[SweepUnit] = (), at_import: frozenset[str] = frozenset(),
                          mutations: Mapping[tuple[str, str, int], tuple[str, str]] | None = None,
-                         lines: Mapping[tuple[str, int], str] | None = None) -> list[str]:
+                         lines: Mapping[tuple[str, int], str] | None = None,
+                         earlier: Mapping[str, Any] | None = None, generation: str | None = None) -> list[str]:
     """A closed cycle's comment on the standing issue, in parts of at most
     ``COMMENT_LIMIT`` characters: the score by module beside the cycle
     before's, the survivors as a task list grouped by module, each line its
     file and line and the mutation (``mutations``: the code mutmut changes
     and what to; where it is not at hand, the line's text from ``lines``),
-    and the rule a survivor ends by.  A survivor of a unit evaluated at
-    import (``at_import``, by ident) is no task: it is named apart, and a
-    cycle closed before the rule still counts it in its score."""
+    and the rule a survivor ends by.  A survivor of a unit the rule selects
+    (``at_import``, by ident, the rule's at the cycle's head) is evaluated
+    at import: no task, named apart, and outside the score's total, as it
+    is in the cycle before's when that cycle's record is at hand
+    (``earlier``).  Every other mutant is reported as the engine decided it."""
     cycle = int(last["cycle"])
     started = str(last["started"])
+    modules = reported_modules(last, at_import)
     rows = []
-    for module, row in last["modules"].items():
+    for module, row in modules.items():
         total = row["killed"] + row["survived"] + row["timeout"]
         if total:
             low, high = wilson(row["killed"] + row["timeout"], total)
@@ -3306,7 +3417,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     caught = sum(r[2] for r in rows)
     low, high = wilson(caught, total)
     columns = Counter[str]()
-    for row in last["modules"].values():
+    for row in modules.values():
         columns.update({c: int(row.get(c, 0)) for c in ("slow", "no_tests", MEMORY, LOST, AT_IMPORT)})
     apart = ", ".join(f"{columns[c]} {_label(c)}" for c in ("slow", MEMORY, LOST, AT_IMPORT, "no_tests")
                       if columns[c])
@@ -3314,7 +3425,9 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     before: dict[str, float] = {}
     if previous:
         p_total = p_caught = 0
-        for module, row in previous["modules"].items():
+        p_modules = (reported_modules(earlier, at_import)
+                     if earlier is not None and earlier["cycle"] == previous["cycle"] else previous["modules"])
+        for module, row in p_modules.items():
             t = row["killed"] + row["survived"] + row["timeout"]
             if t:
                 before[module] = _pct(row["killed"] + row["timeout"], t)
@@ -3325,7 +3438,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     else:
         change = "No earlier cycle has closed, so there is no change to compare."
     run = f"https://github.com/{repo}/actions/runs/{run_id}"
-    head = [cycle_mark(cycle, started, 1),
+    head = [cycle_mark(cycle, started, 1, generation),
             f"## Cycle {cycle} closed: {_pct(caught, total)}% caught (95% interval {low} to {high})", "",
             f"{last['started']} to {last['finished']}, at `{str(last['head'])[:12]}`, mutmut {last['engine']}: "
             + (f"{last['sampled']:,} mutants sampled ({float(last['fraction']):.0%} by line of "
@@ -3350,11 +3463,11 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     tasks: dict[str, list[str]] = {}
     slow_items: list[str] = []
     unobservable: list[str] = []
+    selected = _selected(at_import)
     for path, key, n, line, status in sorted(_survivor_rows(last, units)):
         name = _function(key)
-        if f"{path}::{key}" in at_import:
-            if status == "survived":
-                unobservable.append(f"`{path}:{line}` `{name}` mutant {n}")
+        if status == "survived" and (md.module_name(path), key) in selected:
+            unobservable.append(f"`{path}:{line}` `{name}` mutant {n}")
             continue
         if status == "slow":
             slow_items.append(f"`{path}:{line}` `{name}` mutant {n}")
@@ -3372,7 +3485,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     size = len(parts[0][0])
 
     def opener(k: int) -> str:
-        return f"{cycle_mark(cycle, started, k)}\n## Cycle {cycle}'s survivors, continued (part {k})\n"
+        return f"{cycle_mark(cycle, started, k, generation)}\n## Cycle {cycle}'s survivors, continued (part {k})\n"
 
     def add(piece: str) -> None:
         nonlocal size
@@ -3414,17 +3527,15 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
             f"<details><summary><code>{path}</code>: {count} survivor{'s' if count != 1 else ''}"
             f"{', continued' if continued else ''}</summary>", "", *items, "", "</details>", ""])
 
-    def listing(lead: str, after: str = "") -> Callable[[Sequence[str], bool], str]:
+    def listing(lead: str) -> Callable[[Sequence[str], bool], str]:
         return lambda items, continued: (f"{lead}{', continued' if continued else ''}: " + "; ".join(items)
-                                         + "." + after + "\n")
+                                         + ".\n")
 
     for path in sorted(tasks, key=lambda p: (-len(tasks[p]), p)):
         pack(block(path), tasks[path], 1)
     if unobservable:
         pack(listing(f"Evaluated at import, not observable in process ([the rule](https://github.com/{repo}/blob/"
-                     f"main/{AT_IMPORT_RULE})), so no task",
-                     " This cycle closed before the rule and counts them as survivors in its score."
-                     if not columns[AT_IMPORT] else ""), unobservable, 2)
+                     f"main/{AT_IMPORT_RULE})), so no task"), unobservable, 2)
     if slow_items:
         pack(listing("Slow, ended at the cap (counted apart; that its tests take so long is itself a finding)"),
              slow_items, 2)
@@ -3755,36 +3866,48 @@ def cmd_stitch(args: argparse.Namespace) -> int:
     sources = vera_sources(repo, head)
     units = inventory(sources)
     taken: dict[str, Any] = {}
+    at_import = at_import_at(repo, head, sources)
     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
                           units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled",
-                          at_import=at_import_at(repo, head, sources), report=taken)
+                          at_import=at_import, report=taken)
     out = Path(args.out)
     save_state(state, out)
     (out / REPORT_FILE).write_text(json.dumps(taken, indent=1) + "\n", encoding="utf-8")
     if night["closed"]:
-        write_summary(state, out)
+        write_summary(state, out, at_import)
     report = render_night(state, night, units)
     print(report)
     _write(args.summary, report)
     return 2 if night["problems"] else 0
 
 
+#: The most seconds the engine's calls take in one ``comment`` (its version
+#: and its ``show-mutations``, for every cycle rendered): the workflow's
+#: render step stops at 600 s (``timeout-minutes: 10``), and the 300 s left
+#: read the trees, render the parts and write them and the state.  A call
+#: past it, or one that times out, leaves each task its line's text.
+SHOW_BUDGET_S = 300
+
+
 def mutation_texts(engine: Sequence[str], sources: Mapping[str, str],
-                   wanted: Iterable[tuple[str, str, int]]) -> dict[tuple[str, str, int], tuple[int, str, str]]:
+                   wanted: Iterable[tuple[str, str, int]], timeout_s: float = SHOW_BUDGET_S,
+                   ) -> dict[tuple[str, str, int], tuple[int, str, str]]:
     """Each wanted mutant's line, its code and what mutmut changes it to,
     from the engine's ``show`` command (mutmut's own visitor over the file
-    at the cycle's head); empty when the engine cannot show them."""
+    at the cycle's head), waiting at most ``timeout_s``; empty when the
+    engine cannot show them."""
     request: dict[str, dict[str, list[int]]] = {}
     for path, key, n in wanted:
         if path in sources:
             request.setdefault(path, {}).setdefault(key, []).append(n)
     if not request:
         return {}
-    result = md._engine_call(engine, [md.SHOW_ARG], cwd=None, env=md._git_env(), timeout_s=COUNT_TIMEOUT_S,
+    result = md._engine_call(engine, [md.SHOW_ARG], cwd=None, env=md._git_env(), timeout_s=timeout_s,
                              stdin=json.dumps({"sources": {p: sources[p] for p in request}, "mutants": request}))
     if result is None or result.returncode != 0:
         print("warning: the engine did not show the mutations; each task names its line's text instead"
-              + (f": {result.stderr.strip()[-300:]}" if result is not None else ""), file=sys.stderr)
+              + (f": {result.stderr.strip()[-300:]}" if result is not None else " (it ran out of time)"),
+              file=sys.stderr)
         return {}
     try:
         shown = json.loads(result.stdout)
@@ -3796,15 +3919,70 @@ def mutation_texts(engine: Sequence[str], sources: Mapping[str, str],
         return {}
 
 
+def cycle_mutations(engine: Sequence[str], record: Mapping[str, Any], sources: Mapping[str, str],
+                    rows: Sequence[tuple[str, str, int, int, str]], deadline: float,
+                    ) -> dict[tuple[str, str, int], tuple[str, str]]:
+    """The mutation each survived row of a closed cycle shows (the code and
+    what mutmut changes it to), by (path, unit key, number): only from an
+    installed engine of the version that ran the cycle (``record``'s
+    ``engine``), since another version can number a line's mutants
+    otherwise, and only for a mutation the engine places on the row's own
+    line.  Empty, so each task names its line's text, when the version
+    differs or ``deadline`` (``time.monotonic``) has passed."""
+    wanted = [(p, k, n) for p, k, n, _, status in rows if status == "survived" and p in sources]
+    if not wanted:
+        return {}
+    left = deadline - time.monotonic()
+    result = md._engine_call(engine, ["--version"], cwd=None, env=md._git_env(), timeout_s=left) if left > 0 else None
+    match = re.search(r"(\d+\.\d+[\w.]*)", result.stdout) if result is not None else None
+    installed = match.group(1) if match else None
+    if installed != record["engine"]:
+        print(f"warning: cycle {record['cycle']} ran mutmut {record['engine']} and the engine at hand is "
+              f"{installed or 'unknown'}; each task names its line's text instead", file=sys.stderr)
+        return {}
+    shown = mutation_texts(engine, sources, wanted, timeout_s=max(1.0, deadline - time.monotonic()))
+    rows_by = {(p, k, n): line for p, k, n, line, _ in rows}
+    return {name: shown[name][1:] for name in wanted if name in shown and shown[name][0] == rows_by[name]}
+
+
+def render_kept(entry: Mapping[str, Any], kept: Sequence[Mapping[str, Any]], *, run_id: int, repo: str,
+                repo_dir: Path, mutations: bool, deadline: float, generation: str | None = None) -> list[str]:
+    """A kept closed cycle's comment parts, rendered from its record (the
+    inventory the close kept) and the tree at the cycle's head: the rule
+    there (:func:`at_import_at`), the mutations through the engine when
+    ``mutations`` (:func:`cycle_mutations`), the lines' text, and the
+    cycle before's record when it is kept too."""
+    record = entry["record"]
+    head = str(record["head"])
+    try:
+        sources = vera_sources(repo_dir, head)
+        at_import = at_import_at(repo_dir, head, sources)
+    except md.LaneError as exc:
+        print(f"warning: cycle {record['cycle']}'s head is not in this checkout ({exc}); its tasks name no code",
+              file=sys.stderr)
+        sources, at_import = {}, frozenset()
+    units = inventory(sources) if sources else []
+    rows = _survivor_rows(record, units)
+    shown = cycle_mutations(md._default_engine(), record, sources, rows, deadline) if mutations else {}
+    lines = {(p, line): sources[p].splitlines()[line - 1]
+             for p, _, _, line, _ in rows if p in sources and 0 < line <= len(sources[p].splitlines())}
+    previous = record.get("previous")
+    earlier = next((c["record"] for c in kept if previous and c["cycle"] == previous["cycle"]), None)
+    return render_cycle_comment(record, run_id=run_id, repo=repo, units=units, at_import=at_import,
+                                mutations=shown, lines=lines, earlier=earlier, generation=generation)
+
+
 def cmd_comment(args: argparse.Namespace) -> int:
     """The standing issue's comments for this run, as files in ``--out``:
     ``1-night.md`` from the stitch's report, ``2-cycle-<nnnnn>-<kk>.md`` for
-    the close comments, and ``issue-body.md``.  The last closed cycle's
-    comment is rendered once, when the state keeps none for it, and kept in
-    the state's ``comments`` with those of the two cycles before
-    (``KEPT_CYCLES``); a night that closed a cycle writes its parts, and
-    ``--backfill`` writes every kept cycle's.  Each comment's first line is
-    its marker, so the workflow posts each once."""
+    the close comments, and ``issue-body.md``.  A closed cycle's record is
+    kept in the state's ``comments`` from its close (:func:`keep_closed`;
+    here too for one closed before the records were kept), with those of
+    the two cycles before (``KEPT_CYCLES``), and each kept cycle without
+    parts is rendered from its record, once, and its parts kept beside it;
+    a night that closed a cycle writes its parts, and ``--backfill`` writes
+    every kept cycle's.  Each comment's first line is its marker, so the
+    workflow posts each once."""
     state_dir = Path(args.state)
     out = Path(args.out)
     if not (state_dir / STATE_FILE).exists():
@@ -3822,45 +4000,32 @@ def cmd_comment(args: argparse.Namespace) -> int:
     (out / "issue-body.md").write_text(render_issue_body(), encoding="utf-8")
     last = state.get("last_complete")
     closed = bool(report and report.get("night", {}).get("closed"))
-    kept = list(state.get("comments") or [])
-    if last and (closed or args.backfill) and not any(_is_kept(c, last) for c in kept):
-        try:
-            sources = vera_sources(Path(args.repo_dir), str(last["head"]))
-        except md.LaneError as exc:
-            print(f"warning: the cycle's head is not in this checkout ({exc}); its tasks name no code",
-                  file=sys.stderr)
-            sources = {}
-        units = inventory(sources) if sources else []
-        rows = _survivor_rows(last, units)
-        shown = (mutation_texts(md._default_engine(), sources,
-                                [(p, k, n) for p, k, n, _, s in rows if s == "survived"])
-                 if args.mutations and sources else {})
-        # A mutation the engine places on another line than the state's is
-        # not the survivor's: its task names the line's text instead.
-        mutations = {(p, k, n): shown[(p, k, n)][1:] for p, k, n, line, _ in rows
-                     if (p, k, n) in shown and shown[(p, k, n)][0] == line}
-        lines = {(p, line): sources[p].splitlines()[line - 1]
-                 for p, _, _, line, _ in rows if p in sources and 0 < line <= len(sources[p].splitlines())}
-        parts = render_cycle_comment(last, run_id=args.run_id, repo=args.repo, units=units,
-                                     at_import=(at_import_at(Path(args.repo_dir), str(last["head"]), sources)
-                                                if sources else frozenset()),
-                                     mutations=mutations, lines=lines)
-        # Kept in the state, which the stitch job uploads after this step:
-        # every later night writes these parts, never a render of its own.
-        # Parts that fail the check are neither kept nor written for posting.
-        try:
-            check_parts(parts, last["cycle"], last["started"])
-        except StateError as exc:
-            print(f"warning: cycle {last['cycle']}'s close comment is not posted ({exc}); a later night "
-                  "renders it again", file=sys.stderr)
-        else:
-            kept = [{"cycle": int(last["cycle"]), "from": str(last["started"]), "parts": parts},
-                    *kept][:KEPT_CYCLES]
-            state["comments"] = kept
-            write_atomically(state_dir / STATE_FILE, state)
+    before = list(state.get("comments") or [])
+    kept = keep_closed(state, last) if last else before
+    if closed or args.backfill:
+        deadline = time.monotonic() + SHOW_BUDGET_S
+        for i, entry in enumerate(kept):
+            if "parts" in entry:
+                continue  # rendered once: every later night writes these parts
+            parts = render_kept(entry, kept, run_id=args.run_id, repo=args.repo, repo_dir=Path(args.repo_dir),
+                                mutations=args.mutations, deadline=deadline, generation=state.get("generation"))
+            # Parts that fail the check are neither kept nor written for
+            # posting; the record stays, and a later night renders it again.
+            try:
+                check_parts(parts, entry["cycle"], entry["from"], state.get("generation"))
+            except StateError as exc:
+                print(f"warning: cycle {entry['cycle']}'s close comment is not posted ({exc}); a later night "
+                      "renders it again", file=sys.stderr)
+                continue
+            kept[i] = {**entry, "parts": parts}
+    if kept != before:
+        # Kept in the state, which the stitch job uploads after this step.
+        state["comments"] = kept
+        write_atomically(state_dir / STATE_FILE, state)
     # Every kept cycle's parts on backfill, so a part one night missed is
     # posted on a later one, after a close or two; tonight's alone without.
-    written = kept if args.backfill else [c for c in kept if closed and last and _is_kept(c, last)]
+    written = [c for c in kept if "parts" in c
+               and (args.backfill or (closed and last and _is_kept(c, last)))]
     for entry in written:
         for k, text in enumerate(entry["parts"], 1):
             (out / f"2-cycle-{int(entry['cycle']):05d}-{k:02d}.md").write_text(text, encoding="utf-8")
@@ -3877,18 +4042,20 @@ def cmd_comment(args: argparse.Namespace) -> int:
 
 
 def _is_kept(entry: Mapping[str, Any], last: Mapping[str, Any]) -> bool:
-    """Whether a kept close comment is the last closed cycle's: its number
+    """Whether a kept closed cycle is the closed cycle ``last``: its number
     and its first night both, since a reset state counts from 1 again."""
     return bool(entry["cycle"] == last["cycle"] and entry["from"] == last["started"])
 
 
 def cmd_closed(args: argparse.Namespace) -> int:
     """Print ``closed=true`` when the stitch's report says the night closed
-    a cycle, ``closed=false`` otherwise, and ``render=true`` when the last
-    closed cycle's comment parts are not kept yet (it closed tonight, or
-    before the parts were kept), ``render=false`` otherwise: the step
-    output the workflow reads to install the engine that shows a cycle's
-    mutations, on the night that renders the parts every later night keeps."""
+    a cycle, ``closed=false`` otherwise, and ``render=true`` when a closed
+    cycle's comment parts are not kept yet (a kept cycle has none: it closed
+    tonight, or its render failed; or the last closed cycle is not kept, as
+    one closed before the records were kept), ``render=false`` otherwise:
+    the step output the workflow reads to install the engine that shows a
+    cycle's mutations, on the night that renders the parts every later
+    night keeps."""
     path = Path(args.state) / REPORT_FILE
     try:
         closed = bool(json.loads(path.read_text(encoding="utf-8"))["night"]["closed"])
@@ -3901,7 +4068,8 @@ def cmd_closed(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError, TypeError):  # StateError is a ValueError
         last, kept = None, []
     print(f"closed={'true' if closed else 'false'}")
-    print(f"render={'true' if last and not any(_is_kept(c, last) for c in kept) else 'false'}")
+    pending = any("parts" not in c for c in kept) or bool(last and not any(_is_kept(c, last) for c in kept))
+    print(f"render={'true' if pending else 'false'}")
     return 0
 
 
@@ -3947,8 +4115,20 @@ def cmd_matrix(args: argparse.Namespace) -> int:
 
 def cmd_summary(args: argparse.Namespace) -> int:
     state = load_state(_state_file(args.state), _today())
-    score = write_summary(state, Path(args.out))
     last = state["last_complete"]
+    if not last:
+        raise StateError("no cycle has closed yet, so there is no summary to write")
+    # The rule at the cycle's head reports its survivors evaluated at import
+    # apart; a checkout without that commit cannot say which they are.
+    repo = Path(args.repo_dir)
+    try:
+        sources = vera_sources(repo, str(last["head"]))
+        at_import = at_import_at(repo, str(last["head"]), sources)
+    except md.LaneError as exc:
+        print(f"error: cycle {last['cycle']}'s head {last['head']} is not in {repo} ({exc}); fetch it "
+              "(git fetch origin) and run this again", file=sys.stderr)
+        return 2
+    score = write_summary(state, Path(args.out), at_import)
     sample = (f" of {last['sampled']} sampled from {last['population']} mutants"
               if "sampled" in last and "population" in last else "")
     print(f"cycle {last['cycle']}: {score}% caught{sample}; wrote "
@@ -4020,6 +4200,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary.add_argument("--state", required=True, help="the directory holding the state")
     summary.add_argument("--out", default=str(ROOT), help="where to write them (default: the "
                          "repository root)")
+    summary.add_argument("--repo-dir", default=str(ROOT), help="the repository holding the cycle's head "
+                         "(default: this one)")
     comment = sub.add_parser("comment", help="write the standing issue's comments for this run")
     comment.add_argument("--state", required=True, help="the stitch's out directory (the state and its report)")
     comment.add_argument("--run-id", type=int, required=True, help="this run's id")
