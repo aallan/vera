@@ -572,8 +572,13 @@ class CallsContainersMixin:
                 arg_instrs = self._emit_construction_nat_guard(
                     arg_instrs, arg, value_component)
             else:
-                # The key is `K`'s argument: checked where `K` is `Nat`, and
+                # The key is `K`'s argument: its refinement checked as the
+                # value's is (#1861), its sign where `K` is `Nat`, and
                 # (#1542) where a composite coercion makes it a `Nat`.
+                arg_instrs = self._emit_construction_refine_guard(
+                    arg_instrs, arg, "map key", "map key insert", env,
+                    component_ty=self._adt_arg_type(map_target, 0),
+                )
                 arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
@@ -814,6 +819,10 @@ class CallsContainersMixin:
             )
 
         wasm_name = self._collection_fn("set_add", e=et)
+        # The element's refinement is read from the call's target, which
+        # carries `Set<{refined}>` whole, as `map_insert`'s value is.
+        element_component = self._adt_arg_type(
+            self._container_target_refined(call), 0)
         ins: list[str] = []
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
@@ -823,8 +832,13 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            # The element is `T`'s argument: checked where `T` is `Nat`, and
+            # The element is `T`'s argument: its refinement checked as a
+            # map value's is (#1861), its sign where `T` is `Nat`, and
             # (#1542) where a composite coercion makes it a `Nat`.
+            arg_instrs = self._emit_construction_refine_guard(
+                arg_instrs, arg, "set element", "set element insert", env,
+                component_ty=element_component,
+            )
             ins.extend(self._guard_nat_narrowing(arg_instrs, arg))
         ins.append(f"call {wasm_name}")
         return ins
