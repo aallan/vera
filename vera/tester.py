@@ -1242,10 +1242,20 @@ class _TrapIndex:
     def _transfers_to_itself(self, name: str) -> bool:
         """Whether the module's function *name* (its body, where it is split
         into an entry and a body) leaves by a `return_call` to itself."""
-        target = re.escape(SYMBOL_PREFIX + name)
-        return re.search(
-            rf"\breturn_call \${target}(?:{re.escape(BODY_SUFFIX)})?(?=\s|$)",
-            self._wat, re.MULTILINE) is not None
+        own = {SYMBOL_PREFIX + name, SYMBOL_PREFIX + name + BODY_SUFFIX}
+        transfer = re.compile(
+            rf"\breturn_call \$(?:{'|'.join(map(re.escape, own))})(?=\s|$)",
+            re.MULTILINE)
+        headers = list(re.finditer(r"^\s*\(func \$(\S+)", self._wat,
+                                   re.MULTILINE))
+        for n, header in enumerate(headers):
+            if header.group(1) not in own:
+                continue  # another function's tail call of this one
+            end = (headers[n + 1].start() if n + 1 < len(headers)
+                   else len(self._wat))
+            if transfer.search(self._wat, header.end(), end):
+                return True
+        return False
 
     def reachable(self, start: str) -> set[str]:
         """The WASM functions a call of *start* can run: *start*, and every

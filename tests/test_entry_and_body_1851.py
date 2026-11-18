@@ -762,3 +762,45 @@ def test_repro_a_string_postcondition_with_no_check_is_not_split() -> None:
     compiled = pipeline.compile(_STRING, file=FILE)
     assert "@body" not in compiled.wat
     assert "return_call $:cs\n" in compiled.wat + "\n"
+
+
+_TAIL_CALLER = """\
+public fn f(@Nat -> @Nat)
+  requires(@Nat.0 < 1000)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Nat.0)
+}
+"""
+
+
+def test_repro_another_functions_tail_call_does_not_hide_a_refutation() -> None:
+    """`g` tail-calls `f` (`return_call $:f`), and `f` never calls itself:
+    a trap of `f`'s proved `ensures` check in a trial of `f` (beside
+    the entry check of its `requires`, which the trial's own call sets aside) (a test double:
+    the frames and kind such a trap would carry) contradicts the proof,
+    and is reported refuted.  Only `f`'s own body, or its split body,
+    transferring to itself makes its frame ambiguous."""
+    from vera.tester import TrialResult, _TrapIndex
+    compiled = pipeline.compile(_TAIL_CALLER, file=FILE)
+    assert "return_call $:f\n" in compiled.wat + "\n"
+    verified = pipeline.verify(_TAIL_CALLER, file=FILE)
+    index = _TrapIndex.joined(
+        verified.result, compiled.result,
+        program=compiled.checked.program, file=FILE, resolved_modules=[])
+    trial = TrialResult(
+        fn_name="f", args={}, status="fail", message="",
+        trap_kind="contract_violation", trap_frames=[("f", False)])
+    decl = next(d.decl for d in compiled.checked.program.declarations
+                if getattr(d.decl, "name", None) == "f")
+    index.attribute(trial, decl)
+    assert trial.status == "refuted", (trial.status, trial.attribution)
