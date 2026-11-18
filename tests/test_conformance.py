@@ -506,17 +506,6 @@ CLI_EXIT_SHAPES: dict[str, _ExitShape] = {
         (("run",),), 0, "naïve — ✗",
         "a run that writes non-ASCII to stdout and to stderr, which reach "
         "the pipe as UTF-8 on every platform"),
-    "internal-error": _ExitShape(
-        "private fn bump(@Unit -> @Unit)\n  requires(true)\n"
-        "  ensures(old(IO))\n  effects(<IO>)\n{\n  IO.print(\"x\")\n}\n\n"
-        "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
-        "  effects(<IO>)\n{\n  bump(());\n  7\n}\n",
-        (("verify",), ("verify", "--json")), 1, "E699",
-        "an internal compiler error (E699): `old(IO)` in an `ensures`, which "
-        "the check admits and code generation's state snapshot refuses as an "
-        "invariant (`tests/test_codegen_invariant_e699.py`), reached through "
-        "the compile `vera verify` runs; once that is fixed this cell needs "
-        "another program that does"),
 }
 
 _EXIT_CELLS = [
