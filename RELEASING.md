@@ -127,7 +127,40 @@ The release-prep PR must:
    the two can disagree: a bug filed against an open PR's branch has an
    issue before it has a row.  At release time they must agree, because
    the file is then the published list.
-6. Pass the ordinary protected-branch CI and review process.
+6. Write the committed mutation score from the nightly sweep's last closed
+   cycle, read from the newest scheduled run on `main` whose state holds a
+   closed cycle.  List those runs, newest first:
+
+   ```bash
+   gh run list --workflow mutation-nightly.yml --branch main --event schedule --limit 20 --json databaseId,createdAt
+   ```
+
+   Take each run id in that order.  Download its state into a new
+   directory of its own (`gh run download` does not overwrite a file, and
+   a run whose setup failed, or whose artifact has expired, has no state,
+   so the download fails and the next run is tried), and check whether the
+   state holds a closed cycle:
+
+   ```bash
+   gh run download <run-id> --name mutation-sweep-state --dir ../mutation-state-<run-id>
+   python -c "import json, sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['last_complete'] is not None)" ../mutation-state-<run-id>/sweep-state.json
+   ```
+
+   The first run that prints `True` is the one.  From the repository root,
+   with `main`'s history fetched (`git fetch origin`: the summary reads the
+   tree at the cycle's head), write the score from that run's directory:
+
+   ```bash
+   python scripts/mutate_sweep.py summary --state ../mutation-state-<run-id>
+   ```
+
+   It writes `mutation.json`, which the README badge reads, and
+   `mutation-summary.csv` at the repository root; commit both (MUTATION.md
+   § The measure-all baseline, The score and the badge).  Its
+   `mutation-survivors.csv` is gitignored.  When no run prints `True`, the
+   committed score stays as it is, and the release notes say it was not
+   updated.
+7. Pass the ordinary protected-branch CI and review process.
 
 The release PR merges by merge commit or squash, the only methods the
 repository allows: the release reads the version rise against the merge
