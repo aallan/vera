@@ -2084,6 +2084,24 @@ def format_type_canonical(te: TypeExpr) -> str:
     )._fmt_type_bare(te)
 
 
+def format_effect_ref_structural(ref: EffectRefNode) -> str:
+    """One effect reference as source that reads back as the same effect:
+    ``State<Positive>``, ``State<{ @Int | @Int.0 > 0 }>``, ``IO``.  Rendered
+    in structural mode (:func:`format_expr_canonical`), the form
+    :func:`vera.types.structural_type_key` names a State cell by, which
+    keeps a match arm's redundant block (``0 -> { true }``): canonical form
+    drops it, and the checker holds the two predicates apart, so the text
+    would name another cell.  For a diagnostic whose fix writes an effect out
+    to be pasted (E189's ``old()`` / ``new()``), where a resolved effect's
+    rendering expands an alias and elides a refinement's predicate."""
+    # The attachment is read only where a statement or a declaration is
+    # emitted; an effect reference has no comment to place.
+    return Formatter(
+        _Attached(before={}, inline=[], header=[], footer=[]),  # pragma: no mutate
+        structural=True,
+    )._fmt_effect_ref(ref)
+
+
 def format_source(source: str, file: str | None = None) -> str:
     """Format Vera source code to canonical form.
 

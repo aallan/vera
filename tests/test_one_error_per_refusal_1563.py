@@ -30,9 +30,9 @@ sign as a refined binder's predicate, and a destructure's component as a
 The matrix spans source x judgement site; each cell asserts the program's
 errors are exactly the refusal's own.  The negative space: the nearest
 accepted neighbour of each source (the declaration renamed, the type name
-spelled right, the hole filled) checks clean, and an `Unknown` no diagnostic
-stands behind (`[][0]`, the one route left, #1684) is still judged
-(E313).
+spelled right, the hole filled) checks clean, and an index into an empty
+literal, the last route to an `Unknown` no diagnostic stood behind, is
+refused at the index (E164, #1862).
 """
 
 from __future__ import annotations
@@ -271,10 +271,10 @@ def test_the_hole_filled_is_judged() -> None:
     assert _codes(source) == ["E313"]
 
 
-def test_an_unknown_no_diagnostic_stands_behind_is_still_judged() -> None:
-    """`[][0]` is `Unknown` with nothing reported (the one route left,
-    #1684: `apply_fn` over a type variable is `E202`), and
-    its E313 is the error that refuses the program (#1671's boundary)."""
+def test_an_index_nothing_types_is_refused_at_the_index() -> None:
+    """`[][0]` was `Unknown` with nothing reported, and its `match` drew
+    E313; the index is refused (E164, #1862), the one error the program
+    owes, and the `match` over it is not judged."""
     source = """\
 private forall<T> fn g(@T -> @Int)
   requires(true)
@@ -286,7 +286,7 @@ private forall<T> fn g(@T -> @Int)
   }
 }
 """
-    assert "E313" in _codes(source)
+    assert _codes(source) == ["E164"]
 
 
 def test_repro_1563_a_match_over_a_hole_draws_only_the_hole() -> None:
@@ -441,9 +441,9 @@ _SIG = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
 
 
 def test_a_destructure_of_a_hole_draws_only_the_hole() -> None:
-    """The destructuring `let` reads the reported-`Unknown` rule the `match`
-    reads (`_unknown_is_reported`): `let Tuple<@Int, @Int> = ?;` drew E313
-    beside the hole's W001."""
+    """The destructuring `let` leaves a value typed `Unknown` unjudged, as
+    the `match` does: `let Tuple<@Int, @Int> = ?;` drew E313 beside the
+    hole's W001."""
     source = f"public fn f(@Int -> @Int)\n{_SIG}{{\n  let Tuple<@Int, @Int> = ?;\n  @Int.0\n}}\n"
     assert _all_codes(source) == ["W001"]
 
@@ -570,15 +570,16 @@ _APPLY_FN_SITES = {
 def test_a_hole_elsewhere_stands_behind_no_other_unknown(
         hole_first: bool, site: str) -> None:
     """A hole's W001 stands behind the hole alone: a hole in another
-    function, before or after it, leaves `[][0]`'s `Unknown`
-    judged, so its E313 still refuses the program (the review of PR #1842:
-    a hole declared first suppressed it)."""
+    function, before or after it, leaves `[][0]` refused at the index,
+    E164 (#1862), where E313 refused it before (the review of PR #1842: a
+    hole declared first suppressed it).  The `match` or destructure over
+    the index is not judged."""
     hole = f"public fn h(@Int -> @Int)\n{_SIG}{{\n  ?\n}}\n"
     g = (f"private forall<T> fn g(@T -> @Int)\n{_SIG}{{\n"
          + _APPLY_FN_SITES[site] + "}\n")
     source = hole + "\n" + g if hole_first else g + "\n" + hole
     codes = _all_codes(source)
-    assert "W001" in codes and "E313" in codes, codes
+    assert sorted(codes) == ["E164", "W001"], codes
 
 
 @pytest.mark.parametrize("site", ("return", "let"))

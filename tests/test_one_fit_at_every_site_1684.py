@@ -826,8 +826,9 @@ def test_the_applied_value_fix_writes_the_enclosing_row() -> None:
 @pytest.mark.parametrize("body", [
     # No type the result is expected at: an operand.
     "apply_fn(@T.0, 1) + 1",
-    # An argument with no type to write.
-    "apply_fn(@T.0, [][0])",
+    # An argument with no type to write: a hole, whose W001 stands behind
+    # its unknown type (an index into an empty literal is E164, #1862).
+    "apply_fn(@T.0, ?)",
 ], ids=["no_expected_result", "argument_with_no_type"])
 def test_the_applied_value_fix_falls_back_to_prose(body: str) -> None:
     """Where the function type cannot be written out, the fix says what to

@@ -1061,11 +1061,14 @@ class FunctionCompilationMixin:
         except CodegenInvariantError as inv:  # PR #1283 review
             # The arm this boundary was missing.  `state_type_arg` raises
             # `CodegenInvariantError`, not `CodegenSkip`, for an `old(E)`
-            # whose `E` is not `State<T>` — and the checker types `old(E)`
-            # as `UnknownType`, which satisfies a `Bool` postcondition, so
-            # `ensures(old(IO))` is check-green and reached this raise.  A
-            # `CodegenSkip`-only net let it escape `_compile_fn` as a raw
-            # traceback: exactly the #939 gap, one boundary over.  Mirrors
+            # whose `E` is not `State<T>`.  The checker refuses an `old()` or
+            # `new()` of an effect with no state (E189, #1862), so no program
+            # reaches this raise from source; `ensures(old(IO))` did, while
+            # the checker typed `old(IO)` as `UnknownType`, and the arm stays
+            # as the boundary's defence in depth, which
+            # `test_codegen_invariant_e699.py` reaches by injecting the
+            # raise.  A `CodegenSkip`-only net let it escape `_compile_fn` as
+            # a raw traceback: exactly the #939 gap, one boundary over.  Mirrors
             # the precondition and `decreases` arms above — one loud [E699],
             # attributed as a compiler bug.  MUST precede the `CodegenSkip`
             # catch below only if it were a subclass; it is not, so order is
