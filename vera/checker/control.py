@@ -588,18 +588,15 @@ class ControlFlowMixin:
             return None
         # #1671: an expression the check has refused is typed `Unknown`,
         # which gives the arms no type to cover, so a scrutinee typed
-        # `Unknown` once an error has been reported is not judged for
-        # coverage.  Any error counts, not only one raised while typing the
-        # scrutinee: the error behind an `Unknown` can sit at a declaration
-        # (E158) or an import (E155).  It is read here, before the arms are
-        # checked: an error inside an arm says nothing about the scrutinee.
-        # `Unknown` with no error reported (an index into an empty
-        # literal, `[][0]`, the one route left, #1684) is judged as before,
-        # and its E313 is the error that refuses the program.  A position inside the scrutinee whose type the check did
-        # not settle is read by the same rule (`_pattern_domain`, #1697).
-        after_error = self._unknown_is_reported(expr.scrutinee)
-        in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
-                    and after_error)
+        # `Unknown` is not judged for coverage.  A diagnostic stands behind
+        # every `Unknown` (#1862): an error, at the expression or at a
+        # declaration (E158) or an import (E155), or a typed hole's W001.
+        # A position inside the scrutinee left a type variable no inference
+        # bound is not judged once an error has been reported, read here,
+        # before the arms are checked: an error inside an arm says nothing
+        # about the scrutinee (`_pattern_domain`, #1697).
+        after_error = self._error_reported()
+        in_error = isinstance(base_type(scrutinee_ty), UnknownType)
 
         result_type: Type | None = None
         arm_types: list[tuple[ast.Expr, Type]] = []
@@ -677,19 +674,6 @@ class ControlFlowMixin:
         if result_type is None:
             return UnknownType()
         return self._value_join(result_type, arm_types)
-
-    def _unknown_is_reported(self, value: ast.Expr) -> bool:
-        """Whether a diagnostic already stands behind the `Unknown` *value*
-        may be typed: an error (#1671), or *value* is a typed hole, whose
-        W001 is its own diagnostic (#1563).  The hole's warning stands
-        behind that one value and nothing else: a hole elsewhere in the file
-        says nothing about `[][0]`'s `Unknown`, whose E313 is
-        the error that refuses the program.  The `match` and the
-        destructuring `let` read it before their arms and bindings, so
-        `match ?` and `let Tuple<@Int, @Int> = ?;` draw the hole's warning
-        alone."""
-        return (isinstance(value, ast.HoleExpr)
-                or any(d.severity == "error" for d in self.errors))
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
         """Whether *pat* names a constructor of a refused declaration.
@@ -851,15 +835,16 @@ class ControlFlowMixin:
         needs one (E313): every other primitive, a built-in with no
         constructors, a function type, and a type parameter the function
         declares, which may be `Int`, so `Some(None)` and `Some(Some(_))`
-        over `Option<T>` leave `Some(_)`.  A position whose type the check
-        did not settle, `Unknown` or a type variable no inference bound
-        (`T$1`, which `Some(e)` has where `e` is in error), is open too,
-        unless an error has been reported by the time the scrutinee is typed
-        (*after_error*).  Then the error is what left it unsettled, and it
-        is not judged (``None``), as a scrutinee typed `Unknown` after an
-        error is not (#1671), so the arms draw no E311 beside that error.
-        Nor is a `Tuple` with no components, or a data type no declaration
-        in reach says, as a scrutinee of one is not.
+        over `Option<T>` leave `Some(_)`.  A position typed `Unknown` is not
+        judged (``None``), as a scrutinee typed `Unknown` is not (#1671): a
+        diagnostic stands behind every `Unknown` (#1862), so the arms draw no
+        E311 beside it.  A type variable no inference bound (`T$1`, which
+        `Some(e)` has where `e` is in error, and `None` with no type to
+        take) is open, unless an error has been reported by the time the
+        scrutinee is typed (*after_error*): then the error is what left it
+        unsettled, and it is not judged either.  Nor is a `Tuple` with no
+        components, or a data type no declaration in reach says, as a
+        scrutinee of one is not.
         """
         raw = base_type(ty)
         if isinstance(raw, PrimitiveType):
@@ -878,7 +863,8 @@ class ControlFlowMixin:
             return None
         if isinstance(raw, TypeVar) and raw.name in self.env.type_params:
             return patterns.Open()
-        if isinstance(raw, (UnknownType, TypeVar)) and after_error:
+        if isinstance(raw, UnknownType) or (
+                isinstance(raw, TypeVar) and after_error):
             return None
         return patterns.Open()
 
@@ -1402,11 +1388,11 @@ class ControlFlowMixin:
           refined binding, which the verifier obligates (E170, at the
           binding).
 
-        A value typed `Unknown` once an error has been reported is not
-        judged, as a `match` over one is not (#1671)."""
-        ty = value_ty if value_ty is not None else UnknownType()
+        A value typed `Unknown` is not judged, as a `match` over one is not
+        (#1671): a diagnostic stands behind every `Unknown` (#1862)."""
+        ty = value_ty if value_ty is not None else UnknownType()  # pragma: no mutate — equivalent: `_synth_expr` types an expression it refuses `Unknown` and returns no None (`_check_match` says the same of its scrutinee), so the fallback never runs
         base = base_type(ty)
-        if isinstance(base, UnknownType) and after_error:
+        if isinstance(base, UnknownType):
             return
         name = stmt.constructor
         count = len(stmt.type_bindings)

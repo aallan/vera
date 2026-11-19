@@ -692,8 +692,38 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
         assert args[0] in (instance, names.get(instance)), (args, instance)
 
 
-# ---------------------------------------------------------------------
-# B, nested: each level is the join, and the narrowing is the binding's
+def test_repro_an_element_that_does_not_fit_the_context_leaves_it_untaken(
+) -> None:
+    """`[f_io, f_pure]` bound at `Array<TakesIO>`: a function that takes a
+    pure callback does not fit one that takes an `IO` callback, so the
+    context is not taken as the element type and the literal is the
+    elements' join, whichever comes first, as the literal written at that
+    type behaves.  Killed: the context branch's `_fits(t, ctx)` with its
+    operands swapped, which asks whether the context fits each element
+    (PR 1864's mutation lane; a matrix cell alone killed it)."""
+    pair = PAIRS["effect_row"]
+    instance = _instance("array", pair, "stronger")
+    assert instance == pair.join == "TakesPure"
+    for order in ("strong_first", "weak_first"):
+        source = _program("array", pair, order, "stronger", "")
+        twin = _program("array", pair, order, "stronger", "",
+                        element=instance)
+        assert _outcome(source) == _outcome(twin), order
+
+
+def test_repro_a_variable_one_argument_fixes_does_not_stop_the_join(
+) -> None:
+    """`pick(true, @Nat.0, @Int.0)` with `pick: forall<A, B> (A, B, B -> B)`:
+    `A` has one argument and `B` two that disagree, so `B` takes their join,
+    `Int`, whatever order the variables are met in.  Killed: the loop over
+    the variables stopping at the first one argument fixes (`continue` as
+    `break` in `_settle_disagreement`), which leaves `B` at its first
+    binding, `Nat`, so the `Int` argument is refuted at `vera verify`
+    (E503)."""
+    source = (_fn("pick", "@A, @B, @B", "B", "@B.0", forall="forall<A, B> ")
+              + "\n" + _fn("main", "@Nat, @Int", "Int",
+                           "pick(true, @Nat.0, @Int.0)", visibility="public"))
+    assert _instances(source, "pick") == {("Bool", "Int")}
 # ---------------------------------------------------------------------
 
 _INT_FN = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
@@ -1042,16 +1072,12 @@ def test_an_empty_literal_takes_the_binding_s_element_type() -> None:
     'nat_to_int(string_length("\\([][0])"))',
     "[][0] + 1",
 ])
-def test_an_index_no_context_types_is_left_to_1862(form: str) -> None:
-    """With no type around it the index's element type stays unknown, with
-    no diagnostic: the check accepts, `vera verify` warns that `main` is
-    skipped (E602) and `vera run` refuses it (E907).  Issue #1862 refuses
-    such an index at check; this pins where it stands until then."""
+def test_an_index_no_context_types_is_refused_at_check(form: str) -> None:
+    """With no type around it the index's element type is unknown: the
+    check refused nothing, and `vera verify` warned that `main` is skipped
+    (E602).  The index is refused at check (E164, #1862)."""
     source = _fn("main", "@Unit", "Int", form, visibility="public")
-    assert pipeline.check(source).ok
-    warnings = {w.error_code
-                for w in pipeline.verify(source, reconcile=True).warnings}
-    assert "E602" in warnings, warnings
+    assert _codes(source) == ["E164"]
 
 
 # ---------------------------------------------------------------------
@@ -1874,9 +1900,12 @@ def test_repro_indexing_a_function_value_is_refused() -> None:
 
 def test_repro_an_array_with_no_element_type_is_indexed() -> None:
     """`@Array.0[0]` expected at `Int`: an `Array` type written with no type
-    argument holds no element type to read, so the index is not read again;
-    the check accepts the program with no diagnostic, as c35763d6 does."""
-    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == []
+    argument holds no element type to read, so the index is not read again.
+    c35763d6 accepted the program with no diagnostic; the index has no type
+    and is refused (E164, #1862).  The type written with no argument is
+    issue #1732's."""
+    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == [
+        "E164"]
 
 
 def test_repro_an_unresolved_binding_type_is_reported_once() -> None:
@@ -2001,6 +2030,24 @@ def test_repro_an_unknown_element_context_decides_nothing() -> None:
     arrays = _recorded_arrays(source)
     assert "Array<Int>" in arrays and not any("Nope" in t for t in arrays), (
         arrays)
+
+
+def test_repro_elements_that_agree_keep_their_type_whatever_the_context(
+) -> None:
+    """Spec §4.12.1: the literal's context decides its element type only
+    where the elements' types differ.  Elements that agree are their own
+    type under a narrower context (`Array<Nat>` over two `@Int`) and under
+    a wider one (`Array<Int>` over two `@Nat`) alike, and the binding then
+    narrows or widens the literal as it does any value.  Elements that
+    differ take the context's element type, each fitting it."""
+    for formals, bound, literal, recorded in (
+            ("@Int, @Int", "Array<Nat>", "[@Int.0, @Int.1]", "Array<Int>"),
+            ("@Nat, @Nat", "Array<Int>", "[@Nat.0, @Nat.1]", "Array<Nat>"),
+            ("@Int, @Nat", "Array<Nat>", "[@Int.0, @Nat.0]", "Array<Nat>"),
+    ):
+        source = _fn("f", formals, "Int", f"let @{bound} = {literal};\n0")
+        assert _codes(source) == [], (bound, literal)
+        assert _recorded_arrays(source) == {recorded}, (bound, literal)
 
 
 def test_repro_an_unknown_context_fixes_no_open_call() -> None:

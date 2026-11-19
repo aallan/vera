@@ -978,13 +978,15 @@ private fn broken(@Int -> @Int)
 #: open, as `Int` is, since `T` may be `Int`: only a wildcard or a binder
 #: covers it, as a `match` over a `T` needs a catch-all (E313), whatever
 #: else the program reports.  So is a function type.  A position whose type
-#: the check did not settle, `Unknown` or a type variable no inference bound
-#: (`Some(e)` with `e` in error is `Option<T$1>`), is not judged once an
-#: error has been reported, as a scrutinee typed `Unknown` after one is not,
-#: so the arms draw nothing beside that error, whatever they leave; with no
-#: error reported (`[][0]`, the one route to an unreported `Unknown`
-#: left, #1684; `None` with no type to take) it is open, as a scrutinee of it is.  A `Tuple` with no components
-#: is not judged, as a scrutinee of one is not.
+#: the check did not settle is not judged where a diagnostic stands behind
+#: it, so the arms draw nothing beside that diagnostic, whatever they
+#: leave: a position typed `Unknown` always (an index into an empty
+#: literal, the last route to one with no diagnostic, is E164, #1862), and
+#: a type variable no inference bound (`Some(e)` with `e` in error is
+#: `Option<T$1>`) once an error has been reported.  With no error reported
+#: (`None` with no type to take) the variable is open, as a scrutinee of it
+#: is.  A `Tuple` with no components is not judged, as a scrutinee of one
+#: is not.
 OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
     "option-t-constructor-subs": (_matching(
         "Option<T>", "@Option<T>.0",
@@ -1033,10 +1035,11 @@ OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
         "T", "Tuple(nope(@T.0), 3)",
         ["Tuple(Some(None), _) -> 1", "Tuple(Some(Some(_)), _) -> 2",
          "Tuple(None, _) -> 0"]), [_E200]),
-    "unknown-with-no-error": (_matching(
+    "unknown-behind-its-index": (_matching(
         "T", "Some([][0])",
         ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"]),
-        [("E311", "error", _message("Some(_)"))]),
+        [("E164", "error", "The element type of [] is not known, so the "
+                           "index [][0] has no type.")]),
     "unbound-variable-after-an-error-covered": (_matching(
         "Int", "Some(nope(@Int.0))",
         ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"],
@@ -1238,10 +1241,11 @@ def test_mutant_an_unsettled_position_is_not_judged_after_an_error() -> None:
     """Killed: a position the check did not settle, after an error, judged
     open, which draws an E311 beside the error, and a type variable no
     inference bound read as a declared one, which is open, so the same E311
-    is drawn; and one with no error reported not judged, which takes
-    `[][0]`'s `Unknown` and `None`'s `T$1` to be covered."""
+    is drawn; a variable with no error reported not judged, which takes
+    `None`'s `T$1` to be covered; and a position typed `Unknown` judged
+    open, which draws an E311 beside the E164 behind it (#1862)."""
     for key in ("unbound-variable-after-an-error-gap",
-                "unknown-with-no-error", "unbound-variable-with-no-error",
+                "unknown-behind-its-index", "unbound-variable-with-no-error",
                 "unbound-variable-after-an-error-covered",
                 "unknown-after-an-error-covered"):
         source, expected = OPEN_POSITIONS[key]
