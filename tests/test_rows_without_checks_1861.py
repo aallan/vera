@@ -548,6 +548,30 @@ def test_repro_apply_fn_of_a_computed_value_checks_its_argument_at_the_call(
     assert "Refinement violation in closure argument\n" in str(ran.trap)
 
 
+#: A refined component read from a closure argument at the call, after a
+#: component of another width: a `Bool` (4 bytes), a `Unit` (no slot), and
+#: a nested tuple behind a `String` pair (#1861 review).  Each reads its
+#: offset by the layout construction builds with.
+_LAYOUT = {
+    "after_a_bool": ('type Short = { @Int | string_length(to_string(@Int.0)) < 3 };\ntype F = fn(Tuple<Bool, Short> -> Int) effects(pure);\n\nprivate fn mk(@Int -> @Tuple<Bool, Int>)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  Tuple(true, @Int.0)\n}\n\npublic fn go(@Float64 -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  let @F = fn(@Tuple<Bool, Int> -> @Int) effects(pure) {\n    match @Tuple<Bool, Int>.0 { Tuple(@Bool, @Int) -> @Int.0 }\n  };\n  apply_fn(@F.0, mk(float_to_int(@Float64.0)))\n}\n', 3),
+    "after_a_unit": ('type Short = { @Int | string_length(to_string(@Int.0)) < 3 };\ntype F = fn(Tuple<Unit, Short> -> Int) effects(pure);\n\nprivate fn mk(@Int -> @Tuple<Unit, Int>)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  Tuple((), @Int.0)\n}\n\npublic fn go(@Float64 -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  let @F = fn(@Tuple<Unit, Int> -> @Int) effects(pure) {\n    match @Tuple<Unit, Int>.0 { Tuple(@Unit, @Int) -> @Int.0 }\n  };\n  apply_fn(@F.0, mk(float_to_int(@Float64.0)))\n}\n', 3),
+    "nested_behind_a_string": ('type Short = { @Int | string_length(to_string(@Int.0)) < 3 };\ntype F = fn(Tuple<Tuple<String, Short>, Int> -> Int) effects(pure);\n\nprivate fn mk(@Int -> @Tuple<Tuple<String, Int>, Int>)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  Tuple(Tuple("ab", @Int.0), 9)\n}\n\npublic fn go(@Float64 -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  let @F = fn(@Tuple<Tuple<String, Int>, Int> -> @Int) effects(pure) {\n    match @Tuple<Tuple<String, Int>, Int>.0 {\n      Tuple(Tuple(@String, @Int), @Int) -> @Int.1 * 100 + @Int.0 * 10 + string_length(@String.0)\n    }\n  };\n  apply_fn(@F.0, mk(float_to_int(@Float64.0)))\n}\n', 392),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_LAYOUT))
+def test_repro_a_closure_argument_component_is_read_at_its_offset(
+        shape: str) -> None:
+    """The check at the call reads the refined component where the
+    value holds it: a satisfying component passes and the value reaches
+    the closure whole; a violating one traps at the call."""
+    source, value = _LAYOUT[shape]
+    _verified_clean(source)
+    assert pipeline.run(source, fn="go", args=[3.0]).value == value
+    ran = pipeline.run(source, fn="go", args=[5000.0])
+    assert ("Refinement violation in closure argument (tuple component)\n"
+            in str(ran.trap)), ran.trap
+
 _COMPOSITE_WALK = """\
 private fn pair2(@Int -> @Tuple<Int, Int>)
   requires(true)
