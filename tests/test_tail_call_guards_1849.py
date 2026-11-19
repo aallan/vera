@@ -639,11 +639,11 @@ def _watch_lowering(monkeypatch: pytest.MonkeyPatch) -> list[_Lowered]:
             isinstance(c, ast.Decreases) for c in decl.contracts)))
         return result
 
-    def context(self, sites, self_ret_wt):  # type: ignore[no-untyped-def]
+    def context(self, sites, self_ret_wt, split_name=None):  # type: ignore[no-untyped-def]
         assert pending, "a tail-call set handed over before the table decided"
         table, decreases = pending.pop()
         lowered.append(_Lowered(table, set(sites), decreases))
-        return set_context(self, sites, self_ret_wt)
+        return set_context(self, sites, self_ret_wt, split_name)
 
     def translated(self, call, env, **kwargs):  # type: ignore[no-untyped-def]
         out = translate(self, call, env, **kwargs)

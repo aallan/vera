@@ -23,9 +23,13 @@ name: Mutation (nightly)
 # night in a row that decides no mutant ends the run red, and on the
 # schedule the `issue` job files or updates one tracking issue (the
 # `mutation-sweep` label), as nightly-stress.yml does.  Survivors are the
-# measurement, never a failure.  The sweep jobs read the repository and the
-# last night's artifact and write nothing back; only the `issue` job can
-# write, and only issues.  Every context value reaches a shell through `env`.
+# measurement, never a failure.  Every scheduled night's result, red or
+# green, goes to one standing issue as a comment (the `results` job): the
+# stitch job renders the comments (`mutate_sweep.py comment`), and a cycle's
+# close comment lists its survivors as a task list.  The sweep jobs read the
+# repository and the last night's artifact and write nothing back; only the
+# `issue` and `results` jobs can write, and only issues.  Every context value
+# reaches a shell through `env`.
 
 on:
   schedule:
@@ -37,6 +41,10 @@ on:
         description: "The night's jobs (each plans the same night and runs its slice)"
         type: number
         default: 1
+      post:
+        description: "Post the night's comment on the standing results issue (a dispatched night posts nothing otherwise)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -387,11 +395,17 @@ jobs:
       contents: read
       actions: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
+    outputs:
+      comments: ${{ steps.keep_comments.outputs.artifact-id }}
+      state: ${{ steps.keep_state.outputs.artifact-id }}
     steps:
+      # The whole history: a cycle's close comment reads the tree at the
+      # head the cycle closed at, which can be older than this run's.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -419,10 +433,13 @@ jobs:
       # charges no loss for it.  A job's own timeout cannot be told from a
       # lost runner; the sweep job's timeout holds the budget, the engine's
       # grace and the legs, so it does not arise.
+      # A state this night creates (there was none) takes the run's id as
+      # its generation, which every close comment's marker carries.
       - name: Fold the night into the state
         env:
           JOBS: ${{ needs.setup.outputs.jobs }}
           SWEEP_RESULT: ${{ needs.sweep.result }}
+          MUTATION_SWEEP_GENERATION: ${{ github.run_id }}
         run: >-
           python scripts/mutate_sweep.py stitch
           --sweep-result "$SWEEP_RESULT"
@@ -432,13 +449,150 @@ jobs:
           --out "$RUNNER_TEMP/state-out"
           --summary "$GITHUB_STEP_SUMMARY"
 
+      # The comments for the standing issue, rendered whatever the night's
+      # colour (a red night's says so in a line).  A cycle's close comment
+      # is rendered once, its parts kept in the state, and every later night
+      # writes those parts, so a part whose marker is posted never changes.
+      # The night that first renders them (`render`), or a dispatch asked to
+      # post, installs uv.lock's engine, whose visitor shows each survivor's
+      # mutation; without it each task names its line's text.
+      - id: closed
+        if: ${{ !cancelled() }}
+        run: python scripts/mutate_sweep.py closed --state "$RUNNER_TEMP/state-out" >> "$GITHUB_OUTPUT"
+
+      - name: Install the engine that shows the cycle's mutations
+        if: ${{ !cancelled() && (steps.closed.outputs.render == 'true' || inputs.post) }}
+        timeout-minutes: 10
+        run: |
+          pip install "uv>=0.5,<2"
+          uv sync --locked --extra mutation --python 3.12
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Render the night's comments
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          MUTATIONS: ${{ steps.closed.outputs.render == 'true' || inputs.post }}
+        run: |
+          mutations=()
+          if [ "$MUTATIONS" = "true" ]; then mutations=(--mutations); fi
+          python scripts/mutate_sweep.py comment --backfill "${mutations[@]}" \
+            --state "$RUNNER_TEMP/state-out" --run-id "$RUN_ID" --repo "$REPO" \
+            --event "$EVENT" --ref "$REF" --summary "$GITHUB_STEP_SUMMARY" --out "$RUNNER_TEMP/comment"
+
+      # After the render, which writes a cycle's close comment parts into
+      # the state; the two steps before it are bounded, so the job is alive
+      # to keep the state whatever they did.
+      # Its id, the job's `state` output, tells the results job the state
+      # holding the night's close comment parts was kept.
       - name: Keep the state
+        id: keep_state
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: mutation-sweep-state
           path: ${{ runner.temp }}/state-out/
           retention-days: 90
+
+      # Its id, the job's `comments` output, tells the results job the
+      # comments exist: empty when nothing was rendered.
+      - name: Keep the comments
+        id: keep_comments
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-comment
+          path: ${{ runner.temp }}/comment/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Every scheduled night's comment on the standing results issue, found by
+  # its title alone and created when absent; each comment's first line is a
+  # marker, so a rerun posts nothing twice.  A dispatched night posts only
+  # when asked (`post`).  No checkout: the comments are files the stitch job
+  # rendered, posted as they are.  A night whose stitch rendered none (it
+  # failed, or never ran) posts a marked two-line comment linking the run;
+  # comments that exist and fail to download fail the job, to be rerun.
+  # Only a run on main posts a cycle's close comment, and only when its
+  # state, which keeps the parts as cut, was uploaded (a later night would
+  # otherwise render them again under the same markers); a dispatched run
+  # on another ref posts its night's comment alone.
+  results:
+    needs: [setup, stitch]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.post) }}
+    permissions:
+      issues: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download the night's comments
+        if: needs.stitch.outputs.comments != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: mutation-sweep-comment
+          path: ${{ runner.temp }}/comment
+
+      - name: Post them on the standing issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIR: ${{ runner.temp }}/comment
+          COMMENTS: ${{ needs.stitch.outputs.comments }}
+          STATE: ${{ needs.stitch.outputs.state }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "$COMMENTS" ]; then
+            mkdir -p "$DIR"
+            printf '%s\n%s\n' "<!-- mutation-sweep-night run=$RUN_ID stopped -->" \
+              "**$(date -u +%F)**: the night stopped before its comment was rendered ([run]($RUN_URL))." \
+              > "$DIR/1-stopped.md"
+          fi
+          title="Mutation sweep results (standing)"
+          # By its exact title among every open issue, whatever its labels,
+          # which it is given at creation alone.
+          number=$(gh issue list --state open --limit 1000 \
+            --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -z "$number" ]; then
+            gh label create testing --color C2E0C6 --description "Test suite structure and coverage" 2>/dev/null || true
+            gh label create mutation-sweep --color d73a4a \
+              --description "The nightly mutation sweep stopped short on main" 2>/dev/null || true
+            if [ ! -e "$DIR/issue-body.md" ]; then
+              printf '%s\n' "The nightly mutation sweep's results (MUTATION.md § The cycle's survivors)." \
+                > "$DIR/issue-body.md"
+            fi
+            url=$(gh issue create --title "$title" --label testing --label mutation-sweep \
+              --body-file "$DIR/issue-body.md")
+            number="${url##*/}"
+          fi
+          gh api --paginate "repos/$GH_REPO/issues/$number/comments" --jq '.[].body | split("\n")[0]' \
+            > "$RUNNER_TEMP/posted.txt"
+          for file in "$DIR"/[12]-*.md; do
+            [ -e "$file" ] || continue
+            case "$file" in
+              "$DIR"/2-*)
+                if [ "$REF" != "refs/heads/main" ]; then
+                  echo "not posted from $REF: $(basename "$file")"
+                  continue
+                fi
+                if [ -z "$STATE" ]; then
+                  echo "not posted, the state was not kept: $(basename "$file")"
+                  continue
+                fi ;;
+            esac
+            mark=$(head -n 1 "$file")
+            if grep -qxF -- "$mark" "$RUNNER_TEMP/posted.txt"; then
+              echo "already posted: $mark"
+              continue
+            fi
+            gh issue comment "$number" --body-file "$file"
+          done
 
   # A tracking issue when a scheduled night stops short: the stitch failed,
   # or never ran because the setup failed.  A slice's own failure is the
@@ -480,12 +634,15 @@ jobs:
                 color: "d73a4a", description: "The nightly mutation sweep stopped short on main",
               });
             }
-            // Issues only: listForRepo also returns pull requests.
+            // Issues only: listForRepo also returns pull requests.  The
+            // standing results issue carries the same label, so this
+            // issue is found by its own title, and a failure is never
+            // reported there.
             const { data: candidates } = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
-              labels: LABEL, state: "open", per_page: 10,
+              labels: LABEL, state: "open", per_page: 100,
             });
-            const open = candidates.filter(item => !item.pull_request);
+            const open = candidates.filter(item => !item.pull_request && item.title === TITLE);
             if (open.length > 0) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo,

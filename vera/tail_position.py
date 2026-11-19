@@ -62,7 +62,38 @@ identifies syntactic tail positions.
 
 from __future__ import annotations
 
-from vera import ast
+from typing import TYPE_CHECKING
+
+from vera import ast, fold
+
+if TYPE_CHECKING:
+    from vera.typed import TypedProgram
+
+
+def self_tail_calls(
+    decl: ast.FnDecl, typed: TypedProgram | None = None,
+) -> list[ast.FnCall]:
+    """The calls of *decl* by itself in tail position, in the order its
+    body holds them: the one predicate that names a self tail call for the
+    obligation table (the measure's re-evaluation rows, whether a function
+    is split into an entry and a body, #1851) and for code generation (the
+    `decreases` prefix spliced at each).  A call is *decl*'s own when it
+    resolves to *decl*: it names *decl*'s link name, or, in a generic's
+    clone, whose calls still name the generic, the typed program
+    (*typed*) resolves it to the clone, as code generation does."""
+    if decl.body is None:
+        return []
+    sites = compute_tail_call_sites(decl)
+
+    def resolves_to_decl(call: ast.FnCall) -> bool:
+        if call.name == decl.name:
+            return True
+        target = typed.call_target(call) if typed is not None else None
+        return target is not None and target.name == decl.name
+
+    return [n for n in fold.walk(decl.body)
+            if isinstance(n, ast.FnCall) and id(n) in sites
+            and resolves_to_decl(n)]
 
 
 def compute_tail_call_sites(

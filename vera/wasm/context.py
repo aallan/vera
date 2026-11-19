@@ -34,7 +34,7 @@ from vera.skip import (
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
-from vera.tail_position import compute_tail_call_sites
+from vera.tail_position import self_tail_calls
 from vera.trap_registry import (
     CHECK_MARKER_RE,
     TRAP_EMITTERS,
@@ -510,7 +510,10 @@ class WasmContext(
         # without these set (e.g. closure bodies — see
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
-        self._self_ret_wt: str | None = None
+        self._self_ret_wt: str | None = None  # pragma: no mutate — equivalent: read only beside a tail-call site, and the empty default set holds none until `set_tail_call_context` sets this too
+        #: The link name of the function being compiled when it is split
+        #: into an entry and a body (#1851; ``set_tail_call_context``).
+        self._split_name: str | None = None  # pragma: no mutate — equivalent: compared with a call's link name, which is never empty, so "" matches none as None does
         # #630 Tier 2 — interpolation-segment inference failures.
         # When `_translate_interpolated_string` can't classify a segment's
         # Vera type, it appends the offending `Expr` here and returns
@@ -734,6 +737,7 @@ class WasmContext(
 
     def set_tail_call_context(
         self, sites: set[int], self_ret_wt: str | None,
+        split_name: str | None = None,
     ) -> None:
         """Configure tail-call optimization for the function being compiled.
 
@@ -750,9 +754,16 @@ class WasmContext(
         Both arguments default to "no TCO" if never called — this
         is the right default for closure bodies and other contexts
         where the caller hasn't pre-computed tail-call sites.
+
+        ``split_name`` is the link name of the function being compiled
+        when the table splits it into an entry and a body (#1851): a call
+        of it that leaves by ``return_call`` transfers to the body
+        (``vera.binding.body_symbol``), and every other call of it is a
+        call of the entry, whose check runs.
         """
         self._tail_call_sites = sites
         self._self_ret_wt = self_ret_wt
+        self._split_name = split_name
 
     def get_old_state_local(self, type_name: str) -> int | None:
         """Get the local index holding the old() snapshot for a State type."""
@@ -1028,18 +1039,13 @@ class WasmContext(
         finally:
             self._evaluation = saved
 
-    @staticmethod
-    def _self_tail_calls(decl: ast.FnDecl) -> list[ast.FnCall]:
+    def _self_tail_calls(self, decl: ast.FnDecl) -> list[ast.FnCall]:
         """The self-recursive calls in tail position of *decl*'s body, in
         the order the body holds them: the order the table lists a
         measure's re-evaluation rows in, and the order `_compile_fn`
-        splices the self-tail prefix in."""
-        if decl.body is None:
-            return []
-        sites = compute_tail_call_sites(decl, None)
-        return [n for n in fold.walk(decl.body)
-                if isinstance(n, ast.FnCall) and n.name == decl.name
-                and id(n) in sites]
+        splices the self-tail prefix in.  The table's predicate, over the
+        same typed program, so a clone's self call is one here too."""
+        return self_tail_calls(decl, self._typed_program)
 
     def _first_self_tail_call(self, decl: ast.FnDecl) -> ast.FnCall | None:
         calls = self._self_tail_calls(decl)
