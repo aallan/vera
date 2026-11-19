@@ -321,19 +321,20 @@ _UNKNOWN_VALUE = """private forall<F> fn g(@F -> @Int)
 
 
 def test_named_a_value_of_no_known_type_is_refused() -> None:
-    """`[][0]` is typed `Unknown` with no error reported (the one route
-    left, #1684: `apply_fn` over a type variable is `E202`), and a `match` over it with only a constructor arm is refused
-    E313, which is then the error that refuses the program (#1671)."""
-    _refused_once(_UNKNOWN_VALUE, "E313", _place(_UNKNOWN_VALUE, "let Tuple"))
+    """`[][0]` was typed `Unknown` with no error reported, and the
+    destructure over it was refused E313.  The index is refused (E164,
+    #1862), the one error the program owes, and the destructure of a value
+    typed `Unknown` is not judged (#1671)."""
+    _refused_once(_UNKNOWN_VALUE, "E164", _place(_UNKNOWN_VALUE, "[][0]"))
 
 
 def test_a_bindings_error_says_nothing_about_the_value() -> None:
-    """Whether an error has been reported is read before the bindings are
-    resolved, as a `match` reads it before its arms: an unknown binding
-    type (E136) leaves the value's own E313 standing."""
+    """The value is typed before the bindings are resolved: the index's
+    E164 stands, and an unknown binding type (E136) is reported after
+    it."""
     source = _UNKNOWN_VALUE.replace("Tuple<@Int, @Int>", "Tuple<@Nope, @Int>")
     checked = pipeline.check(source)
-    assert [d.error_code for d in checked.diagnostics] == ["E136", "E313"], [
+    assert [d.error_code for d in checked.diagnostics] == ["E164", "E136"], [
         (d.error_code, d.description) for d in checked.diagnostics]
 
 

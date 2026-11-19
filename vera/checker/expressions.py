@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
-from vera.formatter import format_expr_canonical
+from vera.formatter import format_effect_ref_structural, format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
@@ -1028,6 +1028,11 @@ class ExpressionsMixin:
                 elem_type = coll_base.type_args[0]
             else:
                 elem_type = UnknownType()
+            if (isinstance(base_type(elem_type), UnknownType)
+                    and not self._error_reported()
+                    and not any(isinstance(n, ast.HoleExpr)
+                                for n in fold.walk(expr.collection))):
+                self._refuse_untyped_index(expr, bare=not coll_base.type_args)
 
             # Index must be Int or Nat
             if idx_ty and not is_unknown_like(idx_ty):
@@ -1067,6 +1072,50 @@ class ExpressionsMixin:
             error_code="E161",
         )
         return UnknownType()
+
+    def _refuse_untyped_index(self, expr: ast.IndexExpr, *,
+                              bare: bool) -> None:
+        """E164 (#1862): an index into an array whose element type nothing
+        fixes has no type: no element, argument or expected type gives the
+        array one (an empty literal with no type around it, spec §4.12.1),
+        or the array's type is written with no element type (*bare*,
+        `@Array`).  Code generation cannot choose the element's
+        representation, so the program is refused here, with the type to
+        write, and not dropped there.  The collection and the index are
+        written in canonical form, which every node has, with or without
+        the source text."""
+        coll = format_expr_canonical(expr.collection)
+        idx = format_expr_canonical(expr.index)
+        if bare:
+            fix = ("Write the array's element type where its type is "
+                   "written: `@Array<Int>` in place of `@Array`, with the "
+                   "element type the program means in place of `Int`.")
+        else:
+            fix = (f"Give the array its element type: bind it at its type "
+                   f"first, `let @Array<Int> = {coll};`, and index the "
+                   f"binding, `@Array<Int>.0[{idx}]`; or index it where a "
+                   f"type is expected, as in `let @Int = {coll}[{idx}];`.  "
+                   f"Write the element type the program means in place of "
+                   f"`Int`.")
+        self._error(
+            expr,
+            f"The element type of {coll} is not known, so the index "
+            f"{coll}[{idx}] has no type.",
+            rationale=(
+                "An array's element type is fixed by its elements, by an "
+                "argument, or by the type the array or its index is "
+                "expected at.  Here nothing fixes it, so the indexed value "
+                "has no type and no representation to compile to."),
+            fix=fix,
+            spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
+            error_code="E164",
+        )
+
+    def _error_reported(self) -> bool:
+        """Whether an error-severity diagnostic has been reported: the
+        error behind a value the check typed `Unknown`, wherever it stands
+        (a declaration's E158, an import's E155; #1671)."""
+        return any(d.severity == "error" for d in self.errors)
 
     # -----------------------------------------------------------------
     # Blocks and statements
@@ -1168,7 +1217,7 @@ class ExpressionsMixin:
         # Read before the bindings are resolved, as a `match` reads it
         # before its arms: an error in a binding's type says nothing about
         # the value (#1671).
-        after_error = self._unknown_is_reported(stmt.value)
+        after_error = self._error_reported()
 
         resolved_types: list[Type] = []
         for te in stmt.type_bindings:
@@ -1226,27 +1275,26 @@ class ExpressionsMixin:
         if ty is None or isinstance(ty, UnknownType):
             return ty
         # The open call's re-check is blocked only by what cannot fix its
-        # variable: an unknown, a literal's hole, a variable some call left
-        # open.  The enclosing function's own type parameter is a type like
-        # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
-        # `forall<T>` fixes `none_ord`'s variable at that `T`).
+        # variable: an unknown in the context.  No site hands this check a
+        # context holding a literal's hole or a variable a call left open
+        # (each caller's context is a written or recorded type; none was
+        # reached over the corpus, the generator's seeds and the checker's
+        # instruments, #1862).  The enclosing function's own type parameter
+        # is a type like any other (`let @Array<Option<T>> = [none_ord(())]`
+        # inside a `forall<T>` fixes `none_ord`'s variable at that `T`).
         open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall,
                                         ast.IndexExpr)
         if component:
             open_kinds += (ast.ConstructorCall, ast.NullaryConstructor)
         left_open = (isinstance(expr, open_kinds)
                      and contains_fresh_typevar(ty)
-                     and not contains_fresh_typevar(context)
-                     and not contains_unknown(context)
-                     and not contains_literal_hole(context))
-        if not left_open and (contains_typevar(context)
-                              or not self._call_literal_meets_nat(
-                                  expr, context)):
+                     and not contains_unknown(context))
+        if not left_open and (
+                not self._call_literal_meets_nat(expr, context)
+                or contains_typevar(context)  # pragma: no mutate — the mutant's verdict is the stronger one: without the test a negative literal reached through an open call inside a `forall` body's `Array<Tuple<T, Nat>>` is refuted at verify (E503), as the concrete form is; that is issue #1605's rule, and a cell now would pin the weaker verdict
+        ):
             return ty
-        rechecked = self._synth_expr(expr, expected=context)
-        if rechecked is None or isinstance(rechecked, UnknownType):
-            return ty
-        return rechecked
+        return self._synth_expr(expr, expected=context)
 
     def _call_literal_meets_nat(self, expr: ast.Expr, context: Type) -> bool:
         """Whether a generic call that *expr* evaluates to, or builds into
@@ -1570,14 +1618,18 @@ class ExpressionsMixin:
         # context (#1541), as a literal argument does: it gives the element
         # type nothing to disagree with.
         typed = [(e, t) for e, t in zip(expr.elements, elem_types)
-                 if t is not None and not isinstance(t, UnknownType)
+                 if t is not None
+                 and not isinstance(t, UnknownType)  # pragma: no mutate — equivalent by every cell and probe: an element typed `Unknown` has an error or a hole behind it (#1862), and letting it through changes no diagnostic and no type a later check reads
                  and not contains_literal_hole(
                      self._literal_soft_type(e, t) or t)
                  and not self._leaves_open(t)]
+        # An unknown element context (an unresolved type name, a sibling's
+        # empty literal) decides nothing.  No element context holds a
+        # literal's hole or a variable a call left open (none was reached
+        # over the corpus, the generator's seeds and the checker's
+        # instruments, #1862).
         ctx = (element_ctx if element_ctx is not None
-               and not contains_fresh_typevar(element_ctx)
-               and not contains_unknown(element_ctx)
-               and not contains_literal_hole(element_ctx) else None)
+               and not contains_unknown(element_ctx) else None)
         element_type = structure
         if typed and any(not same_type_and_facts(t, typed[0][1])
                          for _, t in typed[1:]):
@@ -2192,6 +2244,8 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            if self._refuse_stateless_effect(expr, ei, "old"):
+                return UnknownType()
             self._check_effect_ref_declared(expr, ei, "old")
             return self._effect_state_type(ei)
         return UnknownType()
@@ -2216,9 +2270,70 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            if self._refuse_stateless_effect(expr, ei, "new"):
+                return UnknownType()
             self._check_effect_ref_declared(expr, ei, "new")
             return self._effect_state_type(ei)
         return UnknownType()
+
+    def _refuse_stateless_effect(
+        self, expr: ast.OldExpr | ast.NewExpr, ei: EffectInstance, form: str,
+    ) -> bool:
+        """E189 (#1862): ``old()`` and ``new()`` read a `State` cell, so
+        their argument MUST name a stateful effect (spec §7.9.2).  An effect
+        with no state (`IO`, `Exn<Int>`, a user effect) has no value for the
+        form to read, and the check gave it no type, with no diagnostic
+        behind it.  Refused here, once, in place of the row's E177 too: the
+        form names no cell whether the row declares the effect or not.
+        Returns whether it refused.
+
+        The effect and the cell are written as the source writes them (the
+        form's argument, the enclosing function's row), in the formatter's
+        structural form, the one the checker names a cell by: the fix is
+        pasted, and must read back as the row's own cell.  A resolved type's
+        rendering expands an alias and elides a refinement's predicate
+        (`State<{@Int | ...}>` does not parse), and canonical form drops a
+        match arm's redundant block (`0 -> { true }` reads back as
+        `0 -> true`, another cell).  With no function around the form (a
+        refinement or invariant in a declaration, already refused by E174 or
+        E175) there is no row, and the fix is the one for a row with no
+        cell."""
+        if ei.name == "State" or self.env.lookup_effect(ei.name) is None:
+            # `State`'s cell, or a name no effect in scope declares (effect
+            # declarations are module-local, spec §8.4.1, and a row naming
+            # one is refused, E338 or an unknown effect): the row's E177 or
+            # that refusal is the error behind it.
+            return False
+        row = self._fn_scope_stack[-1].effect if self._fn_scope_stack else None
+        cells = sorted(
+            format_effect_ref_structural(r)
+            for r in (row.effects if isinstance(row, ast.EffectSet) else ())
+            if isinstance(r, ast.EffectRef)
+            and r.name == "State" and r.type_args)
+        shown = format_effect_ref_structural(expr.effect_ref)
+        if cells:
+            cell = cells[0]
+            fix = (f"Name the State cell the postcondition means: "
+                   f"`{form}({cell})` in place of `{form}({shown})`.")
+        else:
+            fix = (f"Name a State cell, `{form}(State<Int>)` in place of "
+                   f"`{form}({shown})`, and declare it in the function's "
+                   f"effects row, `effects(<State<Int>>)`, with the cell's "
+                   f"type in place of `Int`.")
+        self._error(
+            expr,
+            f"{form}({shown}) names an effect with no state: {form}() "
+            f"reads a State cell.",
+            rationale=(
+                f"{form}() refers to the value of a State effect's cell "
+                f"{'before' if form == 'old' else 'after'} the call.  "
+                f"{shown} holds no state, so there is no value for the "
+                f"form to name."),
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.9.2 "State in Contracts"',
+            error_code="E189",
+        )
+        return True
 
     def _check_effect_ref_declared(
         self, expr: ast.Expr, ei: EffectInstance, form: str,
