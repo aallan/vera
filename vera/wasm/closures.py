@@ -279,7 +279,8 @@ class ClosuresMixin:
             binding = self._closure_argument_component(
                 out, spill, formal, row.path)
             te = self.obligations.guard_type_expr(row.target)
-            if binding is None or te is None:
+            if (binding is None or te is None  # pragma: no mutate — unreachable: the table holds a row guardable only where guard_type_expr writes its type, over a tuple path its type has, so neither is None
+                    ):
                 raise CodegenInvariantError(
                     "the obligation table holds a closure argument's refinement guardable, and this lowering resolves no type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a row guardable only where guard_type_expr writes its type, over a tuple path its type has, so no accepted program raises this
                 )
