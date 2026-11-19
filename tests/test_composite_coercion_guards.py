@@ -591,22 +591,22 @@ public fn f(@Int -> @Int)
 }
 """
 
-def _refused_e189(src: str) -> None:
+def _refused_e190(src: str) -> None:
     """A function type gaining a `Nat` component is refused where the
     function is passed (#1819, #1885: rule 9 compares a function type's
-    components under the formal relation, E189); no walk could check it
+    components under the formal relation, E190); no walk could check it
     there, and the run used to give -5 from a `-> @Nat`."""
     checked = pipeline.check(src)
-    assert [d.error_code for d in checked.errors] == ["E189"], [
+    assert [d.error_code for d in checked.errors] == ["E190"], [
         d.format() for d in checked.errors]
 
 
 def test_repro_a_closure_returning_int_at_a_nat_result_is_refused() -> None:
-    _refused_e189(_FN_RETURN)
+    _refused_e190(_FN_RETURN)
 
 
 def test_repro_a_closure_taking_nat_at_an_int_formal_is_refused() -> None:
-    _refused_e189(_FN_PARAM)
+    _refused_e190(_FN_PARAM)
 
 
 # =====================================================================

@@ -333,7 +333,7 @@ def _shared_facts(
     `Int` beside a `Nat` gives a plain `Nat`).  Where two chains state
     different predicates at one level the parameter has the shared prefix,
     which an arm stating one of them does not fit under rule 9's formal
-    relation: `ControlFlowMixin._value_join` refuses that arm (E189, #1885),
+    relation: `ControlFlowMixin._value_join` refuses that arm (E190, #1885),
     so a callback's result whose arms differ by base (a `Nat` beside a
     refined `Int`, where no chain is kept) is refused there too.  Binding
     the join where a refined type is expected is then the narrowing it is,
@@ -447,7 +447,7 @@ class ControlFlowMixin:
 
         Where the arms state two refinements at a function type's
         parameter, the join keeps their shared prefix, which no arm accepts
-        all of: that arm is refused at the join (E189, #1885), as it is at
+        all of: that arm is refused at the join (E190, #1885), as it is at
         any other flow into the type."""
         shared = _shared_facts(joined, arms)
         for expr, ty in arms:

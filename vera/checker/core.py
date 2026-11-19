@@ -927,7 +927,7 @@ class TypeChecker(
         declare: str,
         call: tuple[FunctionInfo, int, Sequence[Type | None]] | None = None,
     ) -> bool:
-        """E189 at *node*, a function value of type *value_ty* that fits
+        """E190 at *node*, a function value of type *value_ty* that fits
         *position_ty* only by a narrowing (`unfit_function_value`): a
         parameter narrower than the position's (#1885) or a result wider
         (#1819).  Reported in place of the flow's own mismatch; True where
@@ -1015,13 +1015,13 @@ class TypeChecker(
                 "its return."),
             fix=fix,
             spec_ref='Chapter 2, Section 2.8 "Subtyping Rules"',
-            error_code="E189",
+            error_code="E190",
         )
         return True
 
     def _eta_wrapper(self, node: ast.Expr, fn: FunctionType) -> str | None:
         """A closure of type *fn* that applies the function value the slot
-        *node* holds, for E189's fix where the value is not written in
+        *node* holds, for E190's fix where the value is not written in
         place (#1819): `fn(@Int -> @Nat) effects(pure) { apply_fn(@F.0,
         @Int.0) }`.  None where *node* is not a slot or a part of *fn* is
         not written."""
@@ -1047,7 +1047,7 @@ class TypeChecker(
                       written: ast.TypeExpr | None,
                       pp: str) -> str | None:
         """The closure *node*'s header as written, the type *written* (a
-        parameter's or its result's) declared *pp* instead, for E189's first
+        parameter's or its result's) declared *pp* instead, for E190's first
         rewrite; None where the value is not a closure written in place."""
         if not isinstance(node, ast.AnonFn) or written is None:
             return None
@@ -1078,7 +1078,7 @@ class TypeChecker(
         gave: str,
         other: str,
     ) -> tuple[str, str]:
-        """E189's *gave* and *other* at a call's argument: where the
+        """E190's *gave* and *other* at a call's argument: where the
         callee's declared parameter is a function type whose parameter
         *index_at* is a type variable, the instance and the argument that
         fixed it, and that argument at the type that fixes the variable at

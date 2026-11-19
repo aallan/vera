@@ -476,7 +476,7 @@ class _Pair(typing.NamedTuple):
     unrelated: str   # an expected type neither fits
     #: Whether the literal takes a `strong` expected element type: a `weak`
     #: value fits it by a narrowing (`Nat`, a refinement); a function type
-    #: whose parameter is narrower is refused there (E189, #1885), as its
+    #: whose parameter is narrower is refused there (E190, #1885), as its
     #: twin bound at that element type is, so the outcomes agree; an
     #: effect row has neither.
     weak_fits: bool = True
@@ -794,7 +794,7 @@ def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         depth: int, order: str) -> None:
     """The function-type pair nested the same way: every level is what
     both accept, `fn(Nat -> Int)`, so the -5 is refuted (E503) when it is
-    applied unbound, and binding the join at `IntFn` is refused (E189,
+    applied unbound, and binding the join at `IntFn` is refused (E190,
     #1885): a `fn(Nat -> Int)` takes no `Int`."""
     x, y = (_INT_FN, _NAT_FN) if order == "int_fn_first" else (
         _NAT_FN, _INT_FN)
@@ -808,7 +808,7 @@ def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         "main", "@Unit", "Int",
         f"let @IntFn = {call};\napply_fn(@IntFn.0, 0 - 5)",
         visibility="public")
-    assert [e.error_code for e in pipeline.check(bound).errors] == ["E189"]
+    assert [e.error_code for e in pipeline.check(bound).errors] == ["E190"]
 
 
 # ---------------------------------------------------------------------

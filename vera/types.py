@@ -1046,7 +1046,7 @@ def unfit_function_value(sub: Type, sup: Type) -> UnfitFunctionValue | None:
     """The function type in *sub* that meets its place in *sup* only by a
     narrowing (`Int` at `Nat`, a type at a refinement of it, a refinement
     at another): a parameter narrower than the place's, or a result wider,
-    the rest of the pair fitting.  The case rule 9 refuses for E189
+    the rest of the pair fitting.  The case rule 9 refuses for E190
     (#1885, #1819).  Searched through a data type's type arguments and a
     function type's result, outermost first; ``None`` where there is
     none."""

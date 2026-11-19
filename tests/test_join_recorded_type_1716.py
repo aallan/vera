@@ -448,14 +448,14 @@ def test_a_parameter_refinement_one_arm_states_is_what_the_join_accepts(
         swap: bool) -> None:
     """`fn(PosInt -> Int)` beside `fn(Int -> Int)` is recorded
     `fn(PosInt -> Int)` in either order, what both closures accept.
-    Returned as an `fn(Int -> Int)` it is refused (E189, #1885): a
+    Returned as an `fn(Int -> Int)` it is refused (E190, #1885): a
     function type's parameter takes no narrowing, and the join takes no
     `Int` its `PosInt` arm would trap on."""
     first, second = (_INT_PARAM, _POS_PARAM) if swap else (
         _POS_PARAM, _INT_PARAM)
     source = _FN_PROGRAM.format(first=first, second=second)
     returned = pipeline.check(source, file=FILE)
-    assert [d.error_code for d in returned.errors] == ["E189"], [
+    assert [d.error_code for d in returned.errors] == ["E190"], [
         (d.error_code, d.description[:80]) for d in returned.errors]
     recorded = source.replace("type IF = fn(Int -> Int)",
                               "type IF = fn(PosInt -> Int)")
@@ -1717,7 +1717,7 @@ def test_a_function_join_reads_a_parameter_as_accepting(
 #: Arms no one type accepts: a `Nat` beside a refined `Int` (two bases),
 #: and two predicates at one level.  The join keeps what both state, a plain
 #: `Nat` or the base `Int`, which neither arm takes all of under rule 9's
-#: formal relation, so the arm is refused at the join (E189, #1885).
+#: formal relation, so the arm is refused at the join (E190, #1885).
 _FN_NO_SHARED = [
     ("fn(Small -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)", ""),
     ("fn(Small -> Int)", "fn(Pos -> Int)", "fn(Int -> Int)", ""),
@@ -1730,7 +1730,7 @@ _FN_NO_SHARED = [
 def test_a_function_join_no_type_accepts_is_refused(
         form: str, swap: bool, row: tuple[str, str, str, str]) -> None:
     checked = pipeline.check(_fn_join(form, row, swap), file=FILE)
-    assert [d.error_code for d in checked.errors] == ["E189"], [
+    assert [d.error_code for d in checked.errors] == ["E190"], [
         (d.error_code, d.description[:80]) for d in checked.errors]
 
 
@@ -1833,14 +1833,14 @@ def test_repro_1716_a_nat_parameter_beside_a_refined_int_is_a_plain_nat(
     """`fn(Small -> Int)` beside `fn(Nat -> Int)`: the join's parameter is
     a plain `Nat` (no chain moved onto another base), which the `Small`
     closure does not take all of, so the join is refused at that arm
-    (E189, #1885) in either order, guard or none.  It used to verify, and
+    (E190, #1885) in either order, guard or none.  It used to verify, and
     50 handed to the `Small` closure trapped in its entry check."""
     first, second = (("@NatToInt.0", "@SmallToInt.0") if swap
                      else ("@SmallToInt.0", "@NatToInt.0"))
     for guard in ("true", "@Int.0 >= 0"):
         checked = pipeline.check(_MIXED.format(
             guard=guard, first=first, second=second), file=FILE)
-        assert [d.error_code for d in checked.errors] == ["E189"], [
+        assert [d.error_code for d in checked.errors] == ["E190"], [
             (d.error_code, d.description[:80]) for d in checked.errors]
 
 
@@ -1898,7 +1898,7 @@ def test_repro_1716_two_parameter_predicates_build_no_new_chain(
         swap: bool) -> None:
     """`fn(Small -> Int)` beside `fn(Pos -> Int)`: the predicates differ at
     one level, so the join's parameter is the base `Int`, which neither
-    closure takes all of: the join is refused at an arm (E189, #1885).  It
+    closure takes all of: the join is refused at an arm (E190, #1885).  It
     used to verify with no row at the argument, and 50 handed to the
     `Small` closure trapped at its entry."""
     source = _refined_accepting("Small", "true", swap).replace(
@@ -1906,7 +1906,7 @@ def test_repro_1716_two_parameter_predicates_build_no_new_chain(
     ).replace("fn(@Int -> @Int) effects(pure) { @Int.0 }",
               "fn(@Pos -> @Int) effects(pure) { @Pos.0 }")
     checked = pipeline.check(source, file=FILE)
-    assert [d.error_code for d in checked.errors] == ["E189"], [
+    assert [d.error_code for d in checked.errors] == ["E190"], [
         (d.error_code, d.description[:80]) for d in checked.errors]
 
 
@@ -2159,14 +2159,14 @@ def test_repro_1716_a_refined_callback_result_is_recorded_at_the_arm(
         swap: bool) -> None:
     """`fn(IntF -> Int)` beside `fn(PosF -> Int)` is recorded
     `fn(PosF -> Int)` in either order: the join states what both accept.
-    The `fn(Int -> Int)` closure applied to it is refused (E189, #1819): a
+    The `fn(Int -> Int)` closure applied to it is refused (E190, #1819): a
     closure declared `-> @Int` guarantees no `PosInt`.  It used to be
     taken by rule 9 with rule 7, and the run printed -5 into the `PosF`
     arm's `@PosInt`."""
     first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
     source = _CALLBACK_RESULT.format(first=first, second=second)
     checked = pipeline.check(source, file=FILE)
-    assert [d.error_code for d in checked.errors] == ["E189"], [
+    assert [d.error_code for d in checked.errors] == ["E190"], [
         (d.error_code, d.description[:80]) for d in checked.errors]
     _learn_predicates(checked)
     types = checked.artifacts.node_semantic_types
@@ -2261,11 +2261,11 @@ def test_repro_1716_a_mixed_base_callback_result_is_held_by_no_check(
     """`fn(NatF -> Int)` beside `fn(PosF -> Int)`: the callback's result is
     a `Nat` beside a refined `Int`, a mixed base, so no chain is kept and
     the join's callback is a `NatF`, which the `PosF` arm, trusting a
-    `PosInt` result, does not take: the arm is refused at the join (E189,
+    `PosInt` result, does not take: the arm is refused at the join (E190,
     #1819).  It used to check, and a `Nat`-returning callback reached the
     arm that binds its result at `@PosInt`: the run returned 0 from it."""
     first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
     source = _MIXED_CALLBACK_RESULT.format(first=first, second=second)
     checked = pipeline.check(source, file=FILE)
-    assert [d.error_code for d in checked.errors] == ["E189"], [
+    assert [d.error_code for d in checked.errors] == ["E190"], [
         (d.error_code, d.description[:80]) for d in checked.errors]

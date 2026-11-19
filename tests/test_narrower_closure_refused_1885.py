@@ -16,7 +16,7 @@ compared by their base alone, so a `fn(@Big -> @Int)` passed at
 The rule: inside a function type's parameter the comparison is the formal
 relation (`is_formal_subtype`): never `Int <: Nat`, never a type to a
 refinement of it, and two refinements of one base only where they state the
-same predicate.  Every flow refuses with E189, whose fix names the closure's
+same predicate.  Every flow refuses with E190, whose fix names the closure's
 parameter type, the position's, and what gave the position its type.
 
 The matrix is the flow (each place a function value meets a function type)
@@ -24,7 +24,7 @@ x the relation of the closure's parameter to the position's (narrower by a
 refinement, by `Nat`, by predicate, wider only by implication, equal,
 wider) x how the narrowness arises (a closure written in place, a slot bound
 at its own function type, a refinement inside the parameter's type
-argument).  A refused cell asserts E189 is the one error; an accepted cell
+argument).  A refused cell asserts E190 is the one error; an accepted cell
 verifies with reconciliation and runs to the value it should.
 """
 
@@ -63,7 +63,7 @@ def _only_diagnostic(source: str) -> dict[str, object]:
     envelope = pipeline.check(source).envelope()
     diagnostics = envelope["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert [d["error_code"] for d in diagnostics] == ["E189"], json.dumps(
+    assert [d["error_code"] for d in diagnostics] == ["E190"], json.dumps(
         diagnostics, indent=1)[:2000]
     return diagnostics[0]
 
@@ -131,7 +131,7 @@ def test_repro_a_narrower_closure_bound_by_a_let_is_refused_1885() -> None:
 def test_repro_a_nat_closure_at_an_int_type_is_refused_1885() -> None:
     """The silent member: the `@Nat` parameter held -5, with check and
     verify clean.  Also #1819's parameter line."""
-    assert _codes(_NAT_LET) == ["E189"]
+    assert _codes(_NAT_LET) == ["E190"]
 
 
 def test_repro_array_map_names_its_instance_and_the_argument_1885() -> None:
@@ -171,7 +171,7 @@ def test_repro_a_closure_wider_only_by_implication_is_refused_1885() -> None:
 
 
 def test_repro_both_rewrites_the_fix_names_check_and_run_1885() -> None:
-    """The two rewrites E189's fix gives for the generic route are programs
+    """The two rewrites E190's fix gives for the generic route are programs
     that check, verify and run."""
     narrowed = _ALIASES + _fn(
         "main(@Int -> @Int)",
@@ -228,7 +228,7 @@ def test_repro_a_wider_result_read_back_as_pos_is_refused_1819() -> None:
 def test_repro_a_wider_result_at_a_nat_type_is_refused_1819() -> None:
     """Was silent: `main`, declared `-> @Nat`, returned -5, with check and
     verify clean."""
-    assert _codes(_RESULT_NAT) == ["E189"]
+    assert _codes(_RESULT_NAT) == ["E190"]
 
 
 def test_repro_the_issue_s_program_and_its_wrapper_1819() -> None:
@@ -525,7 +525,7 @@ def test_a_function_value_meets_a_function_type(
         flow: str, kind: str, form: str, p: str, c: str) -> None:
     source = program(flow, kind, form, p, c)
     if expected_refused(flow, kind, form, p, c):
-        assert _codes(source) == ["E189"], source
+        assert _codes(source) == ["E190"], source
     else:
         # `array_map`'s result column counts the mapped array.
         _accepted(source, 1 if (flow, kind) == ("array-map", "result")
@@ -614,7 +614,7 @@ _FN = "type F = fn(Int -> Int) effects(pure);\n\n"
 #: A function value that fits its function type by no narrowing (a
 #: parameter of another base, another data type, another arity, a result of
 #: another base, a wider effect row, a narrowing beside one of these), each
-#: at a `let`: the `let`'s own mismatch, E170, never E189.
+#: at a `let`: the `let`'s own mismatch, E170, never E190.
 _OUTSIDE = {
     "another base": (_FN, "fn(@String -> @Int) effects(pure) { 0 }"),
     "another data type": (
@@ -651,7 +651,7 @@ def test_a_function_value_where_no_function_type_is_keeps_its_code() -> None:
         assert _codes(source) == ["E170"], declared
 
 
-#: A `String`-taking closure at each flow whose own mismatch E189 replaces
+#: A `String`-taking closure at each flow whose own mismatch E190 replaces
 #: for the class: the flow's code stands for a value outside it.
 _OWN_CODE = {
     "let": "E170", "argument": "E202", "field": "E213", "return": "E121",
@@ -666,7 +666,7 @@ def test_every_flow_keeps_its_own_code_outside_the_class() -> None:
             "fn(@Pos -> @Int) effects(pure) { @Pos.0 }",
             "fn(@String -> @Int) effects(pure) { 0 }")
         assert code in _codes(source), (flow, _codes(source))
-        assert "E189" not in _codes(source), flow
+        assert "E190" not in _codes(source), flow
 
 
 def test_an_unresolved_parameter_type_draws_no_cascade() -> None:
@@ -707,7 +707,7 @@ def test_a_variable_met_below_the_head_is_refused_at_each_argument() -> None:
         "second(Some(fn(@Pos -> @Int) "
         "effects(pure) { @Pos.0 }), Some(fn(@Big -> @Int) effects(pure) "
         "{ @Big.0 }));\n  0", visibility="public")
-    assert _codes(source) == ["E189", "E189"]
+    assert _codes(source) == ["E190", "E190"]
 
 
 def test_never_and_a_variable_inside_a_function_type_still_fit() -> None:
