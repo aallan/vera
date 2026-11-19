@@ -119,9 +119,9 @@ REASON_FUNCTION_BASE = "a refinement over a function type has no binder to check
 REASON_BELOW_STORE = (
     "a construction store checks a component's head, not a tuple "
     "component below it")
-REASON_UNWRITTEN_ARGUMENT = (
-    "the check at the call has no written type to bind: the refinement is "
-    "written over a generic declaration's type parameter, or nowhere")
+REASON_UNWRITTEN = (
+    "the check has no written type to bind: the refinement is written over "
+    "a generic declaration's type parameter, or nowhere")
 REASON_NON_SCALAR_STORE = (
     "a construction store guards only a scalar-based refinement")
 REASON_INSIDE_PAYLOAD = (
@@ -556,10 +556,11 @@ class _Builder:
         #: ``id(arg)`` of a call argument or a return leaf to the boundary
         #: type expression whose entry rows answer its rows.
         self._boundary: dict[int, ast.TypeExpr] = {}
-        #: ``id(arg)`` of an argument applied to a function value that is no
-        #: closure literal, and of its value leaves: checked at the call
-        #: against a type :func:`guard_type_expr` writes (#1861).
-        self._called_args: set[int] = set()
+        #: ``id`` of each value whose check binds the refinement as written
+        #: (:func:`guard_type_expr`, #1861), and of its value leaves: an
+        #: argument applied to a function value that is no closure literal,
+        #: a `set_add` element, a `map_insert` key.
+        self._written_args: set[int] = set()
         #: ``(id(node), path)`` of an answering row to its id: a
         #: ``requires`` clause's row, a boundary's entry rows.
         self._answerers: dict[tuple[int, tuple[str, ...]], int] = {}
@@ -1107,16 +1108,24 @@ class _Builder:
             return unguarded(REASON_NON_SCALAR_STORE)
         return CHECK
 
+    def _written(self, arg: ast.Expr) -> None:
+        """Mark *arg*, and its value leaves, as checked against the
+        refinement as written (:meth:`_guard_at`)."""
+        self._written_args.add(id(arg))
+        self._written_args.update(
+            id(leaf) for leaf in narrowing.value_leaves(arg))
+
     def _guard_at(
         self, e: ast.Node, ty: RefinedType, construction: bool = False,
     ) -> Guard:
         """:meth:`_refinement_guardable` for a value held to *ty* at *e*,
-        where a value applied to a function value is checked at the call
-        only against a type :func:`guard_type_expr` writes (#1861)."""
+        where a value whose check binds the refinement as written (a closure
+        argument, a `set_add` element, a `map_insert` key) is checked only
+        against a type :func:`guard_type_expr` writes (#1861)."""
         guard = self._refinement_guardable(ty, construction=construction)
-        if (guard.check and id(e) in self._called_args
+        if (guard.check and id(e) in self._written_args
                 and guard_type_expr(ty, self.written()) is None):
-            return unguarded(REASON_UNWRITTEN_ARGUMENT)
+            return unguarded(REASON_UNWRITTEN)
         return guard
 
     def _inline_base(self, ty: RefinedType) -> bool:
@@ -1609,9 +1618,11 @@ class _Builder:
             # #1861, #1885).
             for arg in e.args[1:]:
                 if id(arg) not in self._boundary:
-                    self._called_args.add(id(arg))
-                    self._called_args.update(
-                        id(leaf) for leaf in narrowing.value_leaves(arg))
+                    self._written(arg)
+        if isinstance(e, ast.FnCall) and name in ("set_add", "map_insert"):
+            # The two stores whose check binds the refinement as written.
+            for arg in e.args[1:2]:
+                self._written(arg)
         if isinstance(e, ast.FnCall) and name in NAT_ARG_UNGUARDED_BUILTINS:
             for arg in e.args:
                 self._arg_reason.setdefault(id(arg), REASON_STRING_SLICE)

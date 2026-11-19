@@ -76,6 +76,8 @@ HEADER = (
     "type IntList = Array<Int>;\n"
     "type NEL = { @IntList | array_length(@IntList.0) > 0 };\n"
     "type Bounded<T> = { @Int | @Int.0 > 0 };\n"
+    "type Count2 = Count;\n"
+    "type PosCount2 = { @Count2 | @Count2.0 > 0 };\n"
 )
 CONTRACT = ("  requires(@Int.0 >= 0 && @Int.0 < 5)\n  ensures(true)\n"
             "  effects(pure)\n")
@@ -310,7 +312,24 @@ BUILT: dict[str, tuple[str, str, float | None]] = {
                      "Tuple(pair(float_to_int(@Float64.0)), 0)", 5000.0),
     "arr_tuple": ("Array<Tuple<Short, Int>>",
                   "[pair(float_to_int(@Float64.0))]", 5000.0),
+    # How the base is written, at the two stores whose check binds the
+    # refinement as written (#1861 review): an alias of a primitive, an
+    # alias of an alias, a generic alias whose refinement does not read its
+    # parameter.  (A refinement that reads its parameter is over that
+    # parameter, which no `Set` element or `Map` key can be: E143.)
+    **{f"{store}_{base}": (ty.replace("B", written), expr, -5.0)
+       for store, ty, expr in (
+           ("set_elem", "Set<B>", "set_add(set_new(), float_to_int(@Float64.0))"),
+           ("map_key", "Map<B, Int>",
+            "map_insert(map_new(), float_to_int(@Float64.0), 1)"))
+       for base, written in (("alias", "PosCount"), ("alias2", "PosCount2"),
+                             ("generic", "Bounded<Bool>"))},
 }
+
+#: The trap text each written-base store cell's check raises.
+STORE_TEXT = {name: ("set element insert" if name.startswith("set_elem_")
+                     else "map key insert")
+              for name in BUILT if name.startswith(("set_elem_", "map_key_"))}
 
 POSITIONS: dict[str, str] = {
     "ret": "  E\n",
@@ -364,7 +383,7 @@ DISCLOSED_BUILT: dict[tuple[str, str], str] = {
     # An element below a returned tuple component.
     **{(b, "ret_tuple"): "an element below a tuple component is decomposed "
                          "by no boundary"
-       for b in ("arr_elem", "set_elem", "map_elem", "map_key")},
+       for b in ("arr_elem", "set_elem", "map_elem", "map_key", *STORE_TEXT)},
     # A refined element of a composite element type.
     **{(b, p): "a composite element refinement is not checked by the "
                "element loop"
@@ -394,6 +413,50 @@ def test_value_built_in_place_joins_clean(built: str, position: str) -> None:
     if bad is not None:
         ran = pipeline.run(source, fn="f", args=[1, 2, bad])
         assert ran.trap is not None, ran.value
+        if built in STORE_TEXT:
+            # The store's check, or, where the value is built inside a
+            # tuple component and destructured, the return's element check
+            # at `mk`, which this value reaches first.
+            store = STORE_TEXT[built]
+            component = store.removesuffix(" insert")
+            assert (f"Refinement violation in {store}\n" in str(ran.trap)
+                    or (position == "tuple_comp"
+                        and f"return value ({component}): " in str(ran.trap))
+                    ), ran.trap
+
+
+#: The four construction stores that predate this pull request, at a
+#: refinement written over an alias: their guard mints its type from the
+#: resolved base, which names no binder the predicate reads, and code
+#: generation stops (E699).  Issue 1892's; they flip when it lands.
+OLDER_STORES = {
+    "array_element": ("Array<PosCount>", "[float_to_int(@Float64.0)]",
+                      "array_length(@Array<PosCount>.0)"),
+    "tuple_component": ("Tuple<PosCount, Int>",
+                        "Tuple(float_to_int(@Float64.0), 0)", "0"),
+    "map_value": ("Map<Int, PosCount>",
+                  "map_insert(map_new(), 1, float_to_int(@Float64.0))",
+                  "map_size(@Map<Int, PosCount>.0)"),
+    "generic_field": ("Box<PosCount>", "MkBox(float_to_int(@Float64.0))", "0"),
+}
+
+
+@pytest.mark.xfail(strict=True, reason="issue 1892: a store's guard mints "
+                   "its type over the resolved base")
+@pytest.mark.parametrize("store", sorted(OLDER_STORES))
+def test_an_older_store_binds_its_refinement_as_written_1892(store: str) -> None:
+    """The boundary of this pull request's class: every guard it adds or
+    changes binds the refinement as written; the four stores that predate
+    it are issue 1892's."""
+    ty, expr, use = OLDER_STORES[store]
+    source = ("type Count = Int;\n"
+              "type PosCount = { @Count | @Count.0 > 0 };\n"
+              "private data Box<T> { MkBox(T) }\n\n"
+              "public fn f(@Float64 -> @Int)\n" + PLAIN
+              + f"{{\n  let @{ty} = {expr};\n  {use}\n}}\n")
+    _verified_clean(source)
+    assert pipeline.run(source, fn="f", args=[5.0]).ok
+    assert pipeline.run(source, fn="f", args=[-5.0]).trap is not None
 
 
 # =====================================================================
