@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.binding import symbol
+from vera.binding import body_symbol, symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
 from vera.obligations.table import REASON_NESTED_REFINEMENT
 from vera.skip import CodegenInvariantError, CodegenSkip
@@ -314,7 +314,12 @@ class CallsMixin:
             sig = self._fn_ret_types.get(call_target)
             callee_ret_wt = sig if isinstance(sig, str) else None
         if is_tail and callee_ret_wt == self._self_ret_wt:
-            instructions.append(f"return_call ${symbol(call_target)}")
+            # #1851: a split function's self call transfers to its body;
+            # its entry, which runs the check, is what every caller calls.
+            target_symbol = (body_symbol(call_target)
+                             if call_target == self._split_name
+                             else symbol(call_target))
+            instructions.append(f"return_call ${target_symbol}")
         else:
             instructions.append(f"call ${symbol(call_target)}")
         return instructions

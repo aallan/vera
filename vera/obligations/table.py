@@ -56,7 +56,7 @@ from vera import ast, carriers, fold, naming, narrowing
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES
 from vera.lowering import quantifier_predicate_refusals, tail_resume_arg
 from vera.obligations.core import ObligationKind, expr_text_for
-from vera.tail_position import compute_tail_call_sites
+from vera.tail_position import compute_tail_call_sites, self_tail_calls
 from vera.types import (
     FLOAT64,
     INT,
@@ -231,6 +231,12 @@ class ObligationTable:
     #: non-trivial ``ensures``, a guarded refined return, a guarded tuple
     #: component or carrier element of the return.
     epilogue: set[object] = field(default_factory=set)
+    #: Those of them that call themselves in tail position
+    #: (:func:`vera.tail_position.self_tail_calls`), each compiled as an
+    #: entry and a body (#1851): the entry calls the body and runs the
+    #: check once, at the arguments its caller passed; the body keeps its
+    #: tail calls, a self call transferring to the body.
+    split: set[object] = field(default_factory=set)
     _at: dict[object, list[Row]] = field(default_factory=dict, repr=False)
     _refinement_guard: Callable[[RefinedType], Guard] | None = field(
         default=None, repr=False)
@@ -307,14 +313,17 @@ class ObligationTable:
         row with a check of its own standing at the call (any kind, at any
         path: a ``@Nat`` return leaf's sign guard, a composite coercion's
         walk), and a function whose return runs a check after the body
-        (:attr:`epilogue`), where no call transfers.  Every other tail
+        (:attr:`epilogue`), where no call transfers unless the function is
+        :meth:`split`: then the check runs in the entry, and the body's
+        calls transfer as any function's do (#1851).  Every other tail
         call keeps its ``return_call``, a non-narrowing recursive one
         (`drain`) included, which is what lets the iteration idiom run at
         constant stack depth."""
         body = decl.body
-        if body is None or self._key(body) in self.epilogue:
+        if body is None or (self._key(body) in self.epilogue
+                            and not self.is_split(decl)):
             return set()
-        sites = compute_tail_call_sites(decl, None)
+        sites = compute_tail_call_sites(decl)
         if not sites:
             return set()
         return {
@@ -322,6 +331,10 @@ class ObligationTable:
             if id(node) in sites and not any(
                 row.guard.check and row.answered_by is None
                 for row in self.rows_at(node))}
+
+    def is_split(self, decl: ast.FnDecl) -> bool:
+        """Whether *decl* compiles as an entry and a body (:attr:`split`)."""
+        return decl.body is not None and self._key(decl.body) in self.split
 
     def answered(self, row: Row) -> Row:
         """The row whose check answers *row*: *row* itself when it has its
@@ -338,7 +351,7 @@ def build(typed: TypedProgram) -> ObligationTable:
     builder = _Builder(typed)
     builder.build()
     table = ObligationTable(builder.finished(), by_body=builder.by_body,
-                            epilogue=builder.epilogue,
+                            epilogue=builder.epilogue, split=builder.split,
                             _refinement_guard=builder._refinement_guardable,
                             written=builder.written())
     table.index()
@@ -540,6 +553,8 @@ class _Builder:
         self.by_body: dict[int, list[int]] = {}
         #: The bodies of the functions that run a check after the body.
         self.epilogue: set[object] = set()
+        #: Those of them compiled as an entry and a body (#1851).
+        self.split: set[object] = set()
         #: The nodes (by key) a checked ``refine_bind`` row of a return
         #: stands at, which `_has_epilogue` reads.
         self._return_refinements: set[object] = set()
@@ -870,8 +885,10 @@ class _Builder:
         epilogue = self._has_epilogue(d, ensures_checked)
         if epilogue and d.body is not None:
             self.epilogue.add(ObligationTable._key(d.body))
+            if self_tail_calls(d, self.typed):
+                self.split.add(ObligationTable._key(d.body))
         if measure is not None:
-            self._measure_rows(d, *measure, epilogue=epilogue)
+            self._measure_rows(d, *measure)
         # A generic helper's template compiles too, as a top-level
         # generic's does (its clones are the instances'), so it has rows.
         for h in d.where_fns or ():
@@ -881,9 +898,10 @@ class _Builder:
         """Whether *d*'s return runs a check after the body: an ``ensures``
         row with a check of its own (*ensures_checked*; one over a
         ``String`` or ``Array`` result, or a quantifier the lowering
-        refuses, has none), or a guarded refinement of the return: then no
-        self tail call transfers, every hop re-enters through the entry
-        check, and the measure is re-evaluated at no call (#1849)."""
+        refuses, has none), or a guarded refinement of the return (#1849).
+        Such a function that calls itself in tail position is split into an
+        entry, which runs the check, and a body, whose self tail calls
+        transfer (#1851); one that does not keeps no tail call."""
         # The function's own return boundary: its head row at the body, its
         # component and element rows at the return type; a closure's
         # return rows inside the body are the closure's epilogue.
@@ -911,13 +929,15 @@ class _Builder:
                 and isinstance(c.expr, ast.BoolLit) and c.expr.value)
 
     def _measure_rows(
-        self, d: ast.FnDecl, c: ast.Decreases, guard: Guard, *, epilogue: bool,
+        self, d: ast.FnDecl, c: ast.Decreases, guard: Guard,
     ) -> None:
         """The measure's operations at the entry evaluation, and the
-        clause and its operations again at each self tail call the
-        function transfers to (the spliced prefix): none where an epilogue
-        runs after the body, since every hop then re-enters through the
-        entry check."""
+        clause and its operations again at each self tail call, which the
+        function transfers to (the spliced prefix).  A function with a
+        check after its body that calls itself in tail position is split,
+        and its self tail calls transfer to its body (#1851), so the hop is
+        checked at the call; one that is not split has no self tail call,
+        so every hop re-enters through the entry check."""
         if not guard.check:
             self._unevaluated.append(guard.reason)
         try:
@@ -927,13 +947,7 @@ class _Builder:
                     self.walk(e, d, in_contract=True)
             finally:
                 self._evaluation.pop()
-            if d.body is None or epilogue:
-                return
-            tail_ids = compute_tail_call_sites(d, None)
-            for n in fold.walk(d.body):
-                if not (isinstance(n, ast.FnCall) and n.name == d.name
-                        and id(n) in tail_ids):
-                    continue
+            for n in self_tail_calls(d, self.typed):
                 self._evaluation.append(("measure_call", n.node_id))
                 try:
                     self.add("decreases", c, guard=guard)

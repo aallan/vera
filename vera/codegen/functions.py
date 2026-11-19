@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 
 from vera import ast
-from vera.binding import SYMBOL_PREFIX, source_name, symbol
+from vera.binding import SYMBOL_PREFIX, body_symbol, source_name, symbol
 from vera.obligations.table import ENTRY
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.monomorphize import mangle_type_name
@@ -909,9 +909,14 @@ class FunctionCompilationMixin:
         # where the callee's WASM return type is the caller's, and the
         # tripwire below (`dead_check_tail_call`) refuses a check found
         # after one.
+        # #1851: a function the table splits compiles as an entry and a
+        # body (assembled below); its self calls that leave by
+        # `return_call` transfer to the body.
+        split = ctx.obligations.is_split(decl)
         ctx.set_tail_call_context(
             ctx.obligations.tail_calls(decl),
-            self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
+            self_ret_wt=ret_wt,
+            split_name=decl.name if split else None,
         )
 
         # Compile precondition checks + refinement-parameter entry guards.
@@ -1550,18 +1555,37 @@ class FunctionCompilationMixin:
                     if export else None)
         export_part = (f' (export "{decl.name}")'
                        if export and boundary is None else "")
+        signature = (" " + " ".join(param_parts)) if param_parts else ""
+        signature += result_part
         # #1694: a declaration's symbol is `$:` + its link name, which no
         # function code generation generates for itself can spell.
-        header = f"  (func ${symbol(decl.name)}{export_part}"
-        if param_parts:
-            header += " " + " ".join(param_parts)
-        header += result_part
-
-        lines = [header]
-
+        header = f"  (func ${symbol(decl.name)}{export_part}{signature}"
         # Extra locals (from let bindings + contract temps + GC saves)
-        for local_decl in ctx.extra_locals_wat():
-            lines.append(f"    {local_decl}")
+        local_lines = [f"    {d}" for d in ctx.extra_locals_wat()]
+
+        # #1851: a split function's entry, under the declaration's symbol
+        # and export.  It roots its pointer parameters (the check reads
+        # them after the body returns, when the body's frame no longer
+        # holds them), takes the `old()` snapshot, calls the body once
+        # with the arguments its caller passed, and runs the check after
+        # the body on what the body returns: the check every caller's value
+        # passes.  It holds no `return_call`.  The body below is the
+        # function as any function without that check compiles.
+        entry_lines: list[str] = []
+        if split:
+            entry_lines = [header, *local_lines]
+            entry_lines.extend(f"    {i}" for i in gc_prologue)
+            entry_lines.extend(f"    {i}" for i in snapshot_instrs)
+            entry_lines.extend(
+                f"    local.get {i}" for i in range(len(param_parts)))
+            entry_lines.append(f"    call ${body_symbol(decl.name)}")
+            entry_lines.extend(f"    {i}" for i in post_instrs)
+            entry_lines.extend(f"    {i}" for i in gc_epilogue)
+            entry_lines.append("  )")
+            header = f"  (func ${body_symbol(decl.name)}{signature}"
+            snapshot_instrs, post_instrs = [], []
+
+        lines = [header, *local_lines]
 
         # GC prologue: save gc_sp, push pointer params
         for instr in gc_prologue:
@@ -1626,6 +1650,27 @@ class FunctionCompilationMixin:
                 error_code="E699",
             )
             return None
+        # #1851: and the entry transfers nowhere: its check runs after the
+        # body returns, so a `return_call` there would skip it.
+        transfer = next((ln.strip() for ln in entry_lines
+                         if _word(ln).startswith("return_call")), None)
+        if transfer is not None:
+            self._harvest_interp_inference_failures(ctx)
+            self._error(
+                decl,
+                f"Internal compiler error while compiling '{decl.name}': the "
+                f"entry of a split function holds the tail call '{transfer}', "
+                "which would skip the check after its body (#1851)",
+                rationale="This is a codegen invariant violation — a split "
+                "function's entry calls its body and runs the check once; "
+                "only the body may leave by return_call.",
+                fix="No change to the program is the remedy: report it, "
+                "with this diagnostic, at https://github.com/aallan/vera/issues",
+                spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+                error_code="E699",
+            )
+            return None
+        lines = [*entry_lines, *lines]
         if boundary is not None:
             lines.append(boundary)
         return "\n".join(lines)

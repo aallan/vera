@@ -211,9 +211,14 @@ def _function_regions(
     entry, as the record of checks reads it."""
     out: dict[tuple[str, int, int], set[str]] = {}
     source = compile_result.fn_source_map
+    from vera.binding import BODY_SUFFIX
+
     for match in _WAT_FN_DEF_RE.finditer(compile_result.wat):
-        name = match.group(1)
-        entry = source.get(name) or source.get(name.rsplit("$", 1)[0])
+        # A split function's body is the declaration's region (#1851).
+        name = match.group(1).removesuffix(BODY_SUFFIX)
+        entry = source.get(name) or source.get(
+            name.rsplit("$", 1)[0],  # pragma: no mutate — equivalent: a name the map misses is an exported function's `$exn_boundary`, one `$` past a declared name, or a prelude clone, none of whose prefixes the map holds, so the split's direction and count read the same
+        )
         if entry is None:
             continue
         key = _file_key(entry[0])
@@ -310,7 +315,7 @@ def join(
     records = list(verify_result.obligations)
     checks = list(compile_result.emitted_checks)
     regions = _function_regions(compile_result)
-    held = {source_name(m.group(1))
+    held = {source_name(":" + m.group(1))
             for m in _WAT_FN_DEF_RE.finditer(compile_result.wat)}
 
     def is_held(fn: str) -> bool:
