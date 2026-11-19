@@ -85,31 +85,50 @@ def _all_codes(source: str) -> list[str]:
     return [d.error_code for d in pipeline.check(source).diagnostics]
 
 
-def _dropped(source: str) -> list[str]:
-    """The compile diagnostics that drop a function (E602, E620)."""
+def _compiles_clean(source: str) -> pipeline.Compiled:
+    """Compile *source* and assert the stage succeeded before anything is
+    read from it: the check accepted the program, code generation ran and
+    reported no error of any code, and dropped no function (E602, E620, the
+    warnings a drop is reported by).  A cell that filtered the compile's
+    diagnostics for the drop codes alone passed on a compile that failed
+    with any other error."""
     compiled = pipeline.compile(source)
-    assert compiled.result is not None, [
-        e.format() for e in compiled.front.errors]
-    return [d.error_code for d in compiled.result.diagnostics
-            if d.error_code in ("E602", "E620")]
+    assert compiled.ok, [d.format() for d in compiled.errors]
+    dropped = [d for d in compiled.diagnostics
+               if d.error_code in ("E602", "E620")]
+    assert dropped == [], [d.format() for d in dropped]
+    return compiled
+
+
+def _internal_errors(diagnostics: object) -> list[str]:
+    return [d.format() for d in diagnostics  # type: ignore[attr-defined]
+            if d.error_code == "E699"]
 
 
 @pytest.fixture(autouse=True)
-def _no_program_draws_an_internal_error_from_check(
+def _no_program_draws_an_internal_error(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """The property behind every cell of this file: no program it checks,
-    compiles or runs draws an internal compiler error (E699) from check.
-    Each check goes through `pipeline.check`, which `pipeline.compile`
-    calls too, so one assertion here covers the whole instrument."""
-    original = pipeline.check
+    compiles or runs draws an internal compiler error (E699), from check or
+    from code generation.  Each check goes through `pipeline.check` and each
+    compile through `pipeline.compile` (which `pipeline.run` calls for a
+    source), so one assertion on each covers the whole instrument.  No cell
+    of this file injects an E699."""
+    original_check = pipeline.check
+    original_compile = pipeline.compile
 
     def checked(*args: object, **kwargs: object) -> object:
-        result = original(*args, **kwargs)  # type: ignore[arg-type]
-        assert "E699" not in [d.error_code for d in result.diagnostics], [
-            d.format() for d in result.diagnostics if d.error_code == "E699"]
+        result = original_check(*args, **kwargs)  # type: ignore[arg-type]
+        assert _internal_errors(result.diagnostics) == []
+        return result
+
+    def compiled(*args: object, **kwargs: object) -> object:
+        result = original_compile(*args, **kwargs)  # type: ignore[arg-type]
+        assert _internal_errors(result.diagnostics) == []
         return result
 
     monkeypatch.setattr(pipeline, "check", checked)
+    monkeypatch.setattr(pipeline, "compile", compiled)
 
 
 # ---------------------------------------------------------------------
@@ -180,7 +199,7 @@ def test_repro_an_untyped_index_as_a_generic_call_s_argument(
                f"let @Int = {call.replace('[][0]', '@Array<Int>.0[0]')};\n"
                "@Int.0")
     assert _codes(fixed) == []
-    assert _dropped(fixed) == []
+    _compiles_clean(fixed)
 
 
 #: Where the type a position expects reaches an index written there (spec
@@ -200,7 +219,7 @@ _CARRIERS = {
 def test_the_positions_whose_type_reaches_the_index(body: str) -> None:
     source = _main("Int", body)
     assert _codes(source) == [], body
-    assert _dropped(source) == [], body
+    _compiles_clean(source)
 
 
 def test_repro_an_untyped_index_as_a_non_generic_constructor_s_argument(
@@ -272,7 +291,7 @@ def test_repro_the_typed_neighbours_check_and_keep_their_function() -> None:
                  "match @Array<Int>.0[0] {\n  _ -> 1\n}"):
         source = _main("Int", body)
         assert _codes(source) == [], body
-        assert _dropped(source) == [], body
+        _compiles_clean(source)
 
 
 # ---------------------------------------------------------------------
@@ -298,10 +317,8 @@ def test_repro_an_index_into_a_generic_call_s_open_array_is_specified(
     bounds check where it is evaluated (spec §4.12.2, §11.4.1)."""
     source = _EMPTY + _main("Int", body)
     assert _all_codes(source) == []
-    compiled = pipeline.compile(source)
-    assert compiled.result is not None
+    compiled = _compiles_clean(source)
     assert "$:empty$Bool " in compiled.result.wat
-    assert _dropped(source) == []
     ran = pipeline.run(compiled)
     assert ran.trap is not None
     assert "out of bounds" in str(ran.trap), str(ran.trap)
@@ -321,8 +338,7 @@ def test_repro_a_type_the_index_stands_at_fixes_the_call_s_variable() -> None:
                  "let @Int = idg(empty(())[0]);\n@Int.0"):
         source = _IDG + _EMPTY + _main("Int", body)
         assert _codes(source) == [], body
-        compiled = pipeline.compile(source)
-        assert compiled.result is not None
+        compiled = _compiles_clean(source)
         assert "$:empty$Int " in compiled.result.wat, body
         assert "$:empty$Bool" not in compiled.result.wat, body
 
@@ -345,7 +361,7 @@ def test_repro_a_destructure_of_an_open_variable_after_an_error() -> None:
 def test_an_index_into_a_built_in_over_an_empty_literal_compiles() -> None:
     source = _main("Int", "match array_reverse([])[0] {\n  _ -> 1\n}")
     assert _all_codes(source) == []
-    assert _dropped(source) == []
+    _compiles_clean(source)
 
 
 # ---------------------------------------------------------------------
@@ -423,7 +439,7 @@ def test_repro_new_of_an_exception_effect_is_refused() -> None:
 def test_repro_old_of_a_state_cell_still_checks() -> None:
     source = _ensures("old(State<Int>) == new(State<Int>)", "<State<Int>>")
     assert _codes(source) == []
-    assert _dropped(source) == []
+    _compiles_clean(source)
 
 
 def test_e189_reads_as_written_and_its_fix_clears_it() -> None:
@@ -817,7 +833,7 @@ def test_an_index_nothing_types_is_refused_and_its_fix_clears_it(
     program, refused = _cell(source, position, form)
     if not refused:
         assert _codes(program) == []
-        assert _dropped(program) == []
+        _compiles_clean(program)
         return
     also = OPEN_CALL_ALSO.get(position, []) if form == "open_call" else []
     assert _codes(program) == ["E164", *also], program
@@ -834,7 +850,7 @@ def test_an_index_nothing_types_is_refused_and_its_fix_clears_it(
     assert "E164" not in codes, fixed
     if position != "destructure":
         assert codes == [], fixed
-        assert _dropped(fixed) == [], fixed
+        _compiles_clean(fixed)
 
 
 # ---------------------------------------------------------------------
