@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
@@ -56,26 +56,42 @@ from vera.types import (
     INT,
     NAT,
     AdtType,
+    FunctionType,
     ModuleArtifacts,
+    UnfitFunctionValue,
     PureEffectRow,
     RefinedType,
     Type,
     TypeVar,
     UnknownType,
     base_type,
+    PrimitiveType,
     canonical_type_name,
+    erases_to_unit,
     is_subtype,
+    unfit_function_value,
     pretty_type,
     pretty_inferred_type,
+    strip_builtin_typevar_marker,
+    substitute,
+    type_expr_of,
+    written_effect,
     written_type,
 )
 
-from vera.checker.resolution import ResolutionMixin
+from vera.checker.resolution import ResolutionMixin, _span_bounds
 from vera.checker.modules import ModuleRegistration, ModulesMixin
 from vera.checker.registration import RegistrationMixin, _builtin_reject_names
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
 from vera.checker.control import ControlFlowMixin
+
+
+def _is_unit(ty: Type) -> bool:
+    """Whether *ty* is `Unit`, a refinement of it taken to its base: a
+    value whose one form is `()`."""
+    base = base_type(ty)
+    return isinstance(base, PrimitiveType) and base.name == "Unit"
 
 
 # =====================================================================
@@ -521,6 +537,17 @@ def _param_refs(fn: ast.FnDecl) -> list[str]:
     return names
 
 
+def _mentions_outside_functions(ty: Type, var: str) -> bool:
+    """Whether type variable *var* stands in *ty* outside every function
+    type, where an argument of type *ty* gives it its type (spec §5.9)."""
+    ty = base_type(ty)
+    if isinstance(ty, TypeVar):
+        return ty.name == var
+    if isinstance(ty, AdtType):
+        return any(_mentions_outside_functions(a, var) for a in ty.type_args)
+    return False
+
+
 # =====================================================================
 # Type checker
 # =====================================================================
@@ -900,6 +927,240 @@ class TypeChecker(
         name (:func:`vera.types.written_type`); ``None`` where a part of it
         is in no program as written, and the fix then names no type."""
         return written_type(ty, self.env.type_params)
+
+    def _refuse_unfit_function_value(
+        self,
+        node: ast.Expr,
+        value_ty: Type,
+        position_ty: Type,
+        gave: str,
+        declare: str,
+        call: tuple[FunctionInfo, int, Sequence[Type | None]] | None = None,
+    ) -> bool:
+        """E190 at *node*, a function value of type *value_ty* that fits
+        *position_ty* only by a narrowing (`unfit_function_value`): a
+        parameter narrower than the position's (#1885) or a result wider
+        (#1819).  Reported in place of the flow's own mismatch; True where
+        it reported.  *gave* names what gives the position its type,
+        *declare* the declaration the second rewrite changes.  *call* is the
+        called function, the argument's index and the arguments' types, for
+        a generic instance chosen from another argument, whose fix names
+        that argument."""
+        found = unfit_function_value(value_ty, position_ty)
+        if found is None:
+            return False
+        i = found.index
+        if i is None:
+            value_part, position_part = (found.value.return_type,
+                                         found.position.return_type)
+            where, written_at = "result", (
+                node.return_type if isinstance(node, ast.AnonFn) else None)
+        else:
+            value_part, position_part = (found.value.params[i],
+                                         found.position.params[i])
+            where, written_at = f"parameter {i}", (
+                node.params[i] if isinstance(node, ast.AnonFn)
+                and len(node.params) == len(found.value.params) else None)
+        if base_type(value_ty) is not found.value:
+            written_at = None
+        vp = (ast.format_type(written_at) if written_at is not None
+              else self._shown(value_part))
+        pp = self._shown(position_part)
+        other = f"{declare} a function type whose {where} is `{vp}`"
+        if call is not None and i is not None:
+            gave, other = self._unfit_call_source(
+                call, found, i, vp, pp, gave, other)
+        both_refined = (isinstance(value_part, RefinedType)
+                        and isinstance(position_part, RefinedType))
+        header = self._unfit_header(node, written_at, pp)
+        wrapper = (self._eta_wrapper(node, found.position)
+                   if base_type(value_ty) is found.value else None)
+        wrap = (f"  Or wrap the value in a closure of the position's type, "
+                f"where the narrowing is a value's: `{wrapper}`."
+                if wrapper is not None else "")
+        if i is None:
+            told = (f"its result is declared `{vp}`, and that type promises "
+                    f"`{pp}`, which a result declared `{vp}` does not "
+                    f"guarantee.")
+            example = (f": `{header} {{ ... }}`" if header is not None
+                       else "")
+            fix = (f"Declare the closure's result as `@{pp}`, the type the "
+                   f"position states{example}; the closure's own return is "
+                   f"then proved or checked, where the value is.{wrap}  Or "
+                   f"{other}.")
+        else:
+            told = (f"its parameter {i} is declared `{vp}`, and that type "
+                    f"hands it any `{pp}`, not only a `{vp}`.")
+            # The header the rewrite prints, and its parameters as written:
+            # the closure's own header with parameter i at the position's
+            # type, or, where the value is not a closure written in place,
+            # a closure of the position's type written out.  The narrowing
+            # reads parameter i by that header's slots.
+            written: list[ast.TypeExpr | Type] = list(found.position.params)
+            closure = node if header is not None else None
+            if isinstance(closure, ast.AnonFn):
+                written = [found.position.params[i] if j == i else te
+                           for j, te in enumerate(closure.params)]
+            else:
+                header = self._written_header(found.position)
+            slots = self._rewrite_slots(written)
+            example = ""
+            if slots is not None and header is not None:
+                narrow = (f"let @{vp} = "
+                          f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
+                example = f": `{header} {{ {narrow} ... }}`"
+            fix = (f"Declare the closure's parameter {i} as `@{pp}`, the type "
+                   f"the position hands it, and narrow inside, where there "
+                   f"is a value to check{example}.{wrap}  Or {other}.")
+        self._error(
+            node,
+            (f"A function value of type {self._shown(found.value)} is used "
+             f"where {gave} gives it the type "
+             f"{self._shown(found.position)}: {told}"
+             + (" Inside a function type two refinements of one base fit "
+                "only where they state the same predicate: whether one "
+                "implies the other is the verifier's to decide, of a value "
+                "at a flow, and a function type's positions hold none."
+                if both_refined else "")),
+            rationale=(
+                "A function type is contravariant in its parameters and "
+                "covariant in its result (spec §2.8 rule 5): a function "
+                "value fits it only if it accepts every value the type's "
+                "parameter admits and guarantees the result the type "
+                "promises.  The narrowing the checker permits for a value "
+                "(an `Int` where a `Nat` or a refinement is expected) is "
+                "obligated and checked where the value is; inside a "
+                "function type there is none: an argument is the caller's "
+                "to check, at the call, and a result the function's own, on "
+                "its return."),
+            fix=fix,
+            spec_ref='Chapter 2, Section 2.8 "Subtyping Rules"',
+            error_code="E190",
+        )
+        return True
+
+    def _eta_wrapper(self, node: ast.Expr, fn: FunctionType) -> str | None:
+        """A closure of type *fn* that applies the function value the slot
+        *node* holds, for E190's fix where the value is not written in
+        place (#1819): `fn(@Int -> @Nat) effects(pure) { apply_fn(@F.0,
+        @Int.0) }`.  None where *node* is not a slot or a part of *fn* is
+        not written."""
+        if not isinstance(node, ast.SlotRef):
+            return None
+        header = self._written_header(fn)
+        if header is None:
+            return None
+        # A `Future<Unit>` erases to no local a slot can read (E182): such
+        # a wrapper would not check, so the fix gives none.
+        if any(erases_to_unit(p) and not _is_unit(p) for p in fn.params):
+            return None
+        slots = self._rewrite_slots(list(fn.params))
+        if slots is None or node.type_name in slots:
+            return None
+        # A `Unit` parameter is passed as `()`: it has no local to read
+        # (E182), and its declaration keeps the other slots' indices.
+        args = [format_expr_canonical(node)] + [
+            "()" if _is_unit(p) else f"@{s}.{slots[j + 1:].count(s)}"
+            for j, (s, p) in enumerate(zip(slots, fn.params))]
+        return f"{header} {{ apply_fn({', '.join(args)}) }}"
+
+    def _written_header(self, fn: FunctionType) -> str | None:
+        """A closure header of type *fn* as the fix writes it,
+        `fn(@Int, @Pos -> @Nat) effects(pure)`, each type from
+        `_writes_as`.  None where a part is in no program as written, or
+        where a parameter or the result is a function type, which a header
+        does not write out in place (`@fn(Int -> Int) effects(pure)` does
+        not parse)."""
+        params = [self._writes_as(p) for p in fn.params]
+        result = self._writes_as(fn.return_type)
+        effect = written_effect(fn.effect, self.env.type_params)
+        if (result is None or effect is None  # pragma: no mutate — defensive: a part no program writes (an open variable) leaves the fix with no header
+                or None in params):
+            return None
+        if any("fn(" in (t or "") for t in (*params, result)):
+            return None
+        declared = ", ".join(f"@{p}" for p in params)
+        return f"fn({declared} -> @{result}) {effect}"
+
+    def _unfit_header(self, node: ast.Expr,
+                      written: ast.TypeExpr | None,
+                      pp: str) -> str | None:
+        """The closure *node*'s header as written, the type *written* (a
+        parameter's or its result's) declared *pp* instead, for E190's first
+        rewrite; None where the value is not a closure written in place."""
+        if not isinstance(node, ast.AnonFn) or written is None:
+            return None
+        whole = _span_bounds(self.source, node.span)
+        body = _span_bounds(self.source, node.body.span)
+        at = _span_bounds(self.source, written.span)
+        if (whole is None or body is None  # pragma: no mutate — defensive: a closure the parser built has every span, and the source is the checker's own
+                or at is None):
+            return None
+        if not whole[0] <= at[0] < at[1] <= body[0]:  # pragma: no mutate — defensive: a closure's own parameter or result lies inside its header
+            return None
+        header = (self.source[whole[0]:at[0]] + pp
+                  + self.source[at[1]:body[0]]).rstrip()
+        return header.removesuffix("{").rstrip()
+
+    def _rewrite_slots(
+            self, params: Sequence[ast.TypeExpr | Type]) -> list[str] | None:
+        """The slot each parameter of a header E190's fix writes is read
+        by, by the compiler's own rule (`naming.slot_name`): a parameter the
+        program wrote, as written (an alias by its name, a refinement
+        written in place by its base), and one the fix writes from a type,
+        as `type_expr_of` writes it.  None where one has no written form."""
+        env = self._naming_env()
+        out: list[str] = []
+        for p in params:
+            te = (p if isinstance(p, ast.TypeExpr)
+                  else type_expr_of(p, self.env.type_params))
+            if te is None:
+                return None
+            out.append(naming.slot_name(te, env))
+        return out
+
+    def _shown(self, ty: Type) -> str:
+        """*ty* as written, a refinement with its predicate, where it can be
+        written, and as `pretty_type` shows it otherwise."""
+        return self._writes_as(ty) or pretty_type(ty)  # pragma: no mutate — defensive: every type E190 shows is one a declaration, a closure header or an argument writes, so `_writes_as` gives its text; with `pretty_type(None)` here every cell of the instrument passes
+
+    def _unfit_call_source(
+        self,
+        call: tuple[FunctionInfo, int, Sequence[Type | None]],
+        found: UnfitFunctionValue,
+        index_at: int,
+        cp: str,
+        pp: str,
+        gave: str,
+        other: str,
+    ) -> tuple[str, str]:
+        """E190's *gave* and *other* at a call's argument: where the
+        callee's declared parameter is a function type whose parameter
+        *index_at* is a type variable, the instance and the argument that
+        fixed it, and that argument at the type that fixes the variable at
+        *cp*; otherwise *gave* and *other* unchanged.  The variable stands
+        outside every function type only in another argument's parameter,
+        never in the closure's own."""
+        info, index, arg_types = call
+        declared = base_type(info.param_types[index])
+        if not (info.forall_vars and isinstance(declared, FunctionType)
+                and len(declared.params) == len(found.position.params)):
+            return gave, other
+        var = declared.params[index_at]
+        if not isinstance(var, TypeVar):
+            return gave, other
+        shown = strip_builtin_typevar_marker(var.name)
+        for j, (pt, at) in enumerate(zip(info.param_types, arg_types)):
+            if at is None or not _mentions_outside_functions(pt, var.name):
+                continue
+            fixed = pretty_type(substitute(pt, {var.name: TypeVar(cp)}))
+            return (f"'{info.name}', instantiated at `{shown} = {pp}` by "
+                    f"argument {j} (`{self._shown(at)}`),",
+                    f"pass argument {j} as `{fixed}`, which fixes `{shown}` "
+                    f"at `{cp}`")
+        return (f"'{info.name}', instantiated at `{shown} = {pp}`,",
+                f"fix `{shown}` at `{cp}` by the type of an argument or of "
+                f"the result")
 
     @staticmethod
     def _nonzero_test(expr: ast.Expr, ty: Type | None) -> ast.Expr | None:
@@ -1619,7 +1880,11 @@ class TypeChecker(
         # 6. Check body (pass return type as expected for bidirectional)
         body_type = self._synth_expr(decl.body, expected=return_type)
         if body_type and not isinstance(body_type, UnknownType):
-            if not is_subtype(body_type, return_type):
+            if (not is_subtype(body_type, return_type)
+                    and not self._refuse_unfit_function_value(
+                        decl.body.expr, body_type, return_type,
+                        f"the return type of '{decl.name}'",
+                        f"declare the return type of '{decl.name}' at")):
                 self._error(
                     decl.body,
                     f"Function '{decl.name}' body has type "

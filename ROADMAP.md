@@ -55,7 +55,6 @@ The release that derives each fact once, plus the changes to what the language a
 | Issue | What |
 |---|---|
 | [#1525](https://github.com/aallan/vera/issues/1525) | **Derive each fact once**: a resolved program representation shared by the checker, the verifier and code generation, so no two of them re-derive a fact and disagree; code generation's remaining readers of a written type are its last lines. |
-| [#1819](https://github.com/aallan/vera/issues/1819) | A function type's parameters and result are compared under the formal relation only, so a closure typed `fn(Int -> Int)` no longer fits a `fn(Int -> Nat)` formal, nor a `fn(Nat -> Int)` one a `fn(Int -> Int)`: the `Int` to `Nat` relaxation has no value to obligate or guard inside a function type.  The refusal's fix is the eta-expansion, and spec §2.8 rule 5 states where the relaxation applies. |
 | [#294](https://github.com/aallan/vera/issues/294) | A row variable in a parameter's function type may be carried, but applying such a function value under a concrete row is refused at check, with a fix that names the concrete row to write. |
 | [#1396](https://github.com/aallan/vera/issues/1396) | Spec question: whether a repeated contract clause (two identical `requires`) is refused, warned about or accepted; decide it and state it in the spec. |
 

@@ -1152,7 +1152,11 @@ class ExpressionsMixin:
 
         if val_type and not isinstance(val_type, UnknownType):
             if not isinstance(declared_type, UnknownType):
-                if not is_subtype(val_type, declared_type):
+                if (not is_subtype(val_type, declared_type)
+                        and not self._refuse_unfit_function_value(
+                            stmt.value, val_type, declared_type,
+                            "the `let` binding",
+                            "declare the binding at")):
                     self._error(
                         stmt.value,
                         f"Let binding expects {pretty_type(declared_type)}, "
@@ -1424,7 +1428,11 @@ class ExpressionsMixin:
             self._effect_ops_used |= performed
 
         if body_type and not isinstance(body_type, UnknownType):
-            if not is_subtype(body_type, ret_type):
+            if (not is_subtype(body_type, ret_type)
+                    and not self._refuse_unfit_function_value(
+                        expr.body.expr, body_type, ret_type,
+                        "the closure's declared return type",
+                        "declare the closure's return type at")):
                 self._error(
                     expr.body,
                     f"Anonymous function body has type "

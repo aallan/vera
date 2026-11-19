@@ -474,9 +474,11 @@ class _Pair(typing.NamedTuple):
     actuals: str
     join: str | None
     unrelated: str   # an expected type neither fits
-    #: Whether a `weak` value fits a `strong` parameter: a narrowing
-    #: (`Nat`, a refinement), or the relaxation a function type's
-    #: parameter has at any parameter (issue #1819); an effect row has none.
+    #: Whether the literal takes a `strong` expected element type: a `weak`
+    #: value fits it by a narrowing (`Nat`, a refinement); a function type
+    #: whose parameter is narrower is refused there (E190, #1885), as its
+    #: twin bound at that element type is, so the outcomes agree; an
+    #: effect row has neither.
     weak_fits: bool = True
 
 
@@ -821,8 +823,9 @@ def test_a_nested_join_an_unrelated_binding_meets_is_refused_once(
 def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         depth: int, order: str) -> None:
     """The function-type pair nested the same way: every level is what
-    both accept, `fn(Nat -> Int)`, nothing expected or bound at `IntFn`
-    alike, so the -5 is refuted (E503) when it is applied unbound."""
+    both accept, `fn(Nat -> Int)`, so the -5 is refuted (E503) when it is
+    applied unbound, and binding the join at `IntFn` is refused (E190,
+    #1885): a `fn(Nat -> Int)` takes no `Int`."""
     x, y = (_INT_FN, _NAT_FN) if order == "int_fn_first" else (
         _NAT_FN, _INT_FN)
     call = _chain(depth, f"second({x}, {y})", fill=_INT_FN)
@@ -835,7 +838,7 @@ def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         "main", "@Unit", "Int",
         f"let @IntFn = {call};\napply_fn(@IntFn.0, 0 - 5)",
         visibility="public")
-    assert _instances(bound, "second") == {("fn(Nat -> Int)",)}
+    assert [e.error_code for e in pipeline.check(bound).errors] == ["E190"]
 
 
 # ---------------------------------------------------------------------
