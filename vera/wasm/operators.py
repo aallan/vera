@@ -9,9 +9,8 @@ from typing import ClassVar
 from vera import ast, naming
 from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
-from vera.obligations.table import (
-    Evaluation, Row, minted_type_expr, return_leaves)
-from vera.types import STRING, TO_STRING_BUILTINS, Type
+from vera.obligations.table import Evaluation, Row, return_leaves
+from vera.types import STRING, TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import (
     CellNames,
@@ -2222,9 +2221,21 @@ class OperatorsMixin:
         `_emit_bind_refine_guard` refuses that base anyway, and minting a
         node it will only reject reads as a guard that exists.
         """
-        if not isinstance(resolved_ty, Type):
+        if resolved_ty is None or type(resolved_ty).__name__ != "RefinedType":
             return None
-        return minted_type_expr(resolved_ty)
+        base = getattr(resolved_ty, "base", None)
+        predicate = getattr(resolved_ty, "predicate", None)
+        if base is None or predicate is None:
+            return None
+        if type(base).__name__ == "RefinedType":
+            return None
+        base_name = getattr(base, "name", None)
+        if not isinstance(base_name, str):
+            return None
+        return ast.RefinementType(
+            base_type=ast.NamedType(name=base_name, type_args=None),
+            predicate=predicate,
+        )
 
     @staticmethod
     def _adt_arg_type(target: object | None, index: int) -> object | None:

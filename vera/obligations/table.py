@@ -364,50 +364,6 @@ def build(typed: TypedProgram) -> ObligationTable:
 # =====================================================================
 
 
-def _named_type_expr(ty: Type) -> ast.NamedType | None:
-    """*ty*, a primitive or a data type over such types, as the
-    ``NamedType`` that writes it (`Array<Int>`, not `Array`: the binder a
-    predicate over a parameterised base reads is named with its arguments,
-    #1861); ``None`` for a type with no such name."""
-    if isinstance(ty, PrimitiveType):
-        return ast.NamedType(name=ty.name, type_args=None)
-    if not isinstance(ty, AdtType):
-        return None
-    args: list[ast.TypeExpr] = []
-    for arg in ty.type_args:
-        te = _type_argument_expr(arg)
-        if te is None:
-            return None
-        args.append(te)
-    return ast.NamedType(name=ty.name, type_args=tuple(args) if args else None)
-
-
-def _type_argument_expr(ty: Type) -> ast.TypeExpr | None:
-    """A type argument as the ``TypeExpr`` that writes it: a named type as
-    :func:`_named_type_expr` writes it, and a refinement over one with its
-    own predicate (`Array<{ @Int | @Int.0 > 0 }>`), which the binder's name
-    renders as the checker does."""
-    if isinstance(ty, RefinedType):
-        base = _type_argument_expr(ty.base)
-        if base is None:
-            return None
-        return ast.RefinementType(base_type=base, predicate=ty.predicate)
-    return _named_type_expr(ty)
-
-
-def minted_type_expr(ty: Type | None) -> ast.RefinementType | None:
-    """The refinement *ty* as a ``TypeExpr`` over the base the checker
-    resolved, or ``None`` for a non-refinement, a refinement over a
-    refinement, and a base with no name (a function type, a type variable,
-    either as a type argument)."""
-    if not isinstance(ty, RefinedType) or isinstance(ty.base, RefinedType):
-        return None
-    base = _named_type_expr(ty.base)
-    if base is None:
-        return None
-    return ast.RefinementType(base_type=base, predicate=ty.predicate)
-
-
 def guard_type_expr(
     ty: Type | None,
     written: dict[int, tuple[ast.RefinementType, frozenset[str]]],
