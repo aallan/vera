@@ -18,7 +18,7 @@ call.
 from __future__ import annotations
 
 from vera import ast, naming
-from vera.skip import CodegenSkip
+from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import hamt
 from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 
@@ -568,12 +568,16 @@ class CallsContainersMixin:
                     arg_instrs, arg, "map value", "map value insert", env,
                     component_ty=value_component,
                 )
-                # #1440: the SIGN obligation at the same insert.
-                arg_instrs = self._emit_construction_nat_guard(
-                    arg_instrs, arg, value_component)
+                # #1440: the SIGN obligation at the same insert, decided
+                # by the value's `nat_bind` row.
+                arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             else:
-                # The key is `K`'s argument: checked where `K` is `Nat`, and
-                # (#1542) where a composite coercion makes it a `Nat`.
+                # The key is `K`'s argument: its refinement checked as the
+                # value's is (#1861), against its row's target, its sign
+                # where `K` is `Nat`, and (#1542) where a composite coercion
+                # makes it a `Nat`.
+                arg_instrs = self._emit_written_store_guard(
+                    arg_instrs, arg, "map key insert", env)
                 arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
@@ -823,11 +827,43 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            # The element is `T`'s argument: checked where `T` is `Nat`, and
-            # (#1542) where a composite coercion makes it a `Nat`.
+            # The element is `T`'s argument: its refinement checked as a
+            # map value's is (#1861), against its row's target, its sign
+            # where `T` is `Nat`, and (#1542) where a composite coercion
+            # makes it a `Nat`.
+            arg_instrs = self._emit_written_store_guard(
+                arg_instrs, arg, "set element insert", env)
             ins.extend(self._guard_nat_narrowing(arg_instrs, arg))
         ins.append(f"call {wasm_name}")
         return ins
+
+    def _emit_written_store_guard(
+        self, value: list[str], arg: ast.Expr, where: str, env: WasmSlotEnv,
+    ) -> list[str]:
+        """*value*, a `set_add` element or a `map_insert` key, behind the
+        check of its `refine_bind` row where the table gives the row a check
+        of its own, against the refinement as the program writes it
+        (:meth:`ObligationTable.guard_type_expr`, the one decision the table
+        holds the row guardable by): its predicate reads its binder by the
+        base it was written over (`@Count.0` for `type Count = Int`), which a
+        type minted from the resolved base does not name (#1861)."""
+        row = self._row(arg, "refine_bind")
+        if not self._checked(row):
+            return value
+        assert row is not None  # noqa: S101 — `_checked`
+        te = self.obligations.guard_type_expr(row.target)
+        wasm_ty = (self._refined_component_wasm_type(te, self._alias_env)
+                   if te is not None else None)
+        if te is None or wasm_ty is None:
+            raise CodegenInvariantError(
+                "the obligation table holds a store's refinement guardable, and this lowering writes no scalar type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a store row guardable only over a scalar base guard_type_expr writes
+            )
+        tmp = self.alloc_local(wasm_ty)
+        guard = self._emit_bind_refine_guard(
+            te, tmp, where,
+            arg,  # pragma: no mutate — equivalent: the node locates only the internal error a guardable row with no guard raises and the check's record, which the join matches by its row
+            env, row=row)
+        return [*value, f"local.tee {tmp}", *guard]
 
     def _translate_set_contains(
         self, call: "ast.FnCall", env: WasmSlotEnv,

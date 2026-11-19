@@ -70,6 +70,7 @@ from vera.types import (
     RefinedType,
     Type,
     base_type,
+    contains_typevar,
     pretty_type,
 )
 
@@ -115,6 +116,12 @@ REASON_MEASURE_NOT_RANKABLE = (
 REASON_NESTED_REFINEMENT = "a refinement over a refinement has no guard"
 REASON_ERASED_BASE = "a refinement over an erased base has no value to check"
 REASON_FUNCTION_BASE = "a refinement over a function type has no binder to check"
+REASON_BELOW_STORE = (
+    "a construction store checks a component's head, not a tuple "
+    "component below it")
+REASON_UNWRITTEN = (
+    "the check has no written type to bind: the refinement is written over "
+    "a generic declaration's type parameter, or nowhere")
 REASON_NON_SCALAR_STORE = (
     "a construction store guards only a scalar-based refinement")
 REASON_INSIDE_PAYLOAD = (
@@ -208,13 +215,6 @@ class Row:
     content_key: tuple[str, str, str, int, int] = ("", "", "", 0, 0)
 
 
-#: The ``answered_by`` of a row checked at the entry of the closure the
-#: call reaches (a `Tuple` component or a refined formal of a closure
-#: passed as a slot), which every closure of the type guards and no row
-#: the table lists names.
-ANSWERED_AT_CLOSURE_ENTRY = -1
-
-
 @dataclass
 class ObligationTable:
     """Every row of one typed program, in the order they were listed."""
@@ -240,6 +240,16 @@ class ObligationTable:
     _at: dict[object, list[Row]] = field(default_factory=dict, repr=False)
     _refinement_guard: Callable[[RefinedType], Guard] | None = field(
         default=None, repr=False)
+    #: Each refinement the program writes, by its predicate's identity,
+    #: with the type parameters in scope where it is written
+    #: (:meth:`_Builder.written`).
+    written: dict[int, tuple[ast.RefinementType, frozenset[str]]] = field(
+        default_factory=dict, repr=False)
+
+    def guard_type_expr(self, ty: Type | None) -> ast.TypeExpr | None:
+        """The type expression the check of a value held to *ty* at an
+        ``apply_fn`` argument binds (:func:`guard_type_expr`)."""
+        return guard_type_expr(ty, self.written)
 
     def refinement_guard(self, ty: Type | None) -> Guard:
         """Whether a check guards a value held to the refinement *ty* (the
@@ -327,15 +337,12 @@ class ObligationTable:
         """Whether *decl* compiles as an entry and a body (:attr:`split`)."""
         return decl.body is not None and self._key(decl.body) in self.split
 
-    def answered(self, row: Row) -> Row | None:
+    def answered(self, row: Row) -> Row:
         """The row whose check answers *row*: *row* itself when it has its
-        own, else the end of its ``answered_by`` chain; ``None`` for a row
-        answered at a closure's entry (:data:`ANSWERED_AT_CLOSURE_ENTRY`)."""
+        own, else the end of its ``answered_by`` chain."""
         seen: set[int] = set()
         while row.answered_by is not None and row.id not in seen:
-            if row.answered_by == ANSWERED_AT_CLOSURE_ENTRY:
-                return None
-            seen.add(row.id)
+            seen.add(row.id)  # pragma: no mutate — equivalent: an answered_by chain ends at a row with a check of its own, which answers nothing, so no chain cycles and the guard never stops one
             row = self.rows[row.answered_by]
         return row
 
@@ -346,9 +353,65 @@ def build(typed: TypedProgram) -> ObligationTable:
     builder.build()
     table = ObligationTable(builder.finished(), by_body=builder.by_body,
                             epilogue=builder.epilogue, split=builder.split,
-                            _refinement_guard=builder._refinement_guardable)
+                            _refinement_guard=builder._refinement_guardable,
+                            written=builder.written())
     table.index()
     return table
+
+
+# =====================================================================
+# The type a check at an `apply_fn` argument binds
+# =====================================================================
+
+
+def guard_type_expr(
+    ty: Type | None,
+    written: dict[int, tuple[ast.RefinementType, frozenset[str]]],
+) -> ast.TypeExpr | None:
+    """The type expression a check binds when a value held to the
+    refinement *ty* at an ``apply_fn`` argument is checked at the call
+    (#1861): the refinement as the program writes it, found by its
+    predicate's identity.  The guard binds the value under the key
+    :func:`vera.naming.slot_name` gives the written base, the base's head
+    as written (an alias of a primitive or a data type keeps its name:
+    `{ @Count | @Count.0 > 0 }`) with its type arguments resolved, and
+    that is the key the predicate's `@Base.0` resolves to; a base minted
+    from the resolved type names `Int` where the predicate reads
+    `@Count.0`.  ``None``, so the row is disclosed, for a refinement over a
+    refinement, one in a template (its type holds a type variable), one
+    written in a generic declaration whose base names a type parameter of
+    it (`{ @Array<T> | ... }`, whose `T` no check can bind), and one the
+    program writes nowhere.  The table holds such a row guardable exactly
+    where this is not ``None``, and code generation binds what it returns:
+    one decision for both."""
+    if (not isinstance(ty, RefinedType) or isinstance(ty.base, RefinedType)
+            or contains_typevar(ty)):
+        return None
+    found = written.get(id(ty.predicate))
+    if found is None:
+        return None
+    node, params = found
+    if params & _type_names(node.base_type):
+        return None
+    return node
+
+
+def _type_names(te: object) -> set[str]:
+    """Every type name *te* writes, at any depth."""
+    names: set[str] = set()
+    stack = [te]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.NamedType):
+            names.add(node.name)
+        if isinstance(node, (ast.NamedType, ast.FnType, ast.RefinementType)):
+            for name in node.__dataclass_fields__:
+                value = getattr(node, name)
+                if isinstance(value, (tuple, list)):
+                    stack.extend(value)
+                elif isinstance(value, ast.TypeExpr):
+                    stack.append(value)
+    return names
 
 
 # =====================================================================
@@ -493,10 +556,11 @@ class _Builder:
         #: ``id(arg)`` of a call argument or a return leaf to the boundary
         #: type expression whose entry rows answer its rows.
         self._boundary: dict[int, ast.TypeExpr] = {}
-        #: ``id(arg)`` of an argument passed to a closure held in a slot,
-        #: whose boundary rows are the entry rows of whichever closure the
-        #: call reaches (:data:`ANSWERED_AT_CLOSURE_ENTRY`).
-        self._closure_args: set[int] = set()
+        #: ``id`` of each value whose check binds the refinement as written
+        #: (:func:`guard_type_expr`, #1861), and of its value leaves: an
+        #: argument applied to a function value that is no closure literal,
+        #: a `set_add` element, a `map_insert` key.
+        self._written_args: set[int] = set()
         #: ``(id(node), path)`` of an answering row to its id: a
         #: ``requires`` clause's row, a boundary's entry rows.
         self._answerers: dict[tuple[int, tuple[str, ...]], int] = {}
@@ -527,9 +591,11 @@ class _Builder:
         #: requirement is the node's own).
         self._via: list[str | None] = []
         self._evaluation: list[Evaluation] = [BODY]
-        #: ``id`` of a written refinement's predicate to its base type
-        #: expression, built on first need (:meth:`_inline_base`).
-        self._refinement_bases: dict[int, ast.TypeExpr] | None = None
+        #: ``id`` of a written refinement's predicate to the refinement and
+        #: the type parameters in scope where it is written, built on first
+        #: need (:meth:`written`).
+        self._refinement_bases: dict[
+            int, tuple[ast.RefinementType, frozenset[str]]] | None = None
         #: ``id`` of a quantifier's predicate, a closure lowered inline.
         self._inline_closures: set[int] = set()
         #: The closures whose rows are listed (:meth:`walk`).
@@ -1042,36 +1108,67 @@ class _Builder:
             return unguarded(REASON_NON_SCALAR_STORE)
         return CHECK
 
+    def _written(self, arg: ast.Expr) -> None:
+        """Mark *arg*, and its value leaves, as checked against the
+        refinement as written (:meth:`_guard_at`)."""
+        self._written_args.add(id(arg))
+        self._written_args.update(
+            id(leaf) for leaf in narrowing.value_leaves(arg))
+
+    def _guard_at(
+        self, e: ast.Node, ty: RefinedType, construction: bool = False,
+    ) -> Guard:
+        """:meth:`_refinement_guardable` for a value held to *ty* at *e*,
+        where a value whose check binds the refinement as written (a closure
+        argument, a `set_add` element, a `map_insert` key) is checked only
+        against a type :func:`guard_type_expr` writes (#1861)."""
+        guard = self._refinement_guardable(ty, construction=construction)
+        if (guard.check and id(e) in self._written_args
+                and guard_type_expr(ty, self.written()) is None):
+            return unguarded(REASON_UNWRITTEN)
+        return guard
+
     def _inline_base(self, ty: RefinedType) -> bool:
         """Whether *ty*'s refinement is written over a base that is no
         type name, by the written refinement whose predicate it carries."""
+        found = self.written().get(id(ty.predicate))
+        return (found is not None
+                and not isinstance(found[0].base_type, ast.NamedType))
+
+    def written(self) -> dict[int, tuple[ast.RefinementType, frozenset[str]]]:
+        """Every refinement the program writes, by its predicate's
+        identity, with the type parameters of the declarations it is
+        written in (:func:`guard_type_expr`)."""
         if self._refinement_bases is None:
-            bases: dict[int, ast.TypeExpr] = {}
+            found: dict[int, tuple[ast.RefinementType, frozenset[str]]] = {}
             seen: set[int] = set()
 
-            def visit(node: object) -> None:
+            def visit(node: object, params: frozenset[str]) -> None:
                 if isinstance(node, ast.RefinementType):
-                    bases[id(node.predicate)] = node.base_type
+                    found[id(node.predicate)] = (node, params)
                 if isinstance(node, ast.Node):
                     if id(node) in seen:
                         return
                     seen.add(id(node))
+                    params = params | frozenset(
+                        getattr(node, "type_params", None)
+                        or getattr(node, "forall_vars", None) or ())
                     for name in node.__dataclass_fields__:
-                        visit(getattr(node, name))
+                        visit(getattr(node, name), params)
                 elif isinstance(node, (tuple, list)):
                     for item in node:
-                        visit(item)
+                        visit(item, params)
 
             linked = self.typed.linked
-            visit(linked.program)
+            none: frozenset[str] = frozenset()
+            visit(linked.program, none)
             for mod in linked.modules:
-                visit(mod.program)
-            visit(tuple(linked.prelude))
+                visit(mod.program, none)
+            visit(tuple(linked.prelude), none)
             for inst in self.typed.instances:
-                visit(inst.clone)
-            self._refinement_bases = bases
-        base = self._refinement_bases.get(id(ty.predicate))
-        return base is not None and not isinstance(base, ast.NamedType)
+                visit(inst.clone, none)
+            self._refinement_bases = found
+        return self._refinement_bases
 
     # -- the walk -------------------------------------------------------
 
@@ -1356,6 +1453,10 @@ class _Builder:
             # A `throw` (or a join of them) yields no value: nothing to
             # prove a fact of, nothing to guard.
             return
+        # A refined head is checked once, where the value reaches its
+        # position (a `let`, an argument, a store, a return), whatever the
+        # value's form (#1861): at the outermost join, never at a leaf
+        # under one.
         if narrowing.flow_arms(e) is not None:
             # The head row stands at the join when some leaf differs; the
             # component rows stand at the leaves (the walk hands req down).
@@ -1365,11 +1466,10 @@ class _Builder:
                       if self.sem(leaf) != NEVER]
             if isinstance(req, RefinedType):
                 if any(not _same_refinement(self.sem(leaf), req)
-                       and self._construction_components(leaf, req) is None
-                       and not narrowing.holds_no_component(leaf)
                        for leaf in leaves):
                     self.add("refine_bind", e, target=req,
-                             guard=self._refinement_guardable(req),
+                             guard=self._guard_at(
+                                 e, req, construction=store),
                              answer=self._boundary.get(id(e)))
             # A refinement over `Nat` takes the sign row beside its
             # predicate's, as a bare `Nat` does.
@@ -1387,9 +1487,10 @@ class _Builder:
         if self._construction_components(e, req) is not None:
             # a construction: its components carry the requirement; the
             # head may still be refined over the construction's type
-            if isinstance(req, RefinedType) and not _same_refinement(sem, req):
+            if (isinstance(req, RefinedType) and not under_join
+                    and not _same_refinement(sem, req)):
                 self.add("refine_bind", e, target=req,
-                         guard=self._refinement_guardable(req, construction=store),
+                         guard=self._guard_at(e, req, construction=store),
                          answer=self._boundary.get(id(e)))
             return
         if narrowing.holds_no_component(e):
@@ -1397,10 +1498,11 @@ class _Builder:
             # every requirement on a component, and not the head's own
             # predicate: binding it at a refinement is the narrowing it is
             # (#1684, where a context first types such a call).
-            if isinstance(req, RefinedType) and not _same_refinement(sem, req):
+            if (isinstance(req, RefinedType) and not under_join
+                    and not _same_refinement(sem, req)):
                 self.add("refine_bind", e, target=req,
-                         guard=self._refinement_guardable(
-                             req, construction=store),
+                         guard=self._guard_at(
+                             e, req, construction=store),
                          answer=self._boundary.get(id(e)))
             return
         assert req_nat is not None  # noqa: S101 — `req` stands in above
@@ -1508,12 +1610,19 @@ class _Builder:
                         self._boundary.setdefault(id(arg), p)
                         for leaf in narrowing.value_leaves(arg):
                             self._boundary.setdefault(id(leaf), p)
-            elif isinstance(closure, ast.SlotRef):
-                # Every closure of the slot's type guards its own entry.
-                for arg in e.args[1:]:
-                    self._closure_args.add(id(arg))
-                    for leaf in narrowing.value_leaves(arg):
-                        self._closure_args.add(id(leaf))
+            # Any other operand (a slot, a call's result, a join, an index)
+            # is a function value whose closure can be wider than its type
+            # (spec §2.8 rule 5), so its entry need not check the type's
+            # parameter: an argument's rows are the call's own, checked at
+            # the call against the function type's parameter (spec §6.7;
+            # #1861, #1885).
+            for arg in e.args[1:]:
+                if id(arg) not in self._boundary:
+                    self._written(arg)
+        if isinstance(e, ast.FnCall) and name in ("set_add", "map_insert"):
+            # The two stores whose check binds the refinement as written.
+            for arg in e.args[1:2]:
+                self._written(arg)
         if isinstance(e, ast.FnCall) and name in NAT_ARG_UNGUARDED_BUILTINS:
             for arg in e.args:
                 self._arg_reason.setdefault(id(arg), REASON_STRING_SLICE)
@@ -1528,14 +1637,12 @@ class _Builder:
         *req_nat* (its `Nat` rows: the head's sign, the positions of the
         differing tree below it)."""
         boundary = self._boundary.get(id(e))
-        closure = id(e) in self._closure_args
-        at_entry = ANSWERED_AT_CLOSURE_ENTRY if closure else None
         if head:
             if isinstance(req, RefinedType):
                 if not _same_refinement(sem, req):
                     self.add("refine_bind", e, target=req,
-                             guard=self._refinement_guardable(req, construction=store),
-                             answer=boundary, answer_row=at_entry)
+                             guard=self._guard_at(e, req, construction=store),
+                             answer=boundary)
             # A refinement over `Nat` takes the sign row beside its
             # predicate's, as a bare `Nat` does.
             if (_is_nat(req_nat) and self.narrows_nat(e)
@@ -1553,34 +1660,35 @@ class _Builder:
                                          self.ftypes, self.ctors)
                 if required is not None else None)
         if tree is not None and tree.kind != "nat":
-            self._tree_rows(tree, e, boundary=boundary, closure=closure)
+            self._tree_rows(tree, e, boundary=boundary)
         for p, rty in self._refined_paths(_strip(req), _strip(sem), ()):
             tuple_path = all(s.startswith("Tuple.") for s in p)
-            guard = (self._refinement_guardable(rty) if tuple_path
-                     else unguarded(REASON_INSIDE_PAYLOAD))
+            # A construction's store checks the component's head and not
+            # the components below it, so a tuple component of a stored
+            # value is checked by no store (#1861).
+            guard = (unguarded(REASON_INSIDE_PAYLOAD) if not tuple_path
+                     else unguarded(REASON_BELOW_STORE) if store
+                     else self._guard_at(e, rty))
             self.add("refine_bind", e, target=rty, path=p, guard=guard,
-                     answer=boundary, answer_path=p,
-                     answer_row=at_entry if tuple_path else None)
+                     answer=boundary, answer_path=p)
 
     def _tree_rows(
         self, tree: narrowing.Coercion, node: ast.Node, *,
         boundary: ast.TypeExpr | None = None, source: Source | None = None,
-        closure: bool = False,
     ) -> None:
         """The ``Nat`` positions of one differing tree, as rows at *node*:
         the first is the walk's own check and carries the tree the walk
         reads, the rest are answered by it, bar a tuple position a
-        boundary's entry row answers (or, for an argument to a closure held
-        in a slot, the closure's own entry guard)."""
+        boundary's entry row answers."""
         walk_row: int | None = None
         covered: set[tuple[int, ...]] = set()
         for p in self._nat_paths(tree, ()):
             tuple_path = all(step.startswith("Tuple.") for step in p)
-            if tuple_path and (boundary is not None or closure):
+            if tuple_path and boundary is not None:
                 covered.add(tuple(int(step.split(".")[1]) for step in p))
-                self.add("nat_bind", node, target=NAT, path=p, source=source,
-                         answer=boundary, answer_path=p,
-                         answer_row=ANSWERED_AT_CLOSURE_ENTRY if closure else None)
+                self.add("nat_bind", node, target=NAT, path=p,
+                         source=source,  # pragma: no mutate — equivalent: the one caller that hands a boundary (`narrowing_rows`) hands no source, so source is None here
+                         answer=boundary, answer_path=p)
                 continue
             row_id = self.add("nat_bind", node, target=NAT, path=p,
                               source=source, answer_row=walk_row)
