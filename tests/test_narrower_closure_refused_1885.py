@@ -708,3 +708,36 @@ def test_a_variable_met_below_the_head_is_refused_at_each_argument() -> None:
         "effects(pure) { @Pos.0 }), Some(fn(@Big -> @Int) effects(pure) "
         "{ @Big.0 }));\n  0", visibility="public")
     assert _codes(source) == ["E189", "E189"]
+
+
+def test_never_and_a_variable_inside_a_function_type_still_fit() -> None:
+    """The formal relation's other members: `Never` is below every type,
+    so a `fn(Int -> Int)` fits `fn(Never -> Int)`; a type variable fits
+    itself, so a generic's own `fn(@T -> @T)` fits `Endo<T>`."""
+    source = (
+        "type NeverToInt = fn(Never -> Int) effects(pure);\n"
+        "type Endo<T> = fn(T -> T) effects(pure);\n\n"
+        + _fn("twice(@T -> @T)",
+              "let @Endo<T> = fn(@T -> @T) effects(pure) { @T.0 };\n"
+              "  apply_fn(@Endo<T>.0, @T.0)").replace(
+                  "private fn twice", "private forall<T> fn twice")
+        + _fn("main(@Int -> @Int)",
+              "let @NeverToInt = fn(@Int -> @Int) effects(pure) "
+              "{ @Int.0 };\n  twice(@Int.0)", visibility="public"))
+    assert _codes(source) == []
+    assert pipeline.run(source, fn="main", args=[7]).execution.value == 7
+
+
+def test_a_function_and_a_scalar_or_data_type_inside_do_not_meet() -> None:
+    """Inside a function type, a function type where a scalar or a data
+    type is: no narrowing, the `let`'s own E170."""
+    for position, value in (
+            ("fn(IntToInt -> Int)", "fn(@Int -> @Int) effects(pure) { 0 }"),
+            ("fn(Option<Int> -> Int)",
+             "fn(@IntToInt -> @Int) effects(pure) { 0 }")):
+        source = (
+            "type IntToInt = fn(Int -> Int) effects(pure);\n"
+            f"type F = {position} effects(pure);\n\n"
+            + _fn("main(@Int -> @Int)", f"let @F = {value};\n  0",
+                  visibility="public"))
+        assert _codes(source) == ["E170"], position
