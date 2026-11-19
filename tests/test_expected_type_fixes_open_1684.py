@@ -2029,6 +2029,24 @@ def test_repro_an_unknown_element_context_decides_nothing() -> None:
         arrays)
 
 
+def test_repro_elements_that_agree_keep_their_type_whatever_the_context(
+) -> None:
+    """Spec §4.12.1: the literal's context decides its element type only
+    where the elements' types differ.  Elements that agree are their own
+    type under a narrower context (`Array<Nat>` over two `@Int`) and under
+    a wider one (`Array<Int>` over two `@Nat`) alike, and the binding then
+    narrows or widens the literal as it does any value.  Elements that
+    differ take the context's element type, each fitting it."""
+    for formals, bound, literal, recorded in (
+            ("@Int, @Int", "Array<Nat>", "[@Int.0, @Int.1]", "Array<Int>"),
+            ("@Nat, @Nat", "Array<Int>", "[@Nat.0, @Nat.1]", "Array<Nat>"),
+            ("@Int, @Nat", "Array<Nat>", "[@Int.0, @Nat.0]", "Array<Nat>"),
+    ):
+        source = _fn("f", formals, "Int", f"let @{bound} = {literal};\n0")
+        assert _codes(source) == [], (bound, literal)
+        assert _recorded_arrays(source) == {recorded}, (bound, literal)
+
+
 def test_repro_an_unknown_context_fixes_no_open_call() -> None:
     """`let @Array<Option<Nope>> = [none_ord(()), @Option<Int>.0]`: the
     open call is not synthesized again against the unknown type, and the
