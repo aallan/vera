@@ -13,7 +13,6 @@ from vera.wasm.helpers import (
     bind_slot_value_from_stack,
     field_layout,
     gc_shadow_push,
-    is_gc_pointer_base,
 )
 
 
@@ -256,44 +255,40 @@ class ClosuresMixin:
         argument and at a join's value leaves with a check of its own: the
         head, against the function type's parameter, and each tuple
         component, against its own refinement.  The value is spilled to
-        the locals a slot of its representation binds (rooted, a heap
-        value, since a predicate can allocate), each component is read from
-        it as construction laid it out, each predicate is evaluated over
-        the type :meth:`ObligationTable.guard_type_expr` writes, the one
-        the table decided the row's guard by, and the value is pushed
-        back."""
+        the locals a slot of its representation binds (a heap value is
+        rooted already, where it was made: a parameter by the prologue, an
+        allocation by the allocator, a call's result by the callee's
+        epilogue), each component is read from it as construction laid it
+        out, each predicate is evaluated over the type
+        :meth:`ObligationTable.guard_type_expr` writes, the one the table
+        decided the row's guard by, and the value is pushed back."""
         rows = {row.id: row
                 for node in (arg, *narrowing.value_leaves(arg))
                 for row in self._rows(node, "refine_bind")
                 if self._checked(row)}
         if not rows:
             return value
-        width = self._width_of(formal) if formal is not None else None
+        width = self._width_of(formal)
         if width is None:
             raise CodegenInvariantError(
-                "the obligation table holds a closure argument's refinement "
-                "guardable, and this lowering resolves no width for it "
-                "(#1861)", arg)
+                "the obligation table holds a closure argument's refinement guardable, and this lowering resolves no width for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a row guardable only where guard_type_expr writes its type, over a tuple path its type has, so no accepted program raises this
+            )
         spill = bind_slot_value_from_stack(self.alloc_local, width)
         out = [*value, *spill.load]
-        base = base_type(formal) if isinstance(formal, RefinedType) else formal
-        if width == "i32_pair" or (width == "i32" and is_gc_pointer_base(
-                getattr(base, "name", ""))):
-            self.needs_alloc = True
-            out.extend(gc_shadow_push(spill.slot_local))
         for row in rows.values():
             binding = self._closure_argument_component(
                 out, spill, formal, row.path)
             te = self.obligations.guard_type_expr(row.target)
             if binding is None or te is None:
                 raise CodegenInvariantError(
-                    "the obligation table holds a closure argument's "
-                    "refinement guardable, and this lowering resolves no "
-                    "type for it (#1861)", arg)
+                    "the obligation table holds a closure argument's refinement guardable, and this lowering resolves no type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a row guardable only where guard_type_expr writes its type, over a tuple path its type has, so no accepted program raises this
+                )
             where = ("closure argument" if not row.path
                      else "closure argument (tuple component)")
             out.extend(self._emit_bind_refine_guard(
-                te, binding.slot_local, where, arg, env, row=row))
+                te, binding.slot_local, where,
+                arg,  # pragma: no mutate — equivalent: the node locates only the internal error a guardable row with no guard raises and the check's record, which the join matches by its row
+                env, row=row))
         return [*out, *spill.push]
 
     def _closure_argument_component(
@@ -302,8 +297,9 @@ class ClosuresMixin:
     ) -> SlotValueBinding | None:
         """The locals holding the component at *path* (``Tuple.<k>`` per
         level) of the value of type *ty* bound in *value* (*value* itself
-        for the empty path), their loads appended to *out*: the component's offset by the one layout rule construction
-        builds with (:func:`field_layout`), a `Unit` component taking no
+        for the empty path), their loads appended to *out*: the
+        component's offset by the one layout rule construction builds
+        with (:func:`field_layout`), a `Unit` component taking no
         slot.  ``None`` for a path no tuple of *ty* has."""
         for step in path:
             tup = base_type(ty) if isinstance(ty, RefinedType) else ty

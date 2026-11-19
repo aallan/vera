@@ -341,7 +341,7 @@ class ObligationTable:
         own, else the end of its ``answered_by`` chain."""
         seen: set[int] = set()
         while row.answered_by is not None and row.id not in seen:
-            seen.add(row.id)
+            seen.add(row.id)  # pragma: no mutate — equivalent: an answered_by chain ends at a row with a check of its own, which answers nothing, so no chain cycles and the guard never stops one
             row = self.rows[row.answered_by]
         return row
 
@@ -1699,7 +1699,8 @@ class _Builder:
             tuple_path = all(step.startswith("Tuple.") for step in p)
             if tuple_path and boundary is not None:
                 covered.add(tuple(int(step.split(".")[1]) for step in p))
-                self.add("nat_bind", node, target=NAT, path=p, source=source,
+                self.add("nat_bind", node, target=NAT, path=p,
+                         source=source,  # pragma: no mutate — equivalent: the one caller that hands a boundary (`narrowing_rows`) hands no source, so source is None here
                          answer=boundary, answer_path=p)
                 continue
             row_id = self.add("nat_bind", node, target=NAT, path=p,

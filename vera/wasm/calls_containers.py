@@ -568,16 +568,18 @@ class CallsContainersMixin:
                     arg_instrs, arg, "map value", "map value insert", env,
                     component_ty=value_component,
                 )
-                # #1440: the SIGN obligation at the same insert.
-                arg_instrs = self._emit_construction_nat_guard(
-                    arg_instrs, arg, value_component)
+                # #1440: the SIGN obligation at the same insert, decided
+                # by the value's `nat_bind` row.
+                arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             else:
                 # The key is `K`'s argument: its refinement checked as the
-                # value's is (#1861), its sign where `K` is `Nat`, and
-                # (#1542) where a composite coercion makes it a `Nat`.
+                # value's is (#1861), against its row's target, its sign
+                # where `K` is `Nat`, and (#1542) where a composite coercion
+                # makes it a `Nat`.
                 arg_instrs = self._emit_construction_refine_guard(
-                    arg_instrs, arg, "map key", "map key insert", env,
-                    component_ty=self._adt_arg_type(map_target, 0),
+                    arg_instrs, arg,
+                    "map key",  # pragma: no mutate — equivalent: the site names only the internal error a guardable row with no scalar type raises, which no accepted program reaches
+                    "map key insert", env,
                 )
                 arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             ins.extend(arg_instrs)
@@ -819,10 +821,6 @@ class CallsContainersMixin:
             )
 
         wasm_name = self._collection_fn("set_add", e=et)
-        # The element's refinement is read from the call's target, which
-        # carries `Set<{refined}>` whole, as `map_insert`'s value is.
-        element_component = self._adt_arg_type(
-            self._container_target_refined(call), 0)
         ins: list[str] = []
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
@@ -833,11 +831,13 @@ class CallsContainersMixin:
             if arg_instrs is None:
                 return None
             # The element is `T`'s argument: its refinement checked as a
-            # map value's is (#1861), its sign where `T` is `Nat`, and
-            # (#1542) where a composite coercion makes it a `Nat`.
+            # map value's is (#1861), against its row's target, its sign
+            # where `T` is `Nat`, and (#1542) where a composite coercion
+            # makes it a `Nat`.
             arg_instrs = self._emit_construction_refine_guard(
-                arg_instrs, arg, "set element", "set element insert", env,
-                component_ty=element_component,
+                arg_instrs, arg,
+                "set element",  # pragma: no mutate — equivalent: the site names only the internal error a guardable row with no scalar type raises, which no accepted program reaches
+                "set element insert", env,
             )
             ins.extend(self._guard_nat_narrowing(arg_instrs, arg))
         ins.append(f"call {wasm_name}")

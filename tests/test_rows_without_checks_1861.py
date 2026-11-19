@@ -462,7 +462,71 @@ def test_repro_apply_fn_of_a_computed_value_checks_its_argument_at_the_call(
     assert pipeline.run(_NON_EMPTY, fn="f", args=[1, 1]).value == 1
     ran = pipeline.run(_NON_EMPTY, fn="f", args=[1, 0])
     assert ran.trap is not None
-    assert "Refinement violation in closure argument" in str(ran.trap)
+    assert "Refinement violation in closure argument\n" in str(ran.trap)
+
+
+_COMPOSITE_WALK = """\
+private fn pair2(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, @Int.0)
+}
+
+private fn wrap(@Int -> @Option<Tuple<Int, Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(Tuple(@Int.0, @Int.0))
+}
+
+private fn take(@Tuple<Nat, Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Tuple<Nat, Nat> = pair2(@Int.0);
+  let @Nat = take(pair2(@Int.0));
+  match wrap(@Int.0) {
+    Some(@Tuple<Nat, Nat>) -> 1,
+    None -> 0
+  }
+}
+"""
+
+
+def test_the_composite_walk_lists_one_check_and_answers_the_rest() -> None:
+    """The `Nat` positions of a differing tuple (`_Builder._tree_rows`):
+    at a `let` and at a pattern binder, the first position is the walk's
+    own check and each further one is answered by it, the binder's rows
+    carrying the value they take apart; at a call argument every position
+    is answered by the callee's entry.  Each row is held to `Nat`."""
+    from vera.types import NAT
+
+    verified = _verified_clean(_COMPOSITE_WALK)
+    rows = [r for r in verified.result.table.rows
+            if r.kind == "nat_bind" and r.fn == "go"]
+    assert [r.path for r in rows] == [("Tuple.0",), ("Tuple.1",)] * 3, rows
+    assert all(r.target == NAT for r in rows), rows
+    let, arg, binder = rows[0:2], rows[2:4], rows[4:6]
+    for first, second in (let, binder):
+        assert first.answered_by is None and first.guard.check, first
+        assert second.answered_by == first.id, second
+    assert [r.source is None for r in let + arg] == [True] * 4
+    assert all(r.source is not None for r in binder), binder
+    assert all(r.answered_by is not None for r in arg), arg
+    assert pipeline.run(_COMPOSITE_WALK, fn="go", args=[3]).value == 1
+    assert pipeline.run(_COMPOSITE_WALK, fn="go", args=[-3]).trap is not None
 
 
 _TUPLE_COMPONENT = """\
@@ -501,7 +565,8 @@ def test_repro_a_tuple_component_of_a_closure_argument_is_checked_at_the_call(
     assert pipeline.run(_TUPLE_COMPONENT, fn="go", args=[3.0]).value == 3
     ran = pipeline.run(_TUPLE_COMPONENT, fn="go", args=[5000.0])
     assert ran.trap is not None, ran.value
-    assert "closure argument (tuple component)" in str(ran.trap)
+    assert ("Refinement violation in closure argument (tuple component)\n"
+            in str(ran.trap)), ran.trap
 
 
 _FUNCTION_BASE = """\
@@ -667,6 +732,7 @@ def test_repro_a_join_in_a_non_scalar_store_is_disclosed_as_the_store_is() -> No
 
 _SET_ELEMENT = """\
 type Pos = { @Int | @Int.0 > 0 };
+type Big = { @Int | @Int.0 > 100 };
 
 public fn st(@Float64 -> @Int)
   requires(true)
@@ -682,22 +748,25 @@ public fn mk(@Float64 -> @Int)
   ensures(true)
   effects(pure)
 {
-  let @Map<Pos, Int> = map_insert(map_new(), float_to_int(@Float64.0), 1);
-  map_size(@Map<Pos, Int>.0)
+  let @Map<Pos, Big> = map_insert(map_new(), float_to_int(@Float64.0), 500);
+  map_size(@Map<Pos, Big>.0)
 }
 """
 
 
-@pytest.mark.parametrize("fn", ["st", "mk"])
+@pytest.mark.parametrize(("fn", "where"), [
+    ("st", "set element insert"), ("mk", "map key insert")])
 def test_repro_set_add_element_and_map_insert_key_take_the_store_guard(
-        fn: str) -> None:
+        fn: str, where: str) -> None:
     """#1542's line for a container with refined elements: `set_add`'s
-    element and `map_insert`'s key are guarded as `map_insert`'s value is."""
+    element and `map_insert`'s key are guarded as `map_insert`'s value is,
+    each against its own refinement (a key of 5 is a `Pos` and no `Big`),
+    and the trap names the store."""
     assert _mismatches(_SET_ELEMENT) == []
     assert pipeline.run(_SET_ELEMENT, fn=fn, args=[5.0]).value == 1
     ran = pipeline.run(_SET_ELEMENT, fn=fn, args=[-5.0])
     assert ran.trap is not None
-    assert "Refinement violation" in str(ran.trap)
+    assert f"Refinement violation in {where}\n" in str(ran.trap), ran.trap
 
 
 # =====================================================================
