@@ -120,8 +120,8 @@ REASON_BELOW_STORE = (
     "a construction store checks a component's head, not a tuple "
     "component below it")
 REASON_UNWRITTEN_ARGUMENT = (
-    "the check at the call names no type for a refinement over a type "
-    "variable or a generic alias's function-typed argument")
+    "the check at the call has no written type to bind: the refinement is "
+    "written over a generic declaration's type parameter, or nowhere")
 REASON_NON_SCALAR_STORE = (
     "a construction store guards only a scalar-based refinement")
 REASON_INSIDE_PAYLOAD = (
@@ -240,9 +240,10 @@ class ObligationTable:
     _at: dict[object, list[Row]] = field(default_factory=dict, repr=False)
     _refinement_guard: Callable[[RefinedType], Guard] | None = field(
         default=None, repr=False)
-    #: Each refinement the program writes outside a generic declaration,
-    #: by its predicate's identity (:func:`written_refinements`).
-    written: dict[int, ast.RefinementType] = field(
+    #: Each refinement the program writes, by its predicate's identity,
+    #: with the type parameters in scope where it is written
+    #: (:meth:`_Builder.written`).
+    written: dict[int, tuple[ast.RefinementType, frozenset[str]]] = field(
         default_factory=dict, repr=False)
 
     def guard_type_expr(self, ty: Type | None) -> ast.TypeExpr | None:
@@ -408,23 +409,53 @@ def minted_type_expr(ty: Type | None) -> ast.RefinementType | None:
 
 
 def guard_type_expr(
-    ty: Type | None, written: dict[int, ast.RefinementType],
+    ty: Type | None,
+    written: dict[int, tuple[ast.RefinementType, frozenset[str]]],
 ) -> ast.TypeExpr | None:
     """The type expression a check binds when a value held to the
     refinement *ty* at an ``apply_fn`` argument is checked at the call
-    (#1861): the refinement minted over the resolved base, else the
-    refinement as the program writes it, whose base names the binder its
-    predicate reads (`{ @F | P }` for `type F = fn(Int -> Int)`, and
-    `{ @Array<F> | P }`); ``None`` where neither writes it.  The table holds
-    such a row guardable exactly where this is not ``None``, and code
-    generation binds what it returns: one decision for both."""
-    minted = minted_type_expr(ty)
-    if minted is not None:
-        return minted
+    (#1861): the refinement as the program writes it, found by its
+    predicate's identity.  The guard binds the value under the key
+    :func:`vera.naming.slot_name` gives the written base, the base's head
+    as written (an alias of a primitive or a data type keeps its name:
+    `{ @Count | @Count.0 > 0 }`) with its type arguments resolved, and
+    that is the key the predicate's `@Base.0` resolves to; a base minted
+    from the resolved type names `Int` where the predicate reads
+    `@Count.0`.  ``None``, so the row is disclosed, for a refinement over a
+    refinement, one in a template (its type holds a type variable), one
+    written in a generic declaration whose base names a type parameter of
+    it (`{ @Array<T> | ... }`, whose `T` no check can bind), and one the
+    program writes nowhere.  The table holds such a row guardable exactly
+    where this is not ``None``, and code generation binds what it returns:
+    one decision for both."""
     if (not isinstance(ty, RefinedType) or isinstance(ty.base, RefinedType)
             or contains_typevar(ty)):
         return None
-    return written.get(id(ty.predicate))
+    found = written.get(id(ty.predicate))
+    if found is None:
+        return None
+    node, params = found
+    if params & _type_names(node.base_type):
+        return None
+    return node
+
+
+def _type_names(te: object) -> set[str]:
+    """Every type name *te* writes, at any depth."""
+    names: set[str] = set()
+    stack = [te]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.NamedType):
+            names.add(node.name)
+        if isinstance(node, (ast.NamedType, ast.FnType, ast.RefinementType)):
+            for name in node.__dataclass_fields__:
+                value = getattr(node, name)
+                if isinstance(value, (tuple, list)):
+                    stack.extend(value)
+                elif isinstance(value, ast.TypeExpr):
+                    stack.append(value)
+    return names
 
 
 # =====================================================================
@@ -603,12 +634,11 @@ class _Builder:
         #: requirement is the node's own).
         self._via: list[str | None] = []
         self._evaluation: list[Evaluation] = [BODY]
-        #: ``id`` of a written refinement's predicate to the refinement, all
-        #: of them and those outside a generic declaration, built on first
-        #: need (:meth:`_written_refinements`).
-        self._refinement_bases: tuple[
-            dict[int, ast.RefinementType],
-            dict[int, ast.RefinementType]] | None = None
+        #: ``id`` of a written refinement's predicate to the refinement and
+        #: the type parameters in scope where it is written, built on first
+        #: need (:meth:`written`).
+        self._refinement_bases: dict[
+            int, tuple[ast.RefinementType, frozenset[str]]] | None = None
         #: ``id`` of a quantifier's predicate, a closure lowered inline.
         self._inline_closures: set[int] = set()
         #: The closures whose rows are listed (:meth:`walk`).
@@ -1136,53 +1166,43 @@ class _Builder:
     def _inline_base(self, ty: RefinedType) -> bool:
         """Whether *ty*'s refinement is written over a base that is no
         type name, by the written refinement whose predicate it carries."""
-        base = self._written_refinements()[0].get(id(ty.predicate))
-        return (base is not None
-                and not isinstance(base.base_type, ast.NamedType))
+        found = self.written().get(id(ty.predicate))
+        return (found is not None
+                and not isinstance(found[0].base_type, ast.NamedType))
 
-    def written(self) -> dict[int, ast.RefinementType]:
-        """Each refinement the program writes outside a declaration with
-        type parameters, by its predicate's identity: the written form a
-        check at an `apply_fn` argument binds where the resolved base has
-        no name (:func:`guard_type_expr`)."""
-        return self._written_refinements()[1]
-
-    def _written_refinements(self) -> tuple[
-            dict[int, ast.RefinementType], dict[int, ast.RefinementType]]:
-        """Every written refinement by its predicate's identity, and those
-        written outside a generic declaration (whose base can name a type
-        parameter no check can bind)."""
+    def written(self) -> dict[int, tuple[ast.RefinementType, frozenset[str]]]:
+        """Every refinement the program writes, by its predicate's
+        identity, with the type parameters of the declarations it is
+        written in (:func:`guard_type_expr`)."""
         if self._refinement_bases is None:
-            every: dict[int, ast.RefinementType] = {}
-            concrete: dict[int, ast.RefinementType] = {}
+            found: dict[int, tuple[ast.RefinementType, frozenset[str]]] = {}
             seen: set[int] = set()
 
-            def visit(node: object, generic: bool) -> None:
+            def visit(node: object, params: frozenset[str]) -> None:
                 if isinstance(node, ast.RefinementType):
-                    every[id(node.predicate)] = node
-                    if not generic:
-                        concrete[id(node.predicate)] = node
+                    found[id(node.predicate)] = (node, params)
                 if isinstance(node, ast.Node):
                     if id(node) in seen:
                         return
                     seen.add(id(node))
-                    generic = generic or bool(
+                    params = params | frozenset(
                         getattr(node, "type_params", None)
-                        or getattr(node, "forall_vars", None))
+                        or getattr(node, "forall_vars", None) or ())
                     for name in node.__dataclass_fields__:
-                        visit(getattr(node, name), generic)
+                        visit(getattr(node, name), params)
                 elif isinstance(node, (tuple, list)):
                     for item in node:
-                        visit(item, generic)
+                        visit(item, params)
 
             linked = self.typed.linked
-            visit(linked.program, False)
+            none: frozenset[str] = frozenset()
+            visit(linked.program, none)
             for mod in linked.modules:
-                visit(mod.program, False)
-            visit(tuple(linked.prelude), False)
+                visit(mod.program, none)
+            visit(tuple(linked.prelude), none)
             for inst in self.typed.instances:
-                visit(inst.clone, False)
-            self._refinement_bases = (every, concrete)
+                visit(inst.clone, none)
+            self._refinement_bases = found
         return self._refinement_bases
 
     # -- the walk -------------------------------------------------------

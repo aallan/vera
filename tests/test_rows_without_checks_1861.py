@@ -69,6 +69,13 @@ HEADER = (
     "type LiveFn = { @IntFn | true };\n"
     "type NEF = { @Array<IntFn> | array_length(@Array<IntFn>.0) > 0 };\n"
     "type NonEmptyOf<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };\n"
+    # Bases written through an alias: of a primitive, of a data type, and a
+    # generic alias whose refinement does not read its parameter.
+    "type Count = Int;\n"
+    "type PosCount = { @Count | @Count.0 > 0 };\n"
+    "type IntList = Array<Int>;\n"
+    "type NEL = { @IntList | array_length(@IntList.0) > 0 };\n"
+    "type Bounded<T> = { @Int | @Int.0 > 0 };\n"
 )
 CONTRACT = ("  requires(@Int.0 >= 0 && @Int.0 < 5)\n  ensures(true)\n"
             "  effects(pure)\n")
@@ -176,6 +183,17 @@ PARAMS: dict[str, tuple[str, str, str, str, float | None]] = {
     "arr_fn_generic": ("NonEmptyOf<IntFn>", "array_length(@NonEmptyOf<IntFn>.0)",
                        "[fn(@Int -> @Int) effects(pure) { 1 }]",
                        "fns(float_to_int(@Float64.0))", 0.0),
+    # How the refinement's base is written: the check binds the refinement
+    # as the program writes it, whose base names the binder its predicate
+    # reads (#1861 review).  A primitive written directly is `pos`.
+    "alias_prim": ("PosCount", "0", "@Int.0 + 1", "float_to_int(@Float64.0)",
+                   -5.0),
+    "alias_data": ("NEL", "0", "[@Int.0]",
+                   "array_slice([1], 0, float_to_int(@Float64.0))", 0.0),
+    "generic_reads": ("NonEmptyOf<Int>", "0", "[@Int.0]",
+                      "array_slice([1], 0, float_to_int(@Float64.0))", 0.0),
+    "generic_unread": ("Bounded<Bool>", "0", "@Int.0 + 1",
+                       "float_to_int(@Float64.0)", -5.0),
 }
 
 #: The parameters whose opaque argument's row no check at the call can
@@ -187,13 +205,15 @@ DISCLOSED: dict[str, str] = {
                     "the tuple component below it",
     "opt_short": "a constructor payload is decomposed by no check",
     "arr_short": "an element below an argument is decomposed by no check",
-    "arr_fn_generic": "the check at the call names no type for a generic "
-                      "alias over a function type",
+    "arr_fn_generic": "the check at the call has no written type to bind: "
+                      "the base names a generic alias's parameter",
+    "generic_reads": "the check at the call has no written type to bind: "
+                     "the base names a generic alias's parameter",
 }
 
 #: The disclosed parameters whose row a closure literal applied in place
 #: answers at its own entry, which checks its parameter.
-ANSWERED_AT_ENTRY = frozenset({"arr_short", "arr_fn_generic"})
+ANSWERED_AT_ENTRY = frozenset({"arr_short", "arr_fn_generic", "generic_reads"})
 
 OPERANDS: dict[str, str] = {
     "slot": "@F.0",
@@ -611,6 +631,56 @@ def test_repro_a_refinement_over_function_values_at_a_closure_argument(
         assert ran.trap is not None, ran.value
     else:
         assert ran.value == 0
+
+
+_WRITTEN_BASE = {
+    "alias_prim": ("""\
+type Count = Int;
+type PosCount = { @Count | @Count.0 > 0 };
+type F = fn(PosCount -> Int) effects(pure);
+""", "fn(@Int -> @Int) effects(pure) { @Int.0 }", "float_to_int(@Float64.0)",
+                   [(3.0, 3), (-5.0, None)]),
+    "alias_data": ("""\
+type IntList = Array<Int>;
+type NEL = { @IntList | array_length(@IntList.0) > 0 };
+type F = fn(NEL -> Int) effects(pure);
+""", "fn(@Array<Int> -> @Int) effects(pure) { array_length(@Array<Int>.0) }",
+                   "array_slice([1], 0, float_to_int(@Float64.0))",
+                   [(1.0, 1), (0.0, None)]),
+    "generic_reads": ("""\
+type NonEmptyOf<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+type F = fn(NonEmptyOf<Int> -> Int) effects(pure);
+""", "fn(@Array<Int> -> @Int) effects(pure) { array_length(@Array<Int>.0) }",
+                      "array_slice([1], 0, float_to_int(@Float64.0))",
+                      [(1.0, 1), (0.0, 0)]),
+}
+
+
+@pytest.mark.parametrize("base", sorted(_WRITTEN_BASE))
+def test_repro_a_closure_argument_binds_its_refinement_as_written(
+        base: str) -> None:
+    """The check at the call binds the refinement as the program writes
+    it: its predicate reads its binder by the written base (`@Count.0` for
+    `type Count = Int`, `@IntList.0`), which a base minted from the resolved
+    type (`Int`, `Array<Int>`) does not name, and code generation stopped
+    with an internal error (E699).  A generic alias's refinement over its
+    own parameter (`@Array<T>.0`) has no binder the call can name: it is
+    disclosed, and the violating value runs (#1861 review)."""
+    header, closure, arg, runs = _WRITTEN_BASE[base]
+    source = (header + "\npublic fn go(@Float64 -> @Int)\n" + PLAIN
+              + f"{{\n  let @F = {closure};\n  apply_fn(@F.0, {arg})\n}}\n")
+    verified = _verified_clean(source)
+    statuses = sorted(o.status for o in verified.obligations
+                      if o.kind == "refine_bind")
+    assert statuses == (["tier3_unguarded"] if base == "generic_reads"
+                        else ["tier3"]), statuses
+    for value, expected in runs:
+        ran = pipeline.run(source, fn="go", args=[value])
+        if expected is None:
+            assert ("Refinement violation in closure argument\n"
+                    in str(ran.trap)), ran.trap
+        else:
+            assert ran.value == expected
 
 
 _FUNCTION_ALIAS = """\
