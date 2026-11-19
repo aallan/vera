@@ -65,7 +65,9 @@ from vera.types import (
     TypeVar,
     UnknownType,
     base_type,
+    PrimitiveType,
     canonical_type_name,
+    erases_to_unit,
     is_subtype,
     unfit_function_value,
     pretty_type,
@@ -82,6 +84,13 @@ from vera.checker.registration import RegistrationMixin, _builtin_reject_names
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
 from vera.checker.control import ControlFlowMixin
+
+
+def _is_unit(ty: Type) -> bool:
+    """Whether *ty* is `Unit`, a refinement of it taken to its base: a
+    value whose one form is `()`."""
+    base = base_type(ty)
+    return isinstance(base, PrimitiveType) and base.name == "Unit"
 
 
 # =====================================================================
@@ -999,8 +1008,10 @@ class TypeChecker(
             (f"A function value of type {self._shown(found.value)} is used "
              f"where {gave} gives it the type "
              f"{self._shown(found.position)}: {told}"
-             + (" Two refinements of one base fit only where they state the "
-                "same predicate; one that implies the other is not enough."
+             + (" Inside a function type two refinements of one base fit "
+                "only where they state the same predicate: whether one "
+                "implies the other is the verifier's to decide, of a value "
+                "at a flow, and a function type's positions hold none."
                 if both_refined else "")),
             rationale=(
                 "A function type is contravariant in its parameters and "
@@ -1033,12 +1044,22 @@ class TypeChecker(
         if (result is None or effect is None  # pragma: no mutate — defensive: a part no program writes (an open variable) leaves the fix with no wrapper
                 or None in params):
             return None
+        # A slot's type is a name: a function type written out in place
+        # (`@fn(Int -> Int) effects(pure)`) does not parse, and a
+        # `Future<Unit>` erases to no local a slot can read (E182).  Such a
+        # wrapper would not check, so the fix gives none.
+        if any("fn(" in (t or "") for t in (*params, result)) or any(
+                erases_to_unit(p) and not _is_unit(p) for p in fn.params):
+            return None
         slots = [self._shown(base_type(p)) if isinstance(p, RefinedType)
                  else self._shown(p) for p in fn.params]
         if node.type_name in slots:
             return None
+        # A `Unit` parameter is passed as `()`: it has no local to read
+        # (E182), and its declaration keeps the other slots' indices.
         args = [format_expr_canonical(node)] + [
-            f"@{s}.{slots[j + 1:].count(s)}" for j, s in enumerate(slots)]
+            "()" if _is_unit(p) else f"@{s}.{slots[j + 1:].count(s)}"
+            for j, (s, p) in enumerate(zip(slots, fn.params))]
         declared = ", ".join(f"@{p}" for p in params)
         return (f"fn({declared} -> @{result}) {effect} "
                 f"{{ apply_fn({', '.join(args)}) }}")

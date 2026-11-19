@@ -31,6 +31,7 @@ verifies with reconciliation and runs to the value it should.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -38,7 +39,8 @@ import pytest
 from tests import pipeline
 
 pytestmark = pytest.mark.matrix(decides=[
-    "vera/types.py", "vera/checker/core.py", "vera/checker/control.py"])
+    "vera/types.py", "vera/checker/core.py", "vera/checker/control.py",
+    "vera/checker/calls.py"])
 
 _ALIASES = (
     "type Pos = { @Int | @Int.0 > 0 };\n"
@@ -166,8 +168,9 @@ def test_repro_a_closure_wider_only_by_implication_is_refused_1885() -> None:
     """`Big` implies `Pos`, but two refinements fit only where they state
     the same predicate."""
     diagnostic = _only_diagnostic(_IMPLIED)
-    assert "one that implies the other is not enough" in str(
-        diagnostic["description"])
+    assert ("whether one implies the other is the verifier's to decide, of "
+            "a value at a flow, and a function type's positions hold none"
+            in str(diagnostic["description"]))
 
 
 def test_repro_both_rewrites_the_fix_names_check_and_run_1885() -> None:
@@ -502,7 +505,7 @@ def expected_refused(flow: str, kind: str, form: str, p: str, c: str) -> bool:
 _ORDER_DECIDES = (
     "the closure's refinement, the first argument's, is the instance: the "
     "order of the arguments decides a variable two refinements of one base "
-    "give (spec §5.9 rule B)")
+    "give (spec §5.9 rule B), #1891")
 
 
 def _cell(flow: str, kind: str, form: str, p: str, c: str) -> object:
@@ -741,3 +744,181 @@ def test_a_function_and_a_scalar_or_data_type_inside_do_not_meet() -> None:
             + _fn("main(@Int -> @Int)", f"let @F = {value};\n  0",
                   visibility="public"))
         assert _codes(source) == ["E170"], position
+
+
+# =====================================================================
+# Inside a generic: the pair holds the enclosing function's variable
+# =====================================================================
+
+#: (position's parameter, value's parameter, position's result, value's
+#: result): the four that fit only by a narrowing, one wider only by
+#: implication, and three that fit.
+GENERIC_RELATIONS = (
+    ("Int", "Nat", "Int", "Int"), ("Int", "Pos", "Int", "Int"),
+    ("Pos", "Big", "Int", "Int"), ("Int", "Int", "Nat", "Int"),
+    ("Int", "Int", "Pos", "Int"), ("Int", "Int", "Int", "Int"),
+    ("Nat", "Int", "Int", "Int"), ("Int", "Int", "Int", "Nat"))
+
+#: Where the value meets `F2<T> = fn(P, T -> R)` inside `forall<T> fn
+#: outer`: a call's argument (a `where` helper's, a generic callee's,
+#: `apply_fn`'s) and a destructure's component, where a fit the pair's
+#: variable makes is decided by the join (`_fits`), and the flows the
+#: matrix above lists, here with the variable in the pair.
+GENERIC_FLOWS = ("where-helper", "generic-callee", "apply-fn-argument",
+                 "destructure", "let", "field", "option", "array-element",
+                 "if-join", "match-join", "return")
+
+
+def generic_program(flow: str, p: str, c: str, r: str, cr: str) -> str:
+    """`main` calls `outer(true, 50)`, which applies a `F2<T>` built from a
+    closure `fn(@c, @T -> @cr)` to its `Int` argument as a `p`."""
+    body = "50" if cr == "Nat" else f"@{c}.0"
+    v = f"fn(@{c}, @T -> @{cr}) effects(pure) {{ {body} }}"
+    exact = f"fn(@{p}, @T -> @{r}) effects(pure) {{ 50 }}"
+    bind = f"let @{p} = @Int.0;\n  " if p != "Int" else ""
+
+    def apply(fn_value: str, var: str = "T") -> str:
+        return f"apply_fn({fn_value}, @{p}.0, @{var}.0)"
+
+    helpers, inner, where = "", "", ""
+    if flow == "where-helper":
+        inner = f"helper({v}, @T.0, @{p}.0)"
+        where = ("where {\n  fn helper(@F2<T>, @T, @" + p + " -> @Int)\n"
+                 "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+                 "  {\n    " + apply("@F2<T>.0") + "\n  }\n}\n")
+    elif flow == "generic-callee":
+        helpers = _fn(f"helper(@F2<U>, @U, @{p} -> @Int)",
+                      apply("@F2<U>.0", "U")).replace(
+                          "private fn helper", "private forall<U> fn helper")
+        inner = f"helper({v}, @T.0, @{p}.0)"
+    elif flow == "apply-fn-argument":
+        helpers = "type UseF<T> = fn(F2<T> -> Int) effects(pure);\n\n"
+        inner = (f"let @UseF<T> = fn(@F2<T> -> @Int) effects(pure) "
+                 f"{{ {apply('@F2<T>.0')} }};\n  apply_fn(@UseF<T>.0, {v})")
+    elif flow == "destructure":
+        helpers = _fn("mk(@A -> @Tuple<A, Bool>)", "Tuple(@A.0, true)").replace(
+            "private fn mk", "private forall<A> fn mk")
+        inner = (f"let Tuple<@F2<T>, @Bool> = mk({v});\n  "
+                 + apply("@F2<T>.0"))
+    elif flow == "let":
+        inner = f"let @F2<T> = {v};\n  " + apply("@F2<T>.0")
+    elif flow == "field":
+        helpers = "private data H<T> {\n  MkH(F2<T>)\n}\n\n"
+        inner = (f"match MkH({v}) {{\n    MkH(@F2<T>) -> "
+                 f"{apply('@F2<T>.0')}\n  }}")
+    elif flow == "option":
+        inner = (f"let @Option<F2<T>> = Some({v});\n  "
+                 f"match @Option<F2<T>>.0 {{\n    Some(@F2<T>) -> "
+                 f"{apply('@F2<T>.0')},\n    None -> 0\n  }}")
+    elif flow == "array-element":
+        inner = (f"let @Array<F2<T>> = [{v}];\n  "
+                 + apply("@Array<F2<T>>.0[0]"))
+    elif flow == "if-join":
+        inner = (f"let @F2<T> = if @Int.0 > 100 then {{ {exact} }} "
+                 f"else {{ {v} }};\n  " + apply("@F2<T>.0"))
+    elif flow == "match-join":
+        inner = (f"let @F2<T> = match @Int.0 > 100 {{\n    true -> {exact},"
+                 f"\n    false -> {v}\n  }};\n  " + apply("@F2<T>.0"))
+    elif flow == "return":
+        helpers = _fn("mk(@T -> @F2<T>)", v).replace(
+            "private fn mk", "private forall<T> fn mk")
+        inner = "let @F2<T> = mk(@T.0);\n  " + apply("@F2<T>.0")
+    else:
+        raise AssertionError(flow)
+    outer = (_fn("outer(@T, @Int -> @Int)", bind + inner,
+                 requires="@Int.0 > 10")
+             .replace("private fn outer", "private forall<T> fn outer"))
+    if where:
+        outer = outer.rstrip("\n") + "\n" + where + "\n"
+    return (_ALIASES + f"type F2<T> = fn({p}, T -> {r}) effects(pure);\n\n"
+            + helpers + outer
+            + _fn("main(@Int -> @Int)", "outer(true, @Int.0)",
+                  visibility="public", requires="@Int.0 > 10"))
+
+
+GENERIC_CELLS = [
+    pytest.param(flow, *rel, id="-".join((flow, *rel)))
+    for flow in GENERIC_FLOWS for rel in GENERIC_RELATIONS]
+
+
+@pytest.mark.parametrize(("flow", "p", "c", "r", "cr"), GENERIC_CELLS)
+def test_a_function_value_meets_a_function_type_inside_a_generic(
+        flow: str, p: str, c: str, r: str, cr: str) -> None:
+    """The pair holds the enclosing generic's variable, so a call's
+    argument and a destructure's component are fitted by the join, which
+    compares a `Nat` beside an `Int` and a refinement beside its base by a
+    relaxed rule of its own: a fit it gives is held to rule 9 (#1885,
+    #1819), and E190 is what the site reports."""
+    source = generic_program(flow, p, c, r, cr)
+    if not (_le(p, c) and _le(cr, r)):
+        assert _codes(source) == ["E190"], source
+    else:
+        _accepted(source, 50)
+
+
+def test_repro_a_narrower_closure_at_a_generic_s_where_helper_1885() -> None:
+    """The reported form: a `fn(@Nat, @T -> @Int)` closure passed to a
+    `where` helper's `fn(Int, T -> Int)` parameter inside `forall<T> fn
+    outer`, accepted while the join judged the fit, bound -5 to its `@Nat`
+    parameter."""
+    diagnostic = _only_diagnostic(
+        generic_program("where-helper", "Int", "Nat", "Int", "Int"))
+    assert "where parameter 0 of 'helper' gives it the type" in str(
+        diagnostic["description"])
+
+
+def test_repro_a_wider_result_at_a_generic_callee_1819() -> None:
+    """The result direction through a generic callee: a `fn(@Int, @T ->
+    @Int)` closure at `fn(Int, U -> Pos)`."""
+    assert _codes(generic_program(
+        "generic-callee", "Int", "Int", "Pos", "Int")) == ["E190"]
+
+
+# =====================================================================
+# The fix reads back: the wrapper E190 prints checks where it is pasted
+# =====================================================================
+
+#: Parameter lists of a stored `fn(... -> Int)` met at `fn(... -> Nat)`:
+#: (the type's parameters, the closure's declared parameters, whether the
+#: fix gives a wrapper).  A function-typed parameter has no slot name to
+#: write and a `Future<Unit>` no local to read, so neither has a wrapper.
+_READ_BACK = {
+    "none": ("", "", True),
+    "one": ("Int", "@Int", True),
+    "two-of-one-type": ("Int, Int", "@Int, @Int", True),
+    "a-unit-alone": ("Unit", "@Unit", True),
+    "a-unit-among-others": ("Int, Unit, Int", "@Int, @Unit, @Int", True),
+    "a-refined-one": ("Pos", "@Pos", True),
+    "a-refined-unit": ("U", "@U", True),
+    "a-function-typed-one": ("IntToInt, Int", "@IntToInt, @Int", False),
+    "a-future-unit": ("Future<Unit>", "@Future<Unit>", False),
+}
+
+
+def _stored(types: str, declared: str, value: str) -> str:
+    return (_ALIASES + "type IntToInt = fn(Int -> Int) effects(pure);\n"
+            "type U = { @Unit | true };\n"
+            f"type V = fn({types} -> Int) effects(pure);\n"
+            f"type W = fn({types} -> Nat) effects(pure);\n\n"
+            + _fn("main(@Int -> @Int)",
+                  f"let @V = fn({declared} -> @Int) effects(pure) {{ 0 }};\n"
+                  f"  let @W = {value};\n  0", visibility="public"))
+
+
+@pytest.mark.parametrize("shape", list(_READ_BACK))
+def test_repro_the_wrapper_e190_prints_checks_pasted_back_1819(
+        shape: str) -> None:
+    """The wrapper E190's fix prints for a value in a slot, pasted where
+    the value was, checks: a `Unit` parameter is passed as `()`, since it
+    has no local to read (E182), and its declaration keeps the other
+    slots' indices.  Where no wrapper would check, none is printed, and the
+    fix keeps its other rewrites."""
+    types, declared, wrapped = _READ_BACK[shape]
+    fix = str(_only_diagnostic(_stored(types, declared, "@V.0"))["fix"])
+    found = re.findall(r"`(fn\([^`]*\{ apply_fn\(@V\.0[^`]*\})`", fix)
+    if not wrapped:
+        assert found == [], fix
+        assert "Declare the closure's result as `@Nat`" in fix, fix
+        return
+    assert len(found) == 1, fix
+    assert _codes(_stored(types, declared, found[0])) == [], found[0]

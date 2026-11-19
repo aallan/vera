@@ -63,6 +63,7 @@ from vera.types import (
     substitute,
     substitute_effect,
     types_equal,
+    unfit_function_value,
     written_effect,
     written_effect_instance,
     written_type,
@@ -658,7 +659,14 @@ class CallsMixin:
             return False
         outcome = self._join_parts(ty, target)
         if outcome.joined is not None:
-            return True
+            # `_Join` compares a leaf by `is_subtype` either way, a `Nat`
+            # beside an `Int` and a refinement beside its base, inside a
+            # function type too, where rule 9 compares under the formal
+            # relation (#1885, #1819): a fit the join gives is held to rule
+            # 9.  A type variable inside a function type is never open
+            # (`_Join` keeps it), so the join fills nothing there, and the
+            # pair is read as it stands.
+            return unfit_function_value(ty, target) is None
         return outcome.builtin and _compatible_modulo_typevars(
             ty, target, frozenset(self.env.type_params))
 
