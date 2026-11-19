@@ -997,9 +997,10 @@ class TypeChecker(
             # a closure of the position's type written out.  The narrowing
             # reads parameter i by that header's slots.
             written: list[ast.TypeExpr | Type] = list(found.position.params)
-            if header is not None and isinstance(node, ast.AnonFn):
+            closure = node if header is not None else None
+            if isinstance(closure, ast.AnonFn):
                 written = [found.position.params[i] if j == i else te
-                           for j, te in enumerate(node.params)]
+                           for j, te in enumerate(closure.params)]
             else:
                 header = self._written_header(found.position)
             slots = self._rewrite_slots(written)

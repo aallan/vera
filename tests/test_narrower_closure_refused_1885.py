@@ -997,6 +997,8 @@ _ALPHABET = {
     "Nat": ("Nat", "Nat", None, True),
     "Unit": ("Unit", "Unit", "()", False),
     "Option": ("Option<Int>", "Option<Int>", "Some(5)", False),
+    "Fn": ("IntToInt", "IntToInt", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+           False),
 }
 
 #: Unequal numbers for the numeric parameters, by position, and the
@@ -1061,6 +1063,7 @@ def _fix_program(params: list[str], kind: str, narrowed: int | None,
     args = [str(_VALUES[j]) if _ALPHABET[p][2] is None else str(_ALPHABET[p][2])
             for j, p in enumerate(params)]
     aliases = (_ALIASES
+               + "type IntToInt = fn(Int -> Int) effects(pure);\n"
                + f"type F = fn({', '.join(written)} -> {result}) effects(pure);\n"
                + f"type G = fn({', '.join(closure)} -> {closure_result}) "
                  "effects(pure);\n\n")
@@ -1112,6 +1115,13 @@ def test_every_rewrite_e190_prints_checks_and_runs_pasted(
     expected = _expected(plist)
     position = [_ALPHABET[p][0] for p in plist]
     pasted = 0
+    if form == "slot" and "Fn" in plist:
+        # Held in a slot, the rewrite is a closure of the position's type
+        # written out, and a function-typed parameter is not written out in
+        # a header (`@fn(Int -> Int) effects(pure)` does not parse): the fix
+        # prints neither the narrowing's header nor a wrapper.
+        assert "let @" not in fix and "apply_fn(@G.0" not in fix, fix
+        return
     if kind == "parameter":
         assert narrowed is not None
         # The narrowing binds the closure's own parameter type: by its alias
