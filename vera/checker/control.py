@@ -1378,7 +1378,7 @@ class ControlFlowMixin:
 
         A value typed `Unknown` is not judged, as a `match` over one is not
         (#1671): a diagnostic stands behind every `Unknown` (#1862)."""
-        ty = value_ty if value_ty is not None else UnknownType()
+        ty = value_ty if value_ty is not None else UnknownType()  # pragma: no mutate — equivalent: `_synth_expr` types an expression it refuses `Unknown` and returns no None (`_check_match` says the same of its scrutinee), so the fallback never runs
         base = base_type(ty)
         if isinstance(base, UnknownType):
             return
