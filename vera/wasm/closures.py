@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from vera import ast, fold, naming
+from vera import ast, fold, naming, narrowing
 from vera.skip import CodegenInvariantError
-from vera.types import FunctionType, RefinedType, base_type
+from vera.types import AdtType, FunctionType, RefinedType, base_type
 from vera.wasm.helpers import (
+    SlotValueBinding,
     WasmSlotEnv,
     _align_up,
+    bind_slot_value_from_field,
     bind_slot_value_from_stack,
     field_layout,
     gc_shadow_push,
+    is_gc_pointer_base,
 )
 
 
@@ -249,25 +252,82 @@ class ClosuresMixin:
         env: WasmSlotEnv,
     ) -> list[str]:
         """*value*, the translation of an ``apply_fn`` argument, behind the
-        refinement check of its ``refine_bind`` row, where the table gives
-        the row a check of its own: the value is spilled to the locals a
-        slot of its representation binds, the function type's parameter
-        predicate is evaluated over them, and the value is pushed back."""
-        row = self._row(arg, "refine_bind")
-        if not self._checked(row):
+        refinement check of each ``refine_bind`` row the table lists at the
+        argument and at a join's value leaves with a check of its own: the
+        head, against the function type's parameter, and each tuple
+        component, against its own refinement.  The value is spilled to
+        the locals a slot of its representation binds (rooted, a heap
+        value, since a predicate can allocate), each component is read from
+        it as construction laid it out, each predicate is evaluated over
+        the type :meth:`ObligationTable.guard_type_expr` writes, the one
+        the table decided the row's guard by, and the value is pushed
+        back."""
+        rows = {row.id: row
+                for node in (arg, *narrowing.value_leaves(arg))
+                for row in self._rows(node, "refine_bind")
+                if self._checked(row)}
+        if not rows:
             return value
-        assert row is not None  # noqa: S101 — `_checked`
-        te = self.refined_type_expr(row.target)
         width = self._width_of(formal) if formal is not None else None
-        if te is None or width is None:
+        if width is None:
             raise CodegenInvariantError(
                 "the obligation table holds a closure argument's refinement "
-                "guardable, and this lowering resolves no type for it "
+                "guardable, and this lowering resolves no width for it "
                 "(#1861)", arg)
         spill = bind_slot_value_from_stack(self.alloc_local, width)
-        guard = self._emit_bind_refine_guard(
-            te, spill.slot_local, "closure argument", arg, env, row=row)
-        return [*value, *spill.load, *guard, *spill.push]
+        out = [*value, *spill.load]
+        base = base_type(formal) if isinstance(formal, RefinedType) else formal
+        if width == "i32_pair" or (width == "i32" and is_gc_pointer_base(
+                getattr(base, "name", ""))):
+            self.needs_alloc = True
+            out.extend(gc_shadow_push(spill.slot_local))
+        for row in rows.values():
+            binding = self._closure_argument_component(
+                out, spill, formal, row.path)
+            te = self.obligations.guard_type_expr(row.target)
+            if binding is None or te is None:
+                raise CodegenInvariantError(
+                    "the obligation table holds a closure argument's "
+                    "refinement guardable, and this lowering resolves no "
+                    "type for it (#1861)", arg)
+            where = ("closure argument" if not row.path
+                     else "closure argument (tuple component)")
+            out.extend(self._emit_bind_refine_guard(
+                te, binding.slot_local, where, arg, env, row=row))
+        return [*out, *spill.push]
+
+    def _closure_argument_component(
+        self, out: list[str], value: SlotValueBinding, ty: object,
+        path: tuple[str, ...],
+    ) -> SlotValueBinding | None:
+        """The locals holding the component at *path* (``Tuple.<k>`` per
+        level) of the value of type *ty* bound in *value* (*value* itself
+        for the empty path), their loads appended to *out*: the component's offset by the one layout rule construction
+        builds with (:func:`field_layout`), a `Unit` component taking no
+        slot.  ``None`` for a path no tuple of *ty* has."""
+        for step in path:
+            tup = base_type(ty) if isinstance(ty, RefinedType) else ty
+            if (not isinstance(tup, AdtType) or tup.name != "Tuple"
+                    or not step.startswith("Tuple.")):
+                return None
+            index = int(step.split(".")[1])
+            offset = 4  # after the tag, as construction lays it out
+            field_offset: int | None = None
+            for k, component in enumerate(tup.type_args):
+                wt = self._width_of(component)
+                if wt is None:
+                    continue
+                at, offset = field_layout(offset, wt)
+                if k == index:
+                    field_offset = at
+                    break
+            if field_offset is None or wt is None:
+                return None
+            value = bind_slot_value_from_field(
+                self.alloc_local, wt, value.slot_local, field_offset)
+            out.extend(value.load)
+            ty = tup.type_args[index]
+        return value
 
     def _collect_free_vars(
         self,

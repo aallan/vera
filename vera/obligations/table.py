@@ -70,6 +70,7 @@ from vera.types import (
     RefinedType,
     Type,
     base_type,
+    contains_typevar,
     pretty_type,
 )
 
@@ -115,6 +116,12 @@ REASON_MEASURE_NOT_RANKABLE = (
 REASON_NESTED_REFINEMENT = "a refinement over a refinement has no guard"
 REASON_ERASED_BASE = "a refinement over an erased base has no value to check"
 REASON_FUNCTION_BASE = "a refinement over a function type has no binder to check"
+REASON_BELOW_STORE = (
+    "a construction store checks a component's head, not a tuple "
+    "component below it")
+REASON_UNWRITTEN_ARGUMENT = (
+    "the check at the call names no type for a refinement over a type "
+    "variable or a generic alias's function-typed argument")
 REASON_NON_SCALAR_STORE = (
     "a construction store guards only a scalar-based refinement")
 REASON_INSIDE_PAYLOAD = (
@@ -227,6 +234,15 @@ class ObligationTable:
     _at: dict[object, list[Row]] = field(default_factory=dict, repr=False)
     _refinement_guard: Callable[[RefinedType], Guard] | None = field(
         default=None, repr=False)
+    #: Each refinement the program writes outside a generic declaration,
+    #: by its predicate's identity (:func:`written_refinements`).
+    written: dict[int, ast.RefinementType] = field(
+        default_factory=dict, repr=False)
+
+    def guard_type_expr(self, ty: Type | None) -> ast.TypeExpr | None:
+        """The type expression the check of a value held to *ty* at an
+        ``apply_fn`` argument binds (:func:`guard_type_expr`)."""
+        return guard_type_expr(ty, self.written)
 
     def refinement_guard(self, ty: Type | None) -> Guard:
         """Whether a check guards a value held to the refinement *ty* (the
@@ -323,9 +339,79 @@ def build(typed: TypedProgram) -> ObligationTable:
     builder.build()
     table = ObligationTable(builder.finished(), by_body=builder.by_body,
                             epilogue=builder.epilogue,
-                            _refinement_guard=builder._refinement_guardable)
+                            _refinement_guard=builder._refinement_guardable,
+                            written=builder.written())
     table.index()
     return table
+
+
+# =====================================================================
+# The type a check at an `apply_fn` argument binds
+# =====================================================================
+
+
+def _named_type_expr(ty: Type) -> ast.NamedType | None:
+    """*ty*, a primitive or a data type over such types, as the
+    ``NamedType`` that writes it (`Array<Int>`, not `Array`: the binder a
+    predicate over a parameterised base reads is named with its arguments,
+    #1861); ``None`` for a type with no such name."""
+    if isinstance(ty, PrimitiveType):
+        return ast.NamedType(name=ty.name, type_args=None)
+    if not isinstance(ty, AdtType):
+        return None
+    args: list[ast.TypeExpr] = []
+    for arg in ty.type_args:
+        te = _type_argument_expr(arg)
+        if te is None:
+            return None
+        args.append(te)
+    return ast.NamedType(name=ty.name, type_args=tuple(args) if args else None)
+
+
+def _type_argument_expr(ty: Type) -> ast.TypeExpr | None:
+    """A type argument as the ``TypeExpr`` that writes it: a named type as
+    :func:`_named_type_expr` writes it, and a refinement over one with its
+    own predicate (`Array<{ @Int | @Int.0 > 0 }>`), which the binder's name
+    renders as the checker does."""
+    if isinstance(ty, RefinedType):
+        base = _type_argument_expr(ty.base)
+        if base is None:
+            return None
+        return ast.RefinementType(base_type=base, predicate=ty.predicate)
+    return _named_type_expr(ty)
+
+
+def minted_type_expr(ty: Type | None) -> ast.RefinementType | None:
+    """The refinement *ty* as a ``TypeExpr`` over the base the checker
+    resolved, or ``None`` for a non-refinement, a refinement over a
+    refinement, and a base with no name (a function type, a type variable,
+    either as a type argument)."""
+    if not isinstance(ty, RefinedType) or isinstance(ty.base, RefinedType):
+        return None
+    base = _named_type_expr(ty.base)
+    if base is None:
+        return None
+    return ast.RefinementType(base_type=base, predicate=ty.predicate)
+
+
+def guard_type_expr(
+    ty: Type | None, written: dict[int, ast.RefinementType],
+) -> ast.TypeExpr | None:
+    """The type expression a check binds when a value held to the
+    refinement *ty* at an ``apply_fn`` argument is checked at the call
+    (#1861): the refinement minted over the resolved base, else the
+    refinement as the program writes it, whose base names the binder its
+    predicate reads (`{ @F | P }` for `type F = fn(Int -> Int)`, and
+    `{ @Array<F> | P }`); ``None`` where neither writes it.  The table holds
+    such a row guardable exactly where this is not ``None``, and code
+    generation binds what it returns: one decision for both."""
+    minted = minted_type_expr(ty)
+    if minted is not None:
+        return minted
+    if (not isinstance(ty, RefinedType) or isinstance(ty.base, RefinedType)
+            or contains_typevar(ty)):
+        return None
+    return written.get(id(ty.predicate))
 
 
 # =====================================================================
@@ -468,6 +554,10 @@ class _Builder:
         #: ``id(arg)`` of a call argument or a return leaf to the boundary
         #: type expression whose entry rows answer its rows.
         self._boundary: dict[int, ast.TypeExpr] = {}
+        #: ``id(arg)`` of an argument applied to a function value that is no
+        #: closure literal, and of its value leaves: checked at the call
+        #: against a type :func:`guard_type_expr` writes (#1861).
+        self._called_args: set[int] = set()
         #: ``(id(node), path)`` of an answering row to its id: a
         #: ``requires`` clause's row, a boundary's entry rows.
         self._answerers: dict[tuple[int, tuple[str, ...]], int] = {}
@@ -498,9 +588,12 @@ class _Builder:
         #: requirement is the node's own).
         self._via: list[str | None] = []
         self._evaluation: list[Evaluation] = [BODY]
-        #: ``id`` of a written refinement's predicate to its base type
-        #: expression, built on first need (:meth:`_inline_base`).
-        self._refinement_bases: dict[int, ast.TypeExpr] | None = None
+        #: ``id`` of a written refinement's predicate to the refinement, all
+        #: of them and those outside a generic declaration, built on first
+        #: need (:meth:`_written_refinements`).
+        self._refinement_bases: tuple[
+            dict[int, ast.RefinementType],
+            dict[int, ast.RefinementType]] | None = None
         #: ``id`` of a quantifier's predicate, a closure lowered inline.
         self._inline_closures: set[int] = set()
         #: The closures whose rows are listed (:meth:`walk`).
@@ -1014,36 +1107,69 @@ class _Builder:
             return unguarded(REASON_NON_SCALAR_STORE)
         return CHECK
 
+    def _guard_at(
+        self, e: ast.Node, ty: RefinedType, construction: bool = False,
+    ) -> Guard:
+        """:meth:`_refinement_guardable` for a value held to *ty* at *e*,
+        where a value applied to a function value is checked at the call
+        only against a type :func:`guard_type_expr` writes (#1861)."""
+        guard = self._refinement_guardable(ty, construction=construction)
+        if (guard.check and id(e) in self._called_args
+                and guard_type_expr(ty, self.written()) is None):
+            return unguarded(REASON_UNWRITTEN_ARGUMENT)
+        return guard
+
     def _inline_base(self, ty: RefinedType) -> bool:
         """Whether *ty*'s refinement is written over a base that is no
         type name, by the written refinement whose predicate it carries."""
+        base = self._written_refinements()[0].get(id(ty.predicate))
+        return (base is not None
+                and not isinstance(base.base_type, ast.NamedType))
+
+    def written(self) -> dict[int, ast.RefinementType]:
+        """Each refinement the program writes outside a declaration with
+        type parameters, by its predicate's identity: the written form a
+        check at an `apply_fn` argument binds where the resolved base has
+        no name (:func:`guard_type_expr`)."""
+        return self._written_refinements()[1]
+
+    def _written_refinements(self) -> tuple[
+            dict[int, ast.RefinementType], dict[int, ast.RefinementType]]:
+        """Every written refinement by its predicate's identity, and those
+        written outside a generic declaration (whose base can name a type
+        parameter no check can bind)."""
         if self._refinement_bases is None:
-            bases: dict[int, ast.TypeExpr] = {}
+            every: dict[int, ast.RefinementType] = {}
+            concrete: dict[int, ast.RefinementType] = {}
             seen: set[int] = set()
 
-            def visit(node: object) -> None:
+            def visit(node: object, generic: bool) -> None:
                 if isinstance(node, ast.RefinementType):
-                    bases[id(node.predicate)] = node.base_type
+                    every[id(node.predicate)] = node
+                    if not generic:
+                        concrete[id(node.predicate)] = node
                 if isinstance(node, ast.Node):
                     if id(node) in seen:
                         return
                     seen.add(id(node))
+                    generic = generic or bool(
+                        getattr(node, "type_params", None)
+                        or getattr(node, "forall_vars", None))
                     for name in node.__dataclass_fields__:
-                        visit(getattr(node, name))
+                        visit(getattr(node, name), generic)
                 elif isinstance(node, (tuple, list)):
                     for item in node:
-                        visit(item)
+                        visit(item, generic)
 
             linked = self.typed.linked
-            visit(linked.program)
+            visit(linked.program, False)
             for mod in linked.modules:
-                visit(mod.program)
-            visit(tuple(linked.prelude))
+                visit(mod.program, False)
+            visit(tuple(linked.prelude), False)
             for inst in self.typed.instances:
-                visit(inst.clone)
-            self._refinement_bases = bases
-        base = self._refinement_bases.get(id(ty.predicate))
-        return base is not None and not isinstance(base, ast.NamedType)
+                visit(inst.clone, False)
+            self._refinement_bases = (every, concrete)
+        return self._refinement_bases
 
     # -- the walk -------------------------------------------------------
 
@@ -1343,8 +1469,8 @@ class _Builder:
                 if any(not _same_refinement(self.sem(leaf), req)
                        for leaf in leaves):
                     self.add("refine_bind", e, target=req,
-                             guard=self._refinement_guardable(
-                                 req, construction=store),
+                             guard=self._guard_at(
+                                 e, req, construction=store),
                              answer=self._boundary.get(id(e)))
             # A refinement over `Nat` takes the sign row beside its
             # predicate's, as a bare `Nat` does.
@@ -1365,7 +1491,7 @@ class _Builder:
             if (isinstance(req, RefinedType) and not under_join
                     and not _same_refinement(sem, req)):
                 self.add("refine_bind", e, target=req,
-                         guard=self._refinement_guardable(req, construction=store),
+                         guard=self._guard_at(e, req, construction=store),
                          answer=self._boundary.get(id(e)))
             return
         if narrowing.holds_no_component(e):
@@ -1376,8 +1502,8 @@ class _Builder:
             if (isinstance(req, RefinedType) and not under_join
                     and not _same_refinement(sem, req)):
                 self.add("refine_bind", e, target=req,
-                         guard=self._refinement_guardable(
-                             req, construction=store),
+                         guard=self._guard_at(
+                             e, req, construction=store),
                          answer=self._boundary.get(id(e)))
             return
         assert req_nat is not None  # noqa: S101 — `req` stands in above
@@ -1491,6 +1617,11 @@ class _Builder:
             # parameter: an argument's rows are the call's own, checked at
             # the call against the function type's parameter (spec §6.7;
             # #1861, #1885).
+            for arg in e.args[1:]:
+                if id(arg) not in self._boundary:
+                    self._called_args.add(id(arg))
+                    self._called_args.update(
+                        id(leaf) for leaf in narrowing.value_leaves(arg))
         if isinstance(e, ast.FnCall) and name in NAT_ARG_UNGUARDED_BUILTINS:
             for arg in e.args:
                 self._arg_reason.setdefault(id(arg), REASON_STRING_SLICE)
@@ -1509,7 +1640,7 @@ class _Builder:
             if isinstance(req, RefinedType):
                 if not _same_refinement(sem, req):
                     self.add("refine_bind", e, target=req,
-                             guard=self._refinement_guardable(req, construction=store),
+                             guard=self._guard_at(e, req, construction=store),
                              answer=boundary)
             # A refinement over `Nat` takes the sign row beside its
             # predicate's, as a bare `Nat` does.
@@ -1531,8 +1662,12 @@ class _Builder:
             self._tree_rows(tree, e, boundary=boundary)
         for p, rty in self._refined_paths(_strip(req), _strip(sem), ()):
             tuple_path = all(s.startswith("Tuple.") for s in p)
-            guard = (self._refinement_guardable(rty) if tuple_path
-                     else unguarded(REASON_INSIDE_PAYLOAD))
+            # A construction's store checks the component's head and not
+            # the components below it, so a tuple component of a stored
+            # value is checked by no store (#1861).
+            guard = (unguarded(REASON_INSIDE_PAYLOAD) if not tuple_path
+                     else unguarded(REASON_BELOW_STORE) if store
+                     else self._guard_at(e, rty))
             self.add("refine_bind", e, target=rty, path=p, guard=guard,
                      answer=boundary, answer_path=p)
 

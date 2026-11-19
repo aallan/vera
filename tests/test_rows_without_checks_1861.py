@@ -59,10 +59,33 @@ HEADER = (
     "type NEP = { @Array<Pos> | array_length(@Array<Pos>.0) > 0 };\n"
     "type NEPI = { @Array<{ @Int | @Int.0 > 0 }> | "
     "array_length(@Array<{ @Int | @Int.0 > 0 }>.0) > 0 };\n"
+    # A predicate the solver neither proves nor refutes of an opaque value,
+    # so a component held to it is checked at run time.
+    "type Short = { @Int | string_length(to_string(@Int.0)) < 3 };\n"
+    # Refinements whose resolved base names no type (a function type,
+    # behind an alias or as a type argument), and one a generic alias
+    # writes over its parameter.
+    "type IntFn = fn(Int -> Int) effects(pure);\n"
+    "type LiveFn = { @IntFn | true };\n"
+    "type NEF = { @Array<IntFn> | array_length(@Array<IntFn>.0) > 0 };\n"
+    "type NonEmptyOf<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };\n"
 )
 CONTRACT = ("  requires(@Int.0 >= 0 && @Int.0 < 5)\n  ensures(true)\n"
             "  effects(pure)\n")
 PLAIN = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+#: Producers of an opaque value of each shape: an argument that is no
+#: construction, so its components' rows stand at the argument itself.
+PRODUCERS = (
+    "private fn pair(@Int -> @Tuple<Int, Int>)\n" + PLAIN
+    + "{\n  Tuple(@Int.0, 0)\n}\n\n"
+    + "private fn optof(@Int -> @Option<Int>)\n" + PLAIN
+    + "{\n  Some(@Int.0)\n}\n\n"
+    + "private fn arrof(@Int -> @Array<Int>)\n" + PLAIN
+    + "{\n  [@Int.0]\n}\n\n"
+    + "private fn fns(@Int -> @Array<IntFn>)\n" + PLAIN
+    + "{\n  array_slice([fn(@Int -> @Int) effects(pure) { 1 }], 0, @Int.0)\n}\n\n"
+)
 
 #: The `@Float64` argument each cell runs with: a value no row refuses.
 SATISFYING = 3.0
@@ -129,7 +152,48 @@ PARAMS: dict[str, tuple[str, str, str, str, float | None]] = {
             "[float_to_int(@Float64.0)]", -5.0),
     "nep_inline": ("NEPI", "array_length(@NEPI.0)", "[@Int.0 + 1, 1]",
                    "[float_to_int(@Float64.0)]", -5.0),
+    # The row paths an argument's value carries below its head: a tuple
+    # component, one nested a level down, an `Option` payload and an
+    # array element, each of a value that is no construction, so the row
+    # stands at the argument (#1861 review).
+    "tuple_short": ("Tuple<Short, Int>", "0", "Tuple(@Int.0, 0)",
+                    "pair(float_to_int(@Float64.0))", 5000.0),
+    "tuple_nested": ("Tuple<Tuple<Short, Int>, Int>", "0",
+                     "Tuple(Tuple(@Int.0, 0), 0)",
+                     "Tuple(pair(float_to_int(@Float64.0)), 0)", 5000.0),
+    "opt_short": ("Option<Short>", "0", "Some(@Int.0)",
+                  "optof(float_to_int(@Float64.0))", 5000.0),
+    "arr_short": ("Array<Short>", "array_length(@Array<Short>.0)", "[@Int.0]",
+                  "arrof(float_to_int(@Float64.0))", 5000.0),
+    # A refinement whose resolved base names no type: a function type
+    # behind an alias, an array of function values, and one a generic
+    # alias writes over its parameter (#1861 review).
+    "fn_alias": ("LiveFn", "0", "fn(@Int -> @Int) effects(pure) { 1 }",
+                 "fn(@Int -> @Int) effects(pure) { 2 }", None),
+    "arr_fn": ("NEF", "array_length(@NEF.0)",
+               "[fn(@Int -> @Int) effects(pure) { 1 }]",
+               "fns(float_to_int(@Float64.0))", 0.0),
+    "arr_fn_generic": ("NonEmptyOf<IntFn>", "array_length(@NonEmptyOf<IntFn>.0)",
+                       "[fn(@Int -> @Int) effects(pure) { 1 }]",
+                       "fns(float_to_int(@Float64.0))", 0.0),
 }
+
+#: The parameters whose opaque argument's row no check at the call can
+#: evaluate, so `vera verify` discloses it (`tier3_unguarded`) and a
+#: violating value runs, bar a closure literal's own entry: the reason
+#: each is not guarded.
+DISCLOSED: dict[str, str] = {
+    "tuple_nested": "a construction store checks a component's head, not "
+                    "the tuple component below it",
+    "opt_short": "a constructor payload is decomposed by no check",
+    "arr_short": "an element below an argument is decomposed by no check",
+    "arr_fn_generic": "the check at the call names no type for a generic "
+                      "alias over a function type",
+}
+
+#: The disclosed parameters whose row a closure literal applied in place
+#: answers at its own entry, which checks its parameter.
+ANSWERED_AT_ENTRY = frozenset({"arr_short", "arr_fn_generic"})
 
 OPERANDS: dict[str, str] = {
     "slot": "@F.0",
@@ -158,6 +222,7 @@ def apply_program(param: str, operand: str, arg: str) -> str:
     return (
         HEADER
         + f"type F = fn({pty} -> Int) effects(pure);\n\n"
+        + PRODUCERS
         + "private fn choose(@Bool, @F, @F -> @F)\n" + PLAIN
         + "{\n  if @Bool.0 then { @F.1 } else { @F.0 }\n}\n\n"
         + "private fn pick(@Bool, @F, @F, @Int, @Float64 -> @Int)\n" + CONTRACT
@@ -177,12 +242,22 @@ APPLY_CELLS = list(itertools.product(PARAMS, OPERANDS, ("proved", "opaque")))
     ids=["-".join(c) for c in APPLY_CELLS])
 def test_apply_fn_argument_joins_clean(param: str, operand: str, arg: str) -> None:
     source = apply_program(param, operand, arg)
-    _verified_clean(source)
+    verified = _verified_clean(source)
     assert pipeline.run(source, fn="f", args=[1, 2, SATISFYING]).ok
     bad = PARAMS[param][4]
-    if arg == "opaque" and bad is not None:
-        ran = pipeline.run(source, fn="f", args=[1, 2, bad])
-        assert ran.trap is not None, ran.value
+    if arg != "opaque":
+        return
+    disclosed = [o for o in verified.obligations
+                 if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+                 and o.fn_name == "pick"]
+    if param in DISCLOSED and not (operand == "lambda"
+                                   and param in ANSWERED_AT_ENTRY):
+        assert disclosed, verified.obligations
+    else:
+        assert disclosed == [], disclosed
+        if bad is not None:
+            ran = pipeline.run(source, fn="f", args=[1, 2, bad])
+            assert ran.trap is not None, ran.value
 
 
 # =====================================================================
@@ -210,6 +285,11 @@ BUILT: dict[str, tuple[str, str, float | None]] = {
     "arr_plain": ("Array<Int>", "[@Int.0]", None),
     "arr_head_call": ("NE", "array_append([], @Int.0)", None),
     "pos_call": ("Pos", "float_to_int(@Float64.0)", -5.0),
+    # A tuple component below a stored value, which no store checks.
+    "tuple_nested": ("Tuple<Tuple<Short, Int>, Int>",
+                     "Tuple(pair(float_to_int(@Float64.0)), 0)", 5000.0),
+    "arr_tuple": ("Array<Tuple<Short, Int>>",
+                  "[pair(float_to_int(@Float64.0))]", 5000.0),
 }
 
 POSITIONS: dict[str, str] = {
@@ -237,6 +317,7 @@ def built_program(built: str, position: str) -> str:
     return (
         HEADER
         + f"private data W {{ MkW({ty}) }}\n\n"
+        + PRODUCERS
         + f"private fn take(@{ty} -> @{ty})\n" + PLAIN
         + f"{{\n  @{ty}.0\n}}\n\n"
         + f"private fn mk(@Bool, @Int, @Float64 -> @{ret})\n" + PLAIN
@@ -248,6 +329,32 @@ def built_program(built: str, position: str) -> str:
 
 BUILT_CELLS = list(itertools.product(BUILT, POSITIONS))
 
+#: The cells `vera verify` discloses (a `refine_bind` record at
+#: `tier3_unguarded`), by the reason no check stands for the row.
+DISCLOSED_BUILT: dict[tuple[str, str], str] = {
+    # A refinement over a non-scalar base stored in a constructor field.
+    **{(b, p): "a construction store guards only a scalar-based refinement"
+       for b, ps in (
+           ("arr_head", ("ctor_field", "ctor_field_if", "tuple_comp",
+                         "ret_tuple")),
+           ("set_head", ("ctor_field", "ctor_field_if", "ret_tuple")),
+           ("map_head", ("ctor_field", "ctor_field_if", "ret_tuple")),
+           ("arr_head_call", ("ctor_field", "ctor_field_if", "ret_tuple")))
+       for p in ps},
+    # An element below a returned tuple component.
+    **{(b, "ret_tuple"): "an element below a tuple component is decomposed "
+                         "by no boundary"
+       for b in ("arr_elem", "set_elem", "map_elem", "map_key")},
+    # A refined element of a composite element type.
+    **{(b, p): "a composite element refinement is not checked by the "
+               "element loop"
+       for b in ("arr_nested", "arr_tuple") for p in POSITIONS},
+    # A tuple component below a stored value (#1861 review).
+    **{("tuple_nested", p): "a construction store checks a component's "
+                            "head, not a tuple component below it"
+       for p in POSITIONS if p != "ret_tuple"},
+}
+
 
 @pytest.mark.parametrize(
     ("built", "position"), BUILT_CELLS,
@@ -256,9 +363,15 @@ def test_value_built_in_place_joins_clean(built: str, position: str) -> None:
     source = built_program(built, position)
     verified = _verified_clean(source)
     assert pipeline.run(source, fn="f", args=[1, 2, SATISFYING]).ok
+    disclosed = [o for o in verified.obligations
+                 if o.status == "tier3_unguarded"]
+    if (built, position) in DISCLOSED_BUILT:
+        assert disclosed, verified.obligations
+        assert {o.kind for o in disclosed} == {"refine_bind"}, disclosed
+        return
+    assert disclosed == [], disclosed
     bad = BUILT[built][2]
-    disclosed = any(o.status == "tier3_unguarded" for o in verified.obligations)
-    if bad is not None and not disclosed:
+    if bad is not None:
         ran = pipeline.run(source, fn="f", args=[1, 2, bad])
         assert ran.trap is not None, ran.value
 
@@ -294,16 +407,25 @@ public fn f(@Bool, @Int -> @Int)
     "if @Bool.0 then { @SmallToInt.0 } else { @SmallToInt.1 }",
     "match @Bool.0 { true -> @SmallToInt.0, false -> @SmallToInt.1 }",
 ])
-def test_repro_apply_fn_of_a_computed_value_lists_no_predicate_rows(
+def test_repro_apply_fn_of_a_computed_value_checks_its_predicate_at_the_call(
         operand: str) -> None:
     source = _ISSUE_BODY.replace("OPERAND", operand)
     assert _mismatches(source) == []
     verified = _verified_clean(source)
-    # The predicate's two products are rows of the closure's entry check in
-    # `f`, and nowhere in `pick`.
-    pick = [o for o in verified.obligations
-            if o.kind == "int_overflow" and o.fn_name == "pick"]
-    assert pick == []
+    # The predicate's two products are rows of each check that evaluates
+    # it: the call's in `pick` (the argument checked at the call) and the
+    # closure's entry in `f`, each with its check.  Their records are
+    # named for the alias whose predicate they are, `Small`.
+    table = verified.result.table
+    argument = [r for r in table.rows
+                if r.kind == "refine_bind" and r.fn == "pick"]
+    assert len(argument) == 1 and argument[0].guard.check, argument
+    products = [r for r in table.rows
+                if r.kind == "int_overflow" and r.fn == "pick"]
+    assert [r.evaluation for r in products] == [
+        ("predicate", argument[0].id)] * 2, products
+    records = [o for o in verified.obligations if o.kind == "int_overflow"]
+    assert [(o.fn_name, o.status) for o in records] == [("Small", "tier3")] * 2
     assert pipeline.run(source, fn="f", args=[1, 3]).value == 3
 
 
@@ -330,16 +452,125 @@ public fn f(@Bool, @Int -> @Int)
 """
 
 
-def test_repro_apply_fn_of_a_computed_value_holds_its_argument_at_entry() -> None:
+def test_repro_apply_fn_of_a_computed_value_checks_its_argument_at_the_call(
+) -> None:
     """The first comment's member: an argument the solver does not prove,
-    checked by the entry of the closure that runs."""
+    checked at the call, before the entry of the closure that runs."""
     assert _mismatches(_NON_EMPTY) == []
     verified = _verified_clean(_NON_EMPTY)
     assert _statuses(verified, "refine_bind", 9) == ["tier3"]
     assert pipeline.run(_NON_EMPTY, fn="f", args=[1, 1]).value == 1
     ran = pipeline.run(_NON_EMPTY, fn="f", args=[1, 0])
     assert ran.trap is not None
-    assert "Refinement violation" in str(ran.trap)
+    assert "Refinement violation in closure argument" in str(ran.trap)
+
+
+_TUPLE_COMPONENT = """\
+type Short = { @Int | string_length(to_string(@Int.0)) < 3 };
+type F = fn(Tuple<Short, Int> -> Int) effects(pure);
+
+private fn take(@Tuple<Int, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F = fn(@Tuple<Int, Int> -> @Int) effects(pure) {
+    match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }
+  };
+  apply_fn(@F.0, @Tuple<Int, Int>.0)
+}
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take(Tuple(float_to_int(@Float64.0), 1))
+}
+"""
+
+
+def test_repro_a_tuple_component_of_a_closure_argument_is_checked_at_the_call(
+) -> None:
+    """A refined tuple component of an argument applied to a function
+    value is a row of the argument, checked at the call: the closure that
+    runs is wider than its type and checks nothing (#1861 review).  The
+    row was listed with a check and none was emitted: E541."""
+    verified = _verified_clean(_TUPLE_COMPONENT)
+    assert _statuses(verified, "refine_bind", 12) == ["tier3"]
+    assert pipeline.run(_TUPLE_COMPONENT, fn="go", args=[3.0]).value == 3
+    ran = pipeline.run(_TUPLE_COMPONENT, fn="go", args=[5000.0])
+    assert ran.trap is not None, ran.value
+    assert "closure argument (tuple component)" in str(ran.trap)
+
+
+_FUNCTION_BASE = """\
+type IntFn = fn(Int -> Int) effects(pure);
+REFINEMENT
+type G = fn(PARAM -> Int) effects(pure);
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntFn = fn(@Int -> @Int) effects(pure) { @Int.0 + 1 };
+  let @G = fn(@Array<IntFn> -> @Int) effects(pure) {
+    array_length(@Array<IntFn>.0)
+  };
+  apply_fn(@G.0, array_slice([@IntFn.0], 0, float_to_int(@Float64.0)))
+}
+"""
+
+
+@pytest.mark.parametrize(("refinement", "param", "status"), [
+    ("type NEF = { @Array<IntFn> | array_length(@Array<IntFn>.0) > 0 };",
+     "NEF", "tier3"),
+    ("type NonEmptyOf<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };",
+     "NonEmptyOf<IntFn>", "tier3_unguarded"),
+], ids=["alias", "generic_alias"])
+def test_repro_a_refinement_over_function_values_at_a_closure_argument(
+        refinement: str, param: str, status: str) -> None:
+    """A refinement whose resolved base names no type (an array of
+    function values) is checked at the call against the refinement as the
+    program writes it, whose base names the binder its predicate reads; a
+    generic alias's, which writes its parameter there, is disclosed.  Code
+    generation raised an internal error for both (#1861 review)."""
+    source = (_FUNCTION_BASE.replace("REFINEMENT", refinement)
+              .replace("PARAM", param))
+    verified = _verified_clean(source)
+    assert _statuses(verified, "refine_bind", 14) == [status]
+    assert pipeline.run(source, fn="go", args=[1.0]).value == 1
+    ran = pipeline.run(source, fn="go", args=[0.0])
+    if status == "tier3":
+        assert ran.trap is not None, ran.value
+    else:
+        assert ran.value == 0
+
+
+_FUNCTION_ALIAS = """\
+type F = fn(Int -> Int) effects(pure);
+type G = fn({ @F | true } -> Int) effects(pure);
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F = fn(@Int -> @Int) effects(pure) { @Int.0 + 1 };
+  let @G = fn(@F -> @Int) effects(pure) { apply_fn(@F.0, 1) };
+  apply_fn(@G.0, @F.0)
+}
+"""
+
+
+def test_repro_a_refined_function_alias_at_a_closure_argument() -> None:
+    """A refinement over a function type behind an alias is checked at
+    the call over the alias its predicate names: code generation raised an
+    internal error (#1861 review)."""
+    verified = _verified_clean(_FUNCTION_ALIAS)
+    assert _statuses(verified, "refine_bind", 11) == ["tier3"]
+    assert pipeline.run(_FUNCTION_ALIAS, fn="go", args=[0.0]).value == 2
 
 
 _RETURNED = HEADER + """

@@ -9,8 +9,9 @@ from typing import ClassVar
 from vera import ast, naming
 from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
-from vera.obligations.table import Evaluation, Row, return_leaves
-from vera.types import STRING, TO_STRING_BUILTINS
+from vera.obligations.table import (
+    Evaluation, Row, minted_type_expr, return_leaves)
+from vera.types import STRING, TO_STRING_BUILTINS, Type
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import (
     CellNames,
@@ -2221,51 +2222,9 @@ class OperatorsMixin:
         `_emit_bind_refine_guard` refuses that base anyway, and minting a
         node it will only reject reads as a guard that exists.
         """
-        if resolved_ty is None or type(resolved_ty).__name__ != "RefinedType":
+        if not isinstance(resolved_ty, Type):
             return None
-        base = getattr(resolved_ty, "base", None)
-        predicate = getattr(resolved_ty, "predicate", None)
-        if base is None or predicate is None:
-            return None
-        if type(base).__name__ == "RefinedType":
-            return None
-        base_te = OperatorsMixin._named_type_expr(base)
-        if base_te is None:
-            return None
-        return ast.RefinementType(base_type=base_te, predicate=predicate)
-
-    @staticmethod
-    def _named_type_expr(ty: object) -> ast.NamedType | None:
-        """*ty*, a primitive or a data type over such types, as the
-        ``NamedType`` that writes it (`Array<Int>`, not `Array`: the
-        binder a predicate over a parameterised base reads is named with
-        its arguments, #1861); ``None`` for a type with no such name."""
-        if type(ty).__name__ == "PrimitiveType":
-            return ast.NamedType(name=getattr(ty, "name"), type_args=None)
-        if type(ty).__name__ != "AdtType":
-            return None
-        args: list[ast.TypeExpr] = []
-        for arg in getattr(ty, "type_args", ()):
-            te = OperatorsMixin._type_argument_expr(arg)
-            if te is None:
-                return None
-            args.append(te)
-        return ast.NamedType(name=getattr(ty, "name"),
-                             type_args=tuple(args) if args else None)
-
-    @staticmethod
-    def _type_argument_expr(ty: object) -> ast.TypeExpr | None:
-        """A type argument as the ``TypeExpr`` that writes it: a named type
-        as :meth:`_named_type_expr` writes it, and a refinement over one
-        with its own predicate (`Array<{ @Int | @Int.0 > 0 }>`), which the
-        binder's name renders as the checker does."""
-        if type(ty).__name__ == "RefinedType":
-            base = OperatorsMixin._type_argument_expr(getattr(ty, "base"))
-            if base is None:
-                return None
-            return ast.RefinementType(base_type=base,
-                                      predicate=getattr(ty, "predicate"))
-        return OperatorsMixin._named_type_expr(ty)
+        return minted_type_expr(resolved_ty)
 
     @staticmethod
     def _adt_arg_type(target: object | None, index: int) -> object | None:
