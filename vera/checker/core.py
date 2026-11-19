@@ -74,6 +74,7 @@ from vera.types import (
     pretty_inferred_type,
     strip_builtin_typevar_marker,
     substitute,
+    type_expr_of,
     written_effect,
     written_type,
 )
@@ -990,16 +991,23 @@ class TypeChecker(
         else:
             told = (f"its parameter {i} is declared `{vp}`, and that type "
                     f"hands it any `{pp}`, not only a `{vp}`.")
-            # The slot a parameter is read by: a refinement written in
-            # place is read by its base (DE_BRUIJN.md), and the index counts
-            # the parameters after it read by the same name.
-            slots = [self._shown(base_type(p)) if isinstance(p, RefinedType)
-                     else self._shown(p) for p in found.position.params]
-            narrow = (f"let @{vp} = "
-                      f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
-            example = (f": `{header} {{ {narrow} ... }}`"
-                       if header is not None
-                       else f": begin its body with `{narrow}`")
+            # The header the rewrite prints, and its parameters as written:
+            # the closure's own header with parameter i at the position's
+            # type, or, where the value is not a closure written in place,
+            # a closure of the position's type written out.  The narrowing
+            # reads parameter i by that header's slots.
+            written: list[ast.TypeExpr | Type] = list(found.position.params)
+            if header is not None and isinstance(node, ast.AnonFn):
+                written = [found.position.params[i] if j == i else te
+                           for j, te in enumerate(node.params)]
+            else:
+                header = self._written_header(found.position)
+            slots = self._rewrite_slots(written)
+            example = ""
+            if slots is not None and header is not None:
+                narrow = (f"let @{vp} = "
+                          f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
+                example = f": `{header} {{ {narrow} ... }}`"
             fix = (f"Declare the closure's parameter {i} as `@{pp}`, the type "
                    f"the position hands it, and narrow inside, where there "
                    f"is a value to check{example}.{wrap}  Or {other}.")
@@ -1038,31 +1046,40 @@ class TypeChecker(
         not written."""
         if not isinstance(node, ast.SlotRef):
             return None
-        params = [self._writes_as(p) for p in fn.params]
-        result = self._writes_as(fn.return_type)
-        effect = written_effect(fn.effect, self.env.type_params)
-        if (result is None or effect is None  # pragma: no mutate — defensive: a part no program writes (an open variable) leaves the fix with no wrapper
-                or None in params):
+        header = self._written_header(fn)
+        if header is None:
             return None
-        # A slot's type is a name: a function type written out in place
-        # (`@fn(Int -> Int) effects(pure)`) does not parse, and a
-        # `Future<Unit>` erases to no local a slot can read (E182).  Such a
-        # wrapper would not check, so the fix gives none.
-        if any("fn(" in (t or "") for t in (*params, result)) or any(
-                erases_to_unit(p) and not _is_unit(p) for p in fn.params):
+        # A `Future<Unit>` erases to no local a slot can read (E182): such
+        # a wrapper would not check, so the fix gives none.
+        if any(erases_to_unit(p) and not _is_unit(p) for p in fn.params):
             return None
-        slots = [self._shown(base_type(p)) if isinstance(p, RefinedType)
-                 else self._shown(p) for p in fn.params]
-        if node.type_name in slots:
+        slots = self._rewrite_slots(list(fn.params))
+        if slots is None or node.type_name in slots:
             return None
         # A `Unit` parameter is passed as `()`: it has no local to read
         # (E182), and its declaration keeps the other slots' indices.
         args = [format_expr_canonical(node)] + [
             "()" if _is_unit(p) else f"@{s}.{slots[j + 1:].count(s)}"
             for j, (s, p) in enumerate(zip(slots, fn.params))]
+        return f"{header} {{ apply_fn({', '.join(args)}) }}"
+
+    def _written_header(self, fn: FunctionType) -> str | None:
+        """A closure header of type *fn* as the fix writes it,
+        `fn(@Int, @Pos -> @Nat) effects(pure)`, each type from
+        `_writes_as`.  None where a part is in no program as written, or
+        where a parameter or the result is a function type, which a header
+        does not write out in place (`@fn(Int -> Int) effects(pure)` does
+        not parse)."""
+        params = [self._writes_as(p) for p in fn.params]
+        result = self._writes_as(fn.return_type)
+        effect = written_effect(fn.effect, self.env.type_params)
+        if (result is None or effect is None  # pragma: no mutate — defensive: a part no program writes (an open variable) leaves the fix with no header
+                or None in params):
+            return None
+        if any("fn(" in (t or "") for t in (*params, result)):
+            return None
         declared = ", ".join(f"@{p}" for p in params)
-        return (f"fn({declared} -> @{result}) {effect} "
-                f"{{ apply_fn({', '.join(args)}) }}")
+        return f"fn({declared} -> @{result}) {effect}"
 
     def _unfit_header(self, node: ast.Expr,
                       written: ast.TypeExpr | None,
@@ -1084,10 +1101,27 @@ class TypeChecker(
                   + self.source[at[1]:body[0]]).rstrip()
         return header.removesuffix("{").rstrip()
 
+    def _rewrite_slots(
+            self, params: Sequence[ast.TypeExpr | Type]) -> list[str] | None:
+        """The slot each parameter of a header E190's fix writes is read
+        by, by the compiler's own rule (`naming.slot_name`): a parameter the
+        program wrote, as written (an alias by its name, a refinement
+        written in place by its base), and one the fix writes from a type,
+        as `type_expr_of` writes it.  None where one has no written form."""
+        env = self._naming_env()
+        out: list[str] = []
+        for p in params:
+            te = (p if isinstance(p, ast.TypeExpr)
+                  else type_expr_of(p, self.env.type_params))
+            if te is None:
+                return None
+            out.append(naming.slot_name(te, env))
+        return out
+
     def _shown(self, ty: Type) -> str:
         """*ty* as written, a refinement with its predicate, where it can be
         written, and as `pretty_type` shows it otherwise."""
-        return self._writes_as(ty) or pretty_type(ty)
+        return self._writes_as(ty) or pretty_type(ty)  # pragma: no mutate — defensive: every type E190 shows is one a declaration, a closure header or an argument writes, so `_writes_as` gives its text; with `pretty_type(None)` here every cell of the instrument passes
 
     def _unfit_call_source(
         self,

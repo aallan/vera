@@ -484,7 +484,12 @@ def expected_refused(flow: str, kind: str, form: str, p: str, c: str) -> bool:
     generic's instance being chosen from the closure itself (spec §4.2): a
     `Nat` parameter the closure declares at a generic's variable fixes the
     variable at `Nat`, so the `Int` argument is the narrowing, and at the
-    result the closure's own type fixes the variable."""
+    result the closure's own type fixes the variable.  So `array_map` over
+    an `Array<Int>` with a `fn(@Nat -> @Int)` closure is accepted, and is
+    sound: the instance is `Nat` by the polarity pin, the array is narrowed
+    at the call (a `nat_bind` row, checked at run time where it is not
+    proved), and a negative element traps there; a `Pos` closure, whose
+    refinement no pin chooses, is E190."""
     if flow in ("generic", "array-map"):
         if kind == "result":
             return False
@@ -632,6 +637,22 @@ _OUTSIDE = {
         _FN, "fn(@Pos -> @String) effects(pure) { \"\" }"),
     "a wider effect row beside a narrowing": (
         _FN, "fn(@Pos -> @Int) effects(<IO>) { 0 }"),
+    # A mismatch below the head beside a narrowing: what is left once the
+    # narrowings are set aside still differs, inside a type argument, a
+    # function type's parameter or its result (`_narrowing_erased`).
+    "another type argument beside a narrowing": (
+        "type F = fn(Option<Int>, Int -> Int) effects(pure);\n\n",
+        "fn(@Option<String>, @Pos -> @Int) effects(pure) { 0 }"),
+    "another function parameter beside a narrowing": (
+        "type IntToInt = fn(Int -> Int) effects(pure);\n"
+        "type StrToInt = fn(String -> Int) effects(pure);\n"
+        "type F = fn(IntToInt, Int -> Int) effects(pure);\n\n",
+        "fn(@StrToInt, @Pos -> @Int) effects(pure) { 0 }"),
+    "another function result beside a narrowing": (
+        "type IntToInt = fn(Int -> Int) effects(pure);\n"
+        "type IntToStr = fn(Int -> String) effects(pure);\n"
+        "type F = fn(IntToInt, Int -> Int) effects(pure);\n\n",
+        "fn(@IntToStr, @Pos -> @Int) effects(pure) { 0 }"),
 }
 
 
@@ -922,3 +943,220 @@ def test_repro_the_wrapper_e190_prints_checks_pasted_back_1819(
         return
     assert len(found) == 1, fix
     assert _codes(_stored(types, declared, found[0])) == [], found[0]
+    if shape in _READ_BACK_EXACT:
+        assert found[0] == _READ_BACK_EXACT[shape], found[0]
+
+
+#: The wrappers whose slots a wrong index or a wrong name would still let
+#: check: each reads its parameters in order, the most recent `@Int.0`.
+_READ_BACK_EXACT = {
+    "two-of-one-type": ("fn(@Int, @Int -> @Nat) effects(pure) "
+                        "{ apply_fn(@V.0, @Int.1, @Int.0) }"),
+    "a-unit-among-others": ("fn(@Int, @Unit, @Int -> @Nat) effects(pure) "
+                            "{ apply_fn(@V.0, @Int.1, (), @Int.0) }"),
+    "a-refined-one": ("fn(@{ @Int | @Int.0 > 0 } -> @Nat) effects(pure) "
+                      "{ apply_fn(@V.0, @Int.0) }"),
+}
+
+
+def test_repro_the_wrapper_writes_an_effect_row_over_a_type_parameter_1819(
+        ) -> None:
+    """Inside a generic, a stored function value whose effect row names
+    the enclosing function's type parameter: the wrapper writes the row as
+    the program does, and checks pasted back."""
+    def source(value: str) -> str:
+        return (
+            "type V<T> = fn(Int -> Int) effects(<State<T>>);\n"
+            "type W<T> = fn(Int -> Nat) effects(<State<T>>);\n\n"
+            "private forall<T> fn f(@T -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<State<T>>)\n{\n"
+            "  let @V<T> = fn(@Int -> @Int) effects(<State<T>>) { 0 };\n"
+            f"  let @W<T> = {value};\n  0\n}}\n\n"
+            + _fn("main(@Int -> @Int)", "0", visibility="public"))
+    fix = str(_only_diagnostic(source("@V<T>.0"))["fix"])
+    wrapper = ("fn(@Int -> @Nat) effects(<State<T>>) "
+               "{ apply_fn(@V<T>.0, @Int.0) }")
+    assert f"`{wrapper}`" in fix, fix
+    assert _codes(source(wrapper)) == []
+
+
+# =====================================================================
+# The text E190 prints, pasted: a generator over parameter lists
+# =====================================================================
+
+#: The alphabet of a function type's parameters: (how a parameter of that
+#: type is written, the slot it is read by, by DE_BRUIJN.md's rule written
+#: out here: an alias by its name, a refinement written in place by its
+#: base, a data type by its head and arguments, the argument `main` passes,
+#: whether the body reads it as a number).
+_ALPHABET = {
+    "Int": ("Int", "Int", None, True),
+    "Bool": ("Bool", "Bool", "true", False),
+    "Pos": ("Pos", "Pos", None, True),
+    "inline": ("{ @Int | @Int.0 > 0 }", "Int", None, True),
+    "Nat": ("Nat", "Nat", None, True),
+    "Unit": ("Unit", "Unit", "()", False),
+    "Option": ("Option<Int>", "Option<Int>", "Some(5)", False),
+}
+
+#: Unequal numbers for the numeric parameters, by position, and the
+#: weights the body gives them, a subtraction among them: two slots read
+#: in each other's place change the value.
+_VALUES = (100, 7, 3)
+_WEIGHTS = (1, -2, 3)
+
+
+def _lists() -> list[tuple[str, ...]]:
+    """Every list of one or two letters, and every list of three over the
+    letters that share a slot name or have no value to read."""
+    letters = list(_ALPHABET)
+    out: list[tuple[str, ...]] = [(a,) for a in letters]
+    out += [(a, b) for a in letters for b in letters]
+    three = ("Int", "Pos", "Unit", "inline")
+    out += [(a, b, c) for a in three for b in three for c in three]
+    return out
+
+
+def _reads(params: list[str]) -> list[str]:
+    """Each parameter's slot reference, DE_BRUIJN.md's rule: the index
+    counts the parameters after it read by the same name."""
+    slots = [_ALPHABET[p][1] if p in _ALPHABET else p for p in params]
+    return [f"@{s}.{slots[j + 1:].count(s)}" for j, s in enumerate(slots)]
+
+
+def _body(params: list[str], reads: list[str]) -> str:
+    """1000 plus each numeric parameter at its weight: a positive number
+    that changes when two parameters are read in each other's place."""
+    terms = ["1000"]
+    for j, p in enumerate(params):
+        if _ALPHABET.get(p, ("", "", None, True))[3]:
+            terms.append(f"{_WEIGHTS[j]} * {reads[j]}")
+    return " + ".join(terms)
+
+
+def _expected(params: list[str]) -> int:
+    return 1000 + sum(_WEIGHTS[j] * _VALUES[j] for j, p in enumerate(params)
+                      if _ALPHABET[p][3])
+
+
+def _fix_program(params: list[str], kind: str, narrowed: int | None,
+                 form: str, value: str | None = None) -> str:
+    """A function type `F` over *params* (the result `Nat` where the
+    result is the narrowed position), and a closure narrower at parameter
+    *narrowed* (declared `Pos` where `F` has `Int`) or wider in its result
+    (declared `Int`), written in place or held in a slot at its own type
+    `G`; `main` applies the value of `F` to unequal arguments.  *value*
+    replaces the value `F` is bound to."""
+    written = [_ALPHABET[p][0] for p in params]
+    closure = list(written)
+    if kind == "parameter":
+        assert narrowed is not None
+        closure[narrowed] = "Pos"
+    result = "Nat" if kind == "result" else "Int"
+    closure_result = "Int"
+    reads = _reads([("Pos" if kind == "parameter" and j == narrowed else p)
+                    for j, p in enumerate(params)])
+    lit = (f"fn({', '.join('@' + t for t in closure)} -> @{closure_result}) "
+           f"effects(pure) {{ {_body(params, reads)} }}")
+    args = [str(_VALUES[j]) if _ALPHABET[p][2] is None else str(_ALPHABET[p][2])
+            for j, p in enumerate(params)]
+    aliases = (_ALIASES
+               + f"type F = fn({', '.join(written)} -> {result}) effects(pure);\n"
+               + f"type G = fn({', '.join(closure)} -> {closure_result}) "
+                 "effects(pure);\n\n")
+    if value is None:
+        value = lit if form == "in-place" else "@G.0"
+    pre = "" if form == "in-place" else f"let @G = {lit};\n  "
+    return aliases + _fn(
+        "main(@Int -> @Int)",
+        f"{pre}let @F = {value};\n  apply_fn(@F.0, {', '.join(args)})",
+        visibility="public")
+
+
+def _fix_cells() -> list[object]:
+    cells: list[object] = []
+    for params in _lists():
+        for form in ("in-place", "slot"):
+            cells.append(pytest.param(params, "result", None, form,
+                                      id=f"{'-'.join(params)}-result-{form}"))
+            for i, p in enumerate(params):
+                if p == "Int":
+                    cells.append(pytest.param(
+                        params, "parameter", i, form,
+                        id=f"{'-'.join(params)}-parameter{i}-{form}"))
+    return cells
+
+
+def _ran(source: str) -> int:
+    assert _codes(source) == [], source
+    ran = pipeline.run(source, fn="main", args=[0])
+    assert ran.trap is None, (str(ran.trap)[:300], source)
+    return int(ran.execution.value)
+
+
+@pytest.mark.parametrize(("params", "kind", "narrowed", "form"), _fix_cells())
+def test_every_rewrite_e190_prints_checks_and_runs_pasted(
+        params: tuple[str, ...], kind: str, narrowed: int | None,
+        form: str) -> None:
+    """Every rewrite E190's fix prints, pasted into the program, checks
+    and gives the value the original function gives on unequal arguments:
+    the header with the parameter at the position's type and its
+    narrowing, the header with the result the position states, and the
+    wrapper of a value held in a slot.  The narrowing and the wrapper read
+    each parameter by the compiler's slot rule; a slot read in another's
+    place changes the value, and a `Unit` or another type between two
+    parameters of one type shifts nothing."""
+    plist = list(params)
+    source = _fix_program(plist, kind, narrowed, form)
+    fix = str(_only_diagnostic(source)["fix"])
+    expected = _expected(plist)
+    position = [_ALPHABET[p][0] for p in plist]
+    pasted = 0
+    if kind == "parameter":
+        assert narrowed is not None
+        # The narrowing binds the closure's own parameter type: by its alias
+        # where the closure is written in place, by the type written out
+        # (a refinement in place, read by its base) where it is not.
+        narrow = re.search(r"(let @(Pos|\{ @(\w+) \|[^}]*\}) = @[\w<>]+\.\d+;)",
+                           fix)
+        assert narrow is not None, fix
+        bound = narrow.group(3) or narrow.group(2)
+        # The body after the narrowing: parameter `narrowed` is the
+        # narrowing's binding, index 0; every other parameter by its slot
+        # in the header at the position's types, one more of the narrowing's
+        # slot bound after it.
+        # In place, the header is the closure's own, its other parameters
+        # as written; held in a slot, it is the position's type written out,
+        # an alias by the refinement it names, read by its base.
+        if form == "in-place":
+            slots = [_ALPHABET[p][1] for p in plist]
+        else:
+            position = ["{ @Int | @Int.0 > 0 }" if p == "Pos" else t
+                        for p, t in zip(plist, position)]
+            slots = ["Int" if p == "Pos" else _ALPHABET[p][1] for p in plist]
+        reads = []
+        for j, s in enumerate(slots):
+            later = slots[j + 1:].count(s) + (1 if s == bound else 0)
+            reads.append(f"@{bound}.0" if j == narrowed else f"@{s}.{later}")
+        header = (f"fn({', '.join('@' + t for t in position)} -> @Int) "
+                  "effects(pure)")
+        assert f"`{header} {{ {narrow.group(1)} ... }}`" in fix, fix
+        rewritten = f"{header} {{ {narrow.group(1)} {_body(plist, reads)} }}"
+        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
+                                 rewritten)) == expected, rewritten
+        pasted += 1
+    elif form == "in-place":
+        header = (f"fn({', '.join('@' + t for t in position)} -> @Nat) "
+                  "effects(pure)")
+        assert f"`{header} {{ ... }}`" in fix, fix
+        rewritten = f"{header} {{ {_body(plist, _reads(plist))} }}"
+        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
+                                 rewritten)) == expected, rewritten
+        pasted += 1
+    if form == "slot":
+        wrapper = re.findall(r"`(fn\([^`]*\{ apply_fn\(@G\.0[^`]*\})`", fix)
+        assert len(wrapper) == 1, fix
+        assert _ran(_fix_program(plist, kind, narrowed, "slot",
+                                 wrapper[0])) == expected, wrapper[0]
+        pasted += 1
+    assert pasted >= 1
