@@ -51,6 +51,13 @@ _ALIASES = (
 
 _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
 
+#: The sentence every parameter's fix closes its rewrite with: E190 prints
+#: no code for a closure written in place (spec §2.8).
+_RENUMBER = (
+    "Changing a parameter's type and binding the narrowed value both "
+    "renumber the body's slot references of those two types: rewrite each "
+    "to the binding it read before.")
+
 
 def _fn(signature: str, body: str, *, visibility: str = "private",
         requires: str = "true") -> str:
@@ -125,10 +132,9 @@ def test_repro_a_narrower_closure_bound_by_a_let_is_refused_1885() -> None:
         "and that type hands it any `Int`, not only a `Pos`.")
     assert diagnostic["fix"] == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check: "
-        "`fn(@Int -> @Int) effects(pure) { let @Pos = @Int.0; ... }`.  Or "
-        "declare the binding at a function type whose parameter 0 is "
-        "`Pos`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or declare the binding at a function "
+        "type whose parameter 0 is `Pos`.")
     assert diagnostic["spec_ref"] == 'Chapter 2, Section 2.8 "Subtyping Rules"'
 
 
@@ -150,9 +156,9 @@ def test_repro_array_map_names_its_instance_and_the_argument_1885() -> None:
         "hands it any `Int`, not only a `Pos`.")
     assert diagnostic["fix"] == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check: "
-        "`fn(@Int -> @Int) effects(pure) { let @Pos = @Int.0; ... }`.  Or "
-        "pass argument 0 as `Array<Pos>`, which fixes `A` at `Pos`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or pass argument 0 as `Array<Pos>`, "
+        "which fixes `A` at `Pos`.")
 
 
 def test_repro_a_user_generic_names_its_instance_1885() -> None:
@@ -224,8 +230,7 @@ def test_repro_a_wider_result_read_back_as_pos_is_refused_1819() -> None:
         "guarantee.")
     assert diagnostic["fix"] == (
         "Declare the closure's result as `@{ @Int | @Int.0 > 0 }`, the type "
-        "the position states: `fn(@Int -> @{ @Int | @Int.0 > 0 }) "
-        "effects(pure) { ... }`; the closure's own return is then proved or "
+        "the position states; the closure's own return is then proved or "
         "checked, where the value is.  Or declare the binding at a function "
         "type whose result is `Int`.")
 
@@ -1384,84 +1389,41 @@ def _ran(source: str) -> int:
 def test_every_rewrite_e190_prints_checks_and_runs_pasted(
         params: tuple[str, ...], kind: str, narrowed: int | None,
         form: str) -> None:
-    """Every rewrite E190's fix prints, pasted into the program, checks
-    and gives the value the original function gives on unequal arguments:
-    the header with the parameter at the position's type and its
-    narrowing, the header with the result the position states, and the
-    wrapper of a value held in a slot.  The narrowing and the wrapper read
-    each parameter by the compiler's slot rule; a slot read in another's
-    place changes the value, and a `Unit` or another type between two
-    parameters of one type shifts nothing."""
+    """The code E190's fix prints is the wrapper of a value held in a slot
+    alone, and pasted it checks and gives the value the original function
+    gives on unequal arguments: the wrapper reads each parameter by the
+    compiler's slot rule, so a slot read in another's place changes the
+    value, and a `Unit` or another type between two parameters of one type
+    shifts nothing.  A closure written in place is given prose and no
+    code, whatever its parameter list: nothing here rebuilds a body."""
     plist = list(params)
     source = _fix_program(plist, kind, narrowed, form)
     fix = str(_only_diagnostic(source)["fix"])
     expected = _expected(plist)
-    position = [_ALPHABET[p][0] for p in plist]
-    pasted = 0
-    if form == "slot" and "Fn" in plist:
-        # Held in a slot, the rewrite is a closure of the position's type
-        # written out, and a function-typed parameter is not written out in
-        # a header (`@fn(Int -> Int) effects(pure)` does not parse): the fix
-        # prints neither the narrowing's header nor a wrapper.
-        assert "let @" not in fix and "apply_fn(@G.0" not in fix, fix
-        return
-    if (kind == "parameter" and form == "in-place"
-            and any(_ALPHABET[p][1] == "Int" and _ALPHABET[p][3]
-                    for j, p in enumerate(plist) if j != narrowed)):
-        # Written in place, the closure's body (kept for the header's
-        # `...`) reads another `@Int`, which the new `@Int` parameter would
-        # renumber: the fix prints no header, and says so.
-        assert "let @" not in fix, fix
-        assert _RENUMBERS in fix, fix
-        return
-    if kind == "parameter":
-        assert narrowed is not None
-        # The narrowing binds the closure's own parameter type: by its alias
-        # where the closure is written in place, by the type written out
-        # (a refinement in place, read by its base) where it is not.
-        narrow = re.search(r"(let @(Pos|\{ @(\w+) \|[^}]*\}) = @[\w<>]+\.\d+;)",
-                           fix)
-        assert narrow is not None, fix
-        bound = narrow.group(3) or narrow.group(2)
-        # The body after the narrowing: parameter `narrowed` is the
-        # narrowing's binding, index 0; every other parameter by its slot
-        # in the header at the position's types, one more of the narrowing's
-        # slot bound after it.
-        # In place, the header is the closure's own, its other parameters
-        # as written; held in a slot, it is the position's type written out,
-        # an alias by the refinement it names, read by its base.
-        if form == "in-place":
-            slots = [_ALPHABET[p][1] for p in plist]
+    if form == "in-place":
+        # Written in place, the rewrites are prose: no header is printed
+        # around a body the reader keeps, whose slot references it would
+        # renumber.
+        assert not re.search(r"`fn\(", fix), fix
+        if kind == "parameter":
+            assert f"parameter {narrowed} as `@Int`" in fix, fix
+            assert _RENUMBER in fix, fix
         else:
-            position = ["{ @Int | @Int.0 > 0 }" if p == "Pos" else t
-                        for p, t in zip(plist, position)]
-            slots = ["Int" if p == "Pos" else _ALPHABET[p][1] for p in plist]
-        reads = []
-        for j, s in enumerate(slots):
-            later = slots[j + 1:].count(s) + (1 if s == bound else 0)
-            reads.append(f"@{bound}.0" if j == narrowed else f"@{s}.{later}")
-        header = (f"fn({', '.join('@' + t for t in position)} -> @Int) "
-                  "effects(pure)")
-        assert f"`{header} {{ {narrow.group(1)} ... }}`" in fix, fix
-        rewritten = f"{header} {{ {narrow.group(1)} {_body(plist, reads)} }}"
-        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
-                                 rewritten)) == expected, rewritten
-        pasted += 1
-    elif form == "in-place":
-        header = (f"fn({', '.join('@' + t for t in position)} -> @Nat) "
-                  "effects(pure)")
-        assert f"`{header} {{ ... }}`" in fix, fix
-        rewritten = f"{header} {{ {_body(plist, _reads(plist))} }}"
-        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
-                                 rewritten)) == expected, rewritten
-        pasted += 1
-    if form == "slot":
-        wrapper = re.findall(r"`(fn\([^`]*\{ apply_fn\(@G\.0[^`]*\})`", fix)
-        assert len(wrapper) == 1, fix
-        assert _ran(_fix_program(plist, kind, narrowed, "slot",
-                                 wrapper[0])) == expected, wrapper[0]
-        pasted += 1
-    assert pasted >= 1
+            assert "Declare the closure's result as `@Nat`" in fix, fix
+        return
+    # Held in a slot, the wrapper alone is code: it applies the value, and
+    # nothing of the reader's is pasted into it.  Pasted, it checks and
+    # gives the original function's value on unequal arguments.
+    wrapper = re.findall(r"`(fn\([^`]*\{ apply_fn\(@G\.0[^`]*\})`", fix)
+    assert len(re.findall(r"`fn\(", fix)) == len(wrapper), fix
+    if "Fn" in plist:
+        # A function-typed parameter is not written out in a header
+        # (`@fn(Int -> Int) effects(pure)` does not parse): no wrapper.
+        assert wrapper == [], fix
+        return
+    assert len(wrapper) == 1, fix
+    assert _ran(_fix_program(plist, kind, narrowed, "slot",
+                             wrapper[0])) == expected, wrapper[0]
 
 
 # =====================================================================
@@ -1668,9 +1630,10 @@ def test_repro_a_nested_pair_names_no_outer_variable_1885() -> None:
     assert "instantiated" not in description, description
     assert fix == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check.  Or "
-        "declare parameter 0 of 'use' at a type holding, where this one "
-        "sits, a function type whose parameter 0 is `Nat`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or declare parameter 0 of 'use' at a "
+        "type holding, where this one sits, a function type whose parameter "
+        "0 is `Nat`.")
 
 
 def test_repro_each_element_of_an_array_is_reported_once_1885() -> None:
@@ -1855,52 +1818,62 @@ def test_repro_a_binder_keeps_e190_beside_another_misfit_1885() -> None:
 
 
 # =====================================================================
-# The header rewrite where the body reads the namespace it joins
+# A closure written in place: its rewrites are prose, its body kept
 # =====================================================================
 
-def _renumbered(closure: str, apply: str, params: str = "@Int, @Int") -> str:
-    arity = len(params.split(","))
-    return (f"type F = fn({', '.join(['Int'] * arity)} -> Int) "
-            "effects(pure);\n\n"
-            + _fn(f"main({params} -> @Int)",
-                  f"let @F = {closure};\n  {apply}", visibility="public"))
+#: (the position, the closure as the program writes it, the parameters the
+#: fix must name).  Each kept body reads a slot a rewritten header would
+#: renumber: another parameter of the type the changed one takes, a
+#: capture, a later parameter of the narrowed type itself (`@Pos.1`, the
+#: second `Pos`, which a `let @Pos` would make the third), a `Nat` the
+#: narrowing's `let @Nat` would shadow, and a second unfit parameter and a
+#: result a first rewrite left unfit.
+_IN_PLACE = {
+    "joined-namespace": (
+        "fn(Int, Int -> Int)",
+        "fn(@Int, @Nat -> @Int) effects(pure) { @Int.0 - nat_to_int(@Nat.0) }",
+        ["parameter 1 as `@Int`"]),
+    "capture": (
+        "fn(Int -> Int)",
+        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) + @Int.0 }",
+        ["parameter 0 as `@Int`"]),
+    "narrowed-namespace": (
+        "fn(Int, Pos -> Int)",
+        "fn(@Pos, @Pos -> @Int) effects(pure) { 1000 + @Pos.1 - 2 * @Pos.0 }",
+        ["parameter 0 as `@Int`"]),
+    "shadowed-nat": (
+        "fn(Int, Nat -> Int)",
+        "fn(@Nat, @Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+        ["parameter 0 as `@Int`"]),
+    "every-unfit-part": (
+        "fn(Int, Int -> Nat)",
+        "fn(@Nat, @Nat -> @Int) effects(pure) { 0 }",
+        ["parameter 0 as `@Int`", "parameter 1 as `@Int`",
+         "its result as `@Nat`"]),
+}
 
 
-_RENUMBERS = (
-    "The new parameter is read as `@Int`, so it renumbers every `@Int` "
-    "reference the body holds, captured ones included.")
-
-
-def test_repro_a_header_whose_body_reads_the_joined_slots_prints_prose_1885(
-        ) -> None:
-    """`fn(@Int, @Nat -> @Int) { @Int.0 - nat_to_int(@Nat.0) }` at
-    `fn(Int, Int -> Int)`: the header printed `fn(@Int, @Int -> @Int)
-    effects(pure) { let @Nat = @Int.0; ... }`, and the body kept for
-    `...` read `@Int.0` as the new second parameter (7 and 2 gave 0, not
-    5).  So with a second parameter of that type, or a captured one, the
-    fix writes no header and says why."""
-    for source in (
-            _renumbered("fn(@Int, @Nat -> @Int) effects(pure) "
-                        "{ @Int.0 - nat_to_int(@Nat.0) }",
-                        "apply_fn(@F.0, @Int.1, @Int.0)"),
-            _renumbered("fn(@Nat -> @Int) effects(pure) "
-                        "{ nat_to_int(@Nat.0) + @Int.0 }",
-                        "apply_fn(@F.0, @Int.0)", params="@Int")):
-        fix = str(_only_diagnostic(source)["fix"])
-        assert not re.search(r"`fn\([^`]* \.\.\. \}`", fix), fix
-        assert _RENUMBERS in fix, fix
-
-
-def test_repro_a_header_whose_body_reads_no_joined_slot_keeps_it_1885(
-        ) -> None:
-    """The body reads only the narrowed parameter: the header and its
-    narrowing stand."""
-    fix = str(_only_diagnostic(_renumbered(
-        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
-        "apply_fn(@F.0, @Int.0)", params="@Int"))["fix"])
-    assert ("`fn(@Int -> @Int) effects(pure) { let @Nat = @Int.0; ... }`"
-            in fix), fix
-    assert _RENUMBERS not in fix, fix
+@pytest.mark.parametrize("shape", list(_IN_PLACE))
+def test_repro_a_closure_written_in_place_is_given_prose_1885(
+        shape: str) -> None:
+    """The header rewritten in place misled three ways once the reader
+    kept the body: the namespace the changed parameter joins, the narrowed
+    type's own namespace (`fn(@Pos, @Pos -> @Int)`: 100 and 7 gave 807,
+    not 1086), the narrowing's `let @Nat` read by the kept `@Nat.0` (7 and
+    2 gave 7, not 2), and a second unfit part left unfit.  The fix prints
+    no code for a closure written in place: it names every part to
+    declare, and says how the references move."""
+    position, closure, named = _IN_PLACE[shape]
+    source = (_ALIASES + f"type F = {position} effects(pure);\n\n" + _fn(
+        "main(@Int, @Int -> @Int)",
+        f"let @F = {closure};\n  apply_fn(@F.0, "
+        + ("@Int.1, @Int.0" if "," in position else "@Int.0") + ")",
+        visibility="public"))
+    fix = str(_only_diagnostic(source)["fix"])
+    assert not re.search(r"`fn\(", fix), fix
+    assert _RENUMBER in fix, fix
+    for part in named:
+        assert part in fix, (part, fix)
 
 
 # =====================================================================

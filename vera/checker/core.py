@@ -39,7 +39,6 @@ from vera.errors import (
     source_lines,
 )
 from vera.lowering import ability_lowerable
-from vera.fold import walk
 from vera.naming import AliasEnv
 from vera.registration import NamespaceAliases, where_helper_parents
 from vera.environment import (
@@ -72,6 +71,7 @@ from vera.types import (
     erases_to_unit,
     fits_narrowing_aside,
     holds_function,
+    is_formal_subtype,
     is_subtype,
     unfit_function_value,
     pretty_type,
@@ -83,7 +83,7 @@ from vera.types import (
     written_type,
 )
 
-from vera.checker.resolution import ResolutionMixin, _span_bounds
+from vera.checker.resolution import ResolutionMixin
 from vera.checker.modules import ModuleRegistration, ModulesMixin
 from vera.checker.registration import RegistrationMixin, _builtin_reject_names
 from vera.checker.expressions import ExpressionsMixin
@@ -962,12 +962,13 @@ class TypeChecker(
         `match` binder, a join's arm), where E190 stands whatever the rest
         of the pair is.
 
-        The fix prints code only in the shapes the read-back generators
-        paste: the pair at the value's root, met where *node* is that value
-        (a closure written in place, or a slot holding it), at a part that
-        holds no function type.  Everywhere else its rewrites are prose: a
-        header spliced around a part of the value, or a wrapper applying a
-        container, would not check pasted."""
+        The fix prints code in one shape alone, the wrapper around a value
+        held in a slot, at the pair's root (`_eta_wrapper`): nothing of the
+        reader's is pasted into it, and the read-back generator pastes,
+        checks and runs it.  Everywhere else its rewrites are prose: a
+        header rewritten around a closure's kept body renumbers the body's
+        slot references, and a wrapper applying a container would not
+        check pasted."""
         found = unfit_function_value(value_ty, position_ty)
         if found is None:
             return False
@@ -991,9 +992,11 @@ class TypeChecker(
         root = value_node and not nested
         function_part = (holds_function(value_part)
                          or holds_function(position_part))
-        # A part holding a function type is given the adapter in prose
-        # below, which prints none of the code computed here.
-        code = root and isinstance(node, (ast.AnonFn, ast.SlotRef))
+        # Code is printed only around a value held in a slot, the wrapper
+        # (`_eta_wrapper`, None for any other node): it applies the value,
+        # and nothing of the reader's is pasted into it.  A closure written
+        # in place is given its rewrites in prose, since a header rewritten
+        # around a kept body renumbers the body's slots.
         written_at: ast.TypeExpr | None = None
         if root and isinstance(node, ast.AnonFn):
             if i is None:
@@ -1015,8 +1018,7 @@ class TypeChecker(
                 call, found, i, vp, pp, gave, other)
         both_refined = (isinstance(value_part, RefinedType)
                         and isinstance(position_part, RefinedType))
-        header = self._unfit_header(node, written_at, pp) if code else None
-        wrapper = self._eta_wrapper(node, found.position) if code else None
+        wrapper = self._eta_wrapper(node, found.position) if root else None
         wrap = (f"  Or wrap the value in a closure of the position's type, "
                 f"where the narrowing is a value's: `{wrapper}`."
                 if wrapper is not None else "")
@@ -1024,8 +1026,6 @@ class TypeChecker(
             told = (f"its result is declared `{vp}`, and that type promises "
                     f"`{pp}`, which a result declared `{vp}` does not "
                     f"guarantee.")
-            example = (f": `{header} {{ ... }}`" if header is not None
-                       else "")
             if function_part:
                 fix = (f"Declare the closure's result at `{pp}`, the type "
                        f"the position states.  A function value is narrowed "
@@ -1035,42 +1035,25 @@ class TypeChecker(
                        f"{other}.")
             else:
                 fix = (f"Declare the closure's result as `@{pp}`, the type "
-                       f"the position states{example}; the closure's own "
-                       f"return is then proved or checked, where the value "
-                       f"is.{wrap}  Or {other}.")
+                       f"the position states; the closure's own return is "
+                       f"then proved or checked, where the value is.{wrap}"
+                       f"  Or {other}.")
         else:
             told = (f"its parameter {i} is declared `{vp}`, and that type "
                     f"hands it any `{pp}`, not only a `{vp}`.")
-            example = renumbers = ""
-            if code:
-                # The header the rewrite prints, and its parameters as
-                # written: the closure's own header with parameter i at the
-                # position's type, or, where the value is held in a slot, a
-                # closure of the position's type written out.  The
-                # narrowing reads parameter i by that header's slots.
-                written: list[ast.TypeExpr | Type] = list(
-                    found.position.params)
-                in_place = (node if isinstance(node, ast.AnonFn)
-                            and header is not None else None)
-                if in_place is not None:
-                    written = [found.position.params[i] if j == i else te
-                               for j, te in enumerate(in_place.params)]
-                else:
-                    header = self._written_header(found.position)
-                slots = self._rewrite_slots(written)
-                if (slots is not None and in_place is not None
-                        and self._body_reads_slot(in_place, slots[i])):
-                    # The closure's own body, kept for `...`, reads the
-                    # namespace the parameter joins: its references would
-                    # count the new parameter and read another value.
-                    renumbers = (
-                        f"  The new parameter is read as `@{slots[i]}`, so "
-                        f"it renumbers every `@{slots[i]}` reference the "
-                        f"body holds, captured ones included.")
-                elif slots is not None and header is not None:
-                    narrow = (f"let @{vp} = "
-                              f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
-                    example = f": `{header} {{ {narrow} ... }}`"
+            # Every parameter of the pair the position narrows, and its
+            # result where that is wider, each at the position's type.
+            declared = [
+                f"parameter {j} as `@{self._shown(pt)}`"
+                for j, (pt, vt) in enumerate(zip(found.position.params,
+                                                 found.value.params))
+                if not is_formal_subtype(pt, vt)]
+            if not is_formal_subtype(found.value.return_type,
+                                     found.position.return_type):
+                declared.append(
+                    f"its result as `@{self._shown(found.position.return_type)}`")
+            listed = (declared[0] if len(declared) == 1
+                      else ", ".join(declared[:-1]) + " and " + declared[-1])
             if function_part:
                 fix = (f"Declare the closure's parameter {i} at `{pp}`, the "
                        f"type the position hands it.  A function value is "
@@ -1079,10 +1062,15 @@ class TypeChecker(
                        f"narrow what it returns, where there is a value to "
                        f"check.  Or {other}.")
             else:
-                fix = (f"Declare the closure's parameter {i} as `@{pp}`, the "
-                       f"type the position hands it, and narrow inside, "
-                       f"where there is a value to check{example}."
-                       f"{renumbers}{wrap}  Or {other}.")
+                gives = ("the type the position hands it"
+                         if len(declared) == 1
+                         else "the types the position gives them")
+                fix = (f"Declare the closure's {listed}, {gives}, and narrow "
+                       f"inside with a `let`, where there is a value to "
+                       f"check.  Changing a parameter's type and binding the "
+                       f"narrowed value both renumber the body's slot "
+                       f"references of those two types: rewrite each to the "
+                       f"binding it read before.{wrap}  Or {other}.")
         self._error(
             node,
             (f"A function value of type {self._shown(found.value)}"
@@ -1111,14 +1099,6 @@ class TypeChecker(
             error_code="E190",
         )
         return True
-
-    def _body_reads_slot(self, closure: ast.AnonFn, slot: str) -> bool:
-        """Whether *closure*'s body, nested closures included, holds a slot
-        reference read by the name *slot* (`naming.slot_ref_key`)."""
-        env = self._naming_env()
-        return any(isinstance(n, ast.SlotRef)
-                   and naming.slot_ref_key(n, env) == slot
-                   for n in walk(closure.body))
 
     def _eta_wrapper(self, node: ast.Expr | ast.Pattern,
                      fn: FunctionType) -> str | None:
@@ -1163,26 +1143,6 @@ class TypeChecker(
             return None
         declared = ", ".join(f"@{p}" for p in params)
         return f"fn({declared} -> @{result}) {effect}"
-
-    def _unfit_header(self, node: ast.Expr | ast.Pattern,
-                      written: ast.TypeExpr | None,
-                      pp: str) -> str | None:
-        """The closure *node*'s header as written, the type *written* (a
-        parameter's or its result's) declared *pp* instead, for E190's first
-        rewrite; None where the value is not a closure written in place."""
-        if not isinstance(node, ast.AnonFn) or written is None:
-            return None
-        whole = _span_bounds(self.source, node.span)
-        body = _span_bounds(self.source, node.body.span)
-        at = _span_bounds(self.source, written.span)
-        if (whole is None or body is None  # pragma: no mutate — defensive: a closure the parser built has every span, and the source is the checker's own
-                or at is None):
-            return None
-        if not whole[0] <= at[0] < at[1] <= body[0]:  # pragma: no mutate — defensive: a closure's own parameter or result lies inside its header
-            return None
-        header = (self.source[whole[0]:at[0]] + pp
-                  + self.source[at[1]:body[0]]).rstrip()
-        return header.removesuffix("{").rstrip()
 
     def _rewrite_slots(
             self, params: Sequence[ast.TypeExpr | Type]) -> list[str] | None:
