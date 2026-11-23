@@ -2908,8 +2908,10 @@ speaks LSP over stdio. There is nothing to configure server-side: the
 client launches the process and the handshake does the rest. Stdio is the
 server's one transport, so `vera lsp --stdio`, which many editors'
 language-server settings pass, is the same command. Any other option is
-refused (E901) and the server does not start; the refusal is on stderr,
-which an editor may not show. Without
+refused (E901) and the server does not start. The refusal is on stderr,
+which an editor may not show, except where the command line holds
+`--json`: that refusal is printed on stdout, as the JSON envelope, where
+an editor expects the protocol's first message. Without
 the extra installed, `vera lsp` prints a message naming the missing
 package and the install command, and exits; every other `vera` command
 works without it.

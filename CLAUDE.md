@@ -63,8 +63,10 @@ vera errors [--json]              # List the diagnostic code registry (no file n
 vera --help                       # The usage: every command and option (also -h)
 vera check --help                 # One command's usage: the options it takes (any command)
                                   #   Each command takes only the options it lists (E901
-                                  #   otherwise) and exactly one file (E904 for none or a
-                                  #   second); after `--`, `vera run` passes every token on
+                                  #   otherwise); one that reads a program takes exactly one
+                                  #   file (E904 for none or a second), and lsp, version and
+                                  #   the registry commands take none; after `--`, `vera run`
+                                  #   passes every token on
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md); each class-instrument matrix runs its sample
 pytest tests/ -v --matrix=full    # The same, with every cell of every class-instrument matrix

@@ -23,7 +23,10 @@ The rules `parse` applies, in the order it applies them:
    unless that is an option itself (a negative number is a value): with
    none, or a value outside the option's domain or the command's set, it
    is E903.  An option given twice is E902, whatever the two values are,
-   and so are two options the command lists as exclusive.
+   and so are two options the command lists as exclusive.  Where a command
+   line holds more than one of these, its shape comes first (E901, or a
+   missing value's E903, in order), then a repeat's E902, then a value
+   outside its domain (E903), so a bad value never hides a repeat.
 4. Every other token is an operand.  A command that reads a file takes
    exactly one, and a command that reads none takes none: anything else is
    E904.  An empty operand, or one that names a directory, is E900.
@@ -360,7 +363,15 @@ def parse(argv: list[str]) -> Invocation | Refusal:
 
     options: dict[str, str | bool] = {}
     files: list[str] = []
+    # Three kinds of refusal, kept apart so that one cannot hide another,
+    # in this precedence: the line's shape (an option the command does not
+    # take, E901, or a valued option with no value, E903; the first in
+    # order), an option given twice (E902, whatever its values), and a
+    # value outside its domain or the command's set (E903).
     refusal: Diagnostic | None = None
+    repeated: Diagnostic | None = None
+    bad_value: Diagnostic | None = None
+    seen: set[str] = set()
     help_asked = False
     i = 0
     while i < len(own):
@@ -377,29 +388,32 @@ def parse(argv: list[str]) -> Invocation | Refusal:
             if refusal is None:
                 refusal = _not_accepted(token, command)
             continue
+        if token in seen and repeated is None:
+            repeated = command_errors.contradictory_options(
+                f"{token} is given twice; `vera {name}` takes it once.")
+        seen.add(token)
         value: str | bool = True
         if option.metavar is not None:
             # A value is the next token, unless there is none or it is an
             # option itself (`--fn --json`): a negative number is a value.
             if i >= len(own) or (_is_option(own[i]) and not _is_number(own[i])):
+                # Read in order with E901: the line's shape is wrong here,
+                # and the option that stands in the value's place would
+                # otherwise be refused as if it were the mistake.
                 refusal = refusal or command_errors.invalid_option_value(
                     f"{token}: missing value")
                 continue
             value = own[i]
             i += 1
             allowed = command.values.get(token)
-            if refusal is None:
-                if allowed is not None and value not in allowed:
-                    refusal = command_errors.invalid_option_value(
-                        f"Invalid {token} value: {value} "
-                        f"(expected {_quoted(allowed)})")
-                else:
-                    refusal = _domain_refusal(option, value)
-        if token in options:
-            refusal = refusal or command_errors.contradictory_options(
-                f"{token} is given twice; `vera {name}` takes it once.")
-            continue
-        options[token] = value
+            if allowed is not None and value not in allowed:
+                bad_value = bad_value or command_errors.invalid_option_value(
+                    f"Invalid {token} value: {value} "
+                    f"(expected {_quoted(allowed)})")
+            else:
+                bad_value = bad_value or _domain_refusal(option, value)
+        options.setdefault(token, value)
+    refusal = refusal or repeated or bad_value
 
     if help_asked:
         return Invocation(name, command, options, files, rest, help=True)

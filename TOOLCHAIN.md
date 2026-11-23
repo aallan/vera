@@ -59,7 +59,7 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction, never a bare status. Every diagnostic has a stable code, which `vera errors` lists, that you can pin tooling
    to: a command's own refusals too (E9xx), and a runtime trap (E800).
-2. **Two audiences.** `check`, `verify`, `compile`, `run`, `test` and `ast` have a `--json` mode (`check` and `verify` also take `--quiet`).
+2. **Two audiences.** `check` (and its alias `typecheck`), `verify`, `compile`, `run`, `test` and `ast` have a `--json` mode (`check` and `verify` also take `--quiet`).
    People read the default text; agents consume `--json` in a feedback loop. The
 JSON is the machine contract; the prose is for humans. **If you are scripting
 Vera from an agent, use `--json`.**
@@ -460,8 +460,8 @@ The intended agent loop is: emit a `.vera` file → `vera check --json` → if n
 `ok`, read `diagnostics[].fix` and edit → repeat → `vera verify --json` → act on
 the tier summary → `vera test --json` on the Tier-3 remainder.
 
-The diagnostic-producing commands `check`, `verify`, `compile`, `run`, `test` and `ast` speak `--json` (every other command refuses the flag, E901, as the envelope); the introspection commands (`builtins`, `effects`,
-`errors`) speak it natively. Diagnostic codes are **stable** (`vera errors`
+The diagnostic-producing commands `check` (and its alias `typecheck`), `verify`, `compile`, `run`, `test` and `ast` speak `--json`; the introspection commands (`builtins`, `effects`,
+`errors`) speak it natively. The rest (`parse`, `fmt`, `serve`, `lsp` and `version`) refuse the flag (E901), the refusal printed as the envelope. Diagnostic codes are **stable** (`vera errors`
 lists them), so an agent can branch on `error_code` rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
 live catalogue.

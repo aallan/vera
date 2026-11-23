@@ -31,7 +31,10 @@ import pytest
 
 from tests import pipeline
 
-pytestmark = pytest.mark.matrix(decides=["vera/cli.py", "vera/command_line.py"])
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/cli.py", "vera/command_line.py", "vera/command_errors.py",
+    "vera/smt.py",
+])
 
 # =====================================================================
 # The oracle: what the documents say each command takes
@@ -188,6 +191,16 @@ def _cells() -> list[Any]:
     # An option another command takes, written with `=`, names its owners.
     add("check", ["a.vera", "--trials=5"], ("refused", "E901", "`vera test`"))
 
+    # A repeat is E902 whatever its values, a bad one in either place included.
+    for cmd in COMMANDS:
+        for flag, (accepts, _kind) in domains.items():
+            if flag not in TAKES[cmd] or cmd == "typecheck":
+                continue
+            good = _value(cmd, flag)
+            bad = next(v for v, ok in accepts.items() if not ok)
+            add(cmd, [flag, good, flag, bad, "a.vera"], ("refused", "E902"))
+            add(cmd, [flag, bad, flag, good, "a.vera"], ("refused", "E902"))
+
     # The pairs a command refuses together, and their nearest neighbours.
     add("fmt", ["--check", "--write", "a.vera"], ("refused", "E902"))
     add("fmt", ["--write", "--check", "a.vera"], ("refused", "E902"))
@@ -306,6 +319,9 @@ MIN_OF_TWO = (
     "public fn min_of_two(@Int, @Int -> @Int)\n  requires(true)\n"
     "  ensures(@Int.result <= @Int.0 && @Int.result <= @Int.1)\n"
     "  effects(pure)\n{\n  if @Int.1 <= @Int.0 then { @Int.1 } else { @Int.0 }\n}\n"
+    "\n"
+    "public fn minus(@Int, @Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+    "  effects(pure)\n{\n  @Int.1 - @Int.0\n}\n"
     "\n"
     "public fn width(@String -> @Int)\n  requires(true)\n"
     "  ensures(@Int.result >= 0)\n  effects(pure)\n{\n  string_length(@String.0)\n}\n"
@@ -542,6 +558,58 @@ def test_repro_a_budget_past_the_solver_s_limit_is_refused(
     assert "[E903]" in run.stderr and "the solver's limit" in run.stderr, run.stderr
 
 
+@pytest.mark.parametrize("env_value", [str(2**32), "abc", "0"])
+def test_repro_the_explicit_budget_wins_over_the_environment_s(
+        tmp_path: Path, env_value: str) -> None:
+    """`--timeout-ms` comes first in the budget's precedence, so the
+    environment's value is validated only where it is the one used: with
+    the flag, a malformed or out-of-range `VERA_Z3_TIMEOUT_MS` is not read
+    (it was E903, the flag never reached); without it, it is E903."""
+    f = _files(tmp_path)
+    env = {"VERA_Z3_TIMEOUT_MS": env_value}
+    run = pipeline.cli("verify", "--json", "--timeout-ms", "1000", f["good"], env=env)
+    assert run.returncode == 0, run
+    assert json.loads(run.stdout)["verification"]["timeout_ms"] == 1000
+    run = pipeline.cli("verify", "--json", f["good"], env=env)
+    assert run.returncode == 1, run
+    (diag,) = json.loads(run.stdout)["diagnostics"]
+    assert diag["error_code"] == "E903"
+    assert diag["description"].startswith("VERA_Z3_TIMEOUT_MS: "), diag
+    # `vera test` takes no flag: the environment's value is always the one used.
+    run = pipeline.cli("test", f["good"], env=env)
+    assert run.returncode == 1 and run.stderr.startswith("[E903] "), run
+
+
+@pytest.mark.parametrize("values", [("5", "0"), ("0", "5"), ("0", "0"), ("abc", "5")])
+def test_repro_a_repeated_option_is_e902_whatever_its_values(
+        tmp_path: Path, values: tuple[str, str]) -> None:
+    """An option given twice is E902 whatever the two values are, a bad
+    one included; a single bad value stays E903."""
+    f = _files(tmp_path)
+    first, second = values
+    run = pipeline.cli("test", "--trials", first, "--trials", second, f["good"])
+    assert run.returncode == 1 and run.stderr.startswith("[E902] "), run
+    assert "--trials is given twice" in run.stderr
+    run = pipeline.cli("test", "--trials", "0", f["good"])
+    assert run.stderr.startswith("[E903] "), run
+
+
+@pytest.mark.parametrize(("args", "stdout"), [
+    (["7", "2"], "5\n"), (["2", "7"], "-5\n"),
+    (["-1", "-5"], "4\n"), (["-5", "-1"], "-4\n"),
+])
+def test_repro_run_passes_the_program_s_arguments_in_order(
+        tmp_path: Path, args: list[str], stdout: str) -> None:
+    """`minus` returns its first parameter less its second (`@Int.1 -
+    @Int.0`: `@Int.0` is the last), so a reordering of the arguments after
+    `--` changes the result, which `min_of_two` could not show."""
+    f = _files(tmp_path)
+    run = pipeline.cli("run", f["min"], "--fn", "minus", "--", *args)
+    assert (run.returncode, run.stdout, run.stderr) == (0, stdout, ""), run
+    run = pipeline.cli("run", "--fn", "minus", f["min"], "--", *args)
+    assert (run.returncode, run.stdout) == (0, stdout), run
+
+
 @pytest.mark.parametrize("operand", ["sub", ""], ids=["directory", "empty"])
 @pytest.mark.parametrize("command", ["check", "verify", "fmt", "run"])
 def test_repro_an_operand_that_is_no_file_is_e900_not_e699(
@@ -739,16 +807,31 @@ def test_each_sentence_listing_the_json_commands_is_the_table(
         path: str, anchor: str, end: str) -> None:
     """The prose that lists the commands taking `--json` lists what the
     table says (the introspection commands apart where the sentence names
-    them separately)."""
-    from vera.command_line import owners
+    them separately), the `typecheck` alias included: the table lists it as
+    a command of its own, and `owners()`, which names the commands in a
+    refusal, leaves it out, so the oracle is the table itself."""
+    from vera.command_line import COMMANDS
 
     text = (ROOT / path).read_text(encoding="utf-8")
     start = text.index(anchor) + len(anchor)
     listed = sorted(_json_list(text[start:text.index(end, start)]))
-    takers = owners("--json")
+    takers = [n for n, c in COMMANDS.items() if c.option("--json")]
+    assert "typecheck" in takers
     registries = ["builtins", "effects", "errors"]
     assert listed in (sorted(takers),
                       sorted(t for t in takers if t not in registries)), listed
+
+
+def test_the_sentence_naming_the_commands_that_refuse_json_is_the_table() -> None:
+    """TOOLCHAIN.md names the commands that refuse `--json`: every command
+    the table gives no `--json`, and no other."""
+    from vera.command_line import COMMANDS
+
+    text = (ROOT / "TOOLCHAIN.md").read_text(encoding="utf-8")
+    anchor = "The rest ("
+    start = text.index(anchor) + len(anchor)
+    listed = sorted(_json_list(text[start:text.index(") refuse the flag", start)]))
+    assert listed == sorted(n for n, c in COMMANDS.items() if not c.option("--json"))
 
 
 def test_toolchain_s_table_is_the_one_the_command_line_reads() -> None:

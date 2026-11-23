@@ -2164,15 +2164,18 @@ def main() -> None:
     # #1350: resolve once, here, so a malformed budget is a clean CLI error
     # rather than a traceback out of the solver's construction seam.  Only
     # the commands that verify consult it — `compile`/`run` never build a
-    # solver, so a stray env var must not fail them.
-    if command in ("verify", "test"):
+    # solver, so a stray env var must not fail them.  The flag comes first
+    # in the budget's precedence, so the environment's value is validated
+    # only where it is the one used (#1872): with `--timeout-ms`, it is
+    # never read.
+    timeout_ms: int | None = None
+    raw_tm = read.value("--timeout-ms")
+    if raw_tm is None and command in ("verify", "test"):
         try:
             resolve_timeout_ms()
         except Z3BudgetError as exc:
             _refuse_command_line(
                 command_errors.invalid_option_value(str(exc)), as_json=use_json)
-    timeout_ms: int | None = None
-    raw_tm = read.value("--timeout-ms")
     if raw_tm is not None:
         try:
             timeout_ms = resolve_timeout_ms(raw_tm)
