@@ -705,7 +705,11 @@ public fn go(@Float64 -> @Int)
      "NEF", "tier3"),
     ("type NonEmptyOf<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };",
      "NonEmptyOf<IntFn>", "tier3_unguarded"),
-], ids=["alias", "generic_alias"])
+    # The parameter read only as a function type's result.
+    ("type FnsOf<T> = { @Array<fn(Int -> T) effects(pure)> | "
+     "array_length(@Array<fn(Int -> T) effects(pure)>.0) > 0 };",
+     "FnsOf<Int>", "tier3_unguarded"),
+], ids=["alias", "generic_alias", "generic_alias_result"])
 def test_repro_a_refinement_over_function_values_at_a_closure_argument(
         refinement: str, param: str, status: str) -> None:
     """A refinement whose resolved base names no type (an array of

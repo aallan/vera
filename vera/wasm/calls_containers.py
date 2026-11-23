@@ -565,8 +565,10 @@ class CallsContainersMixin:
                 return None
             if pos == 2:
                 arg_instrs = self._emit_construction_refine_guard(
-                    arg_instrs, arg, "map value", "map value insert", env,
-                    component_ty=value_component,
+                    arg_instrs, arg,
+                    "map value",  # pragma: no mutate — equivalent: the site names only the internal error a guardable store with no scalar type raises, which the table's scalar-base rule leaves no accepted program to reach
+                    "map value insert", env,
+                    component_ty=value_component,  # pragma: no mutate — equivalent: without it the lowering reads the value's recorded target and then the row's own, each the value component's refinement
                 )
                 # #1440: the SIGN obligation at the same insert, decided
                 # by the value's `nat_bind` row.
@@ -858,7 +860,8 @@ class CallsContainersMixin:
         assert row is not None  # noqa: S101 — `_checked`
         te = self.obligations.guard_type_expr(row.target)
         wasm_ty = self._width_of(row.target)
-        if te is None or wasm_ty is None:
+        if (te is None  # pragma: no mutate — unreachable: the table holds a store row guardable only where guard_type_expr writes its type, over a scalar resolved base, which has a width
+                or wasm_ty is None):  # pragma: no mutate — unreachable: as the line above
             raise CodegenInvariantError(
                 "the obligation table holds a store's refinement guardable, and this lowering writes no type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a store row guardable only where guard_type_expr writes its type, over a scalar resolved base, which has a width
             )

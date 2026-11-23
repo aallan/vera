@@ -303,13 +303,16 @@ class ClosuresMixin:
         with (:func:`field_layout`), a `Unit` component taking no
         slot.  ``None`` for a path no tuple of *ty* has."""
         for step in path:
-            tup = base_type(ty) if isinstance(ty, RefinedType) else ty
-            if (not isinstance(tup, AdtType) or tup.name != "Tuple"
-                    or not step.startswith("Tuple.")):
+            tup = ty
+            while isinstance(tup, RefinedType):
+                tup = tup.base
+            if (not isinstance(tup, AdtType)  # pragma: no mutate — unreachable: the table lists a closure argument's row only at a tuple path its type has (`_refined_paths`), so the path's every step is a `Tuple` component of a tuple
+                    or tup.name != "Tuple"  # pragma: no mutate — unreachable: as the line above
+                    or not step.startswith("Tuple.")):  # pragma: no mutate — unreachable: as the line above
                 return None
             index = int(step.split(".")[1])
             offset = 4  # after the tag, as construction lays it out
-            field_offset: int | None = None
+            field_offset: int | None = None  # pragma: no mutate — equivalent: the loop sets it at the path's index, which the tuple has, so no initial value is read
             for k, component in enumerate(tup.type_args):
                 wt = self._width_of(component)
                 if wt is None:
@@ -318,7 +321,8 @@ class ClosuresMixin:
                 if k == index:
                     field_offset = at
                     break
-            if field_offset is None or wt is None:
+            if (field_offset is None  # pragma: no mutate — unreachable: the index is one the tuple has, and the table lists no row at a component with no width (a `Unit`, REASON_ERASED_BASE), so the loop sets both
+                    or wt is None):  # pragma: no mutate — unreachable: as the line above
                 return None
             value = bind_slot_value_from_field(
                 self.alloc_local, wt, value.slot_local, field_offset)
