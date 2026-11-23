@@ -1695,6 +1695,11 @@ _LOST_SITES = {
                       "Tuple({lost}, {value})];\n  0"),
     "array-join": ("array_length([Tuple(0, {exact}), "
                    "Tuple({lost}, {value})])"),
+    # A generic call's result adopted at the type its `let` expects
+    # (`_synth_fn_call`).
+    "adopted-generic": ("let @Tuple<Int, F> = first([Tuple({lost}, "
+                        "{value})]);\n  0"),
+    "adopted-identity": "let @Tuple<Int, F> = idt(Tuple({lost}, {value}));\n  0",
 }
 
 
@@ -1707,6 +1712,8 @@ def _lost_program(site: str, position: str, value: str) -> str:
             "private forall<T> fn first(@Array<T> -> @T)\n"
             "  requires(array_length(@Array<T>.0) > 0)\n  ensures(true)\n"
             "  effects(pure)\n{\n  @Array<T>.0[0]\n}\n\n"
+            + _fn("idt(@A -> @A)", "@A.0").replace(
+                "private fn", "private forall<A> fn")
             + _fn("take(@Tuple<Int, F> -> @Int)", "0")
             + _fn("main(@Int -> @Int)", _LOST_SITES[site].format(
                 lost=_LOST, value=value, exact=exact), visibility="public"))
@@ -1721,7 +1728,9 @@ def test_a_lost_builtin_variable_beside_a_function_pair_is_held_to_rule_9(
     """`_fits`' built-in branch held a pair whose join failed at a lost
     variable to `_compatible_modulo_typevars` alone, so a
     `Tuple<B, fn(Nat -> Int)>` fitted a `Tuple<Int, fn(Int -> Int)>`
-    parameter; it is held to rule 9 as the join's fit is."""
+    parameter, and a generic call's result was adopted at that expected
+    type, which the `let` then compared with itself; both are held to rule
+    9 as the join's fit is."""
     codes = _codes(_lost_program(site, position, value))
     assert codes == (["E190"] if refused else []), codes
 
