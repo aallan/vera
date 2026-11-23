@@ -175,10 +175,13 @@ class InferenceMixin:
         complete; ``None`` for an operand that has a value, and for a node
         the check did not type.
 
-        A lowering over an operand reads this before it reads a width: the
-        operand's instructions push nothing, so the lowering evaluates
-        them, for their effects, and then gives the result the operand's
-        one value decides (`unit`), or none at all (`never`)."""
+        A lowering over an operand reads this before it reads a width: a
+        `unit` operand's instructions push nothing, so the lowering
+        evaluates them, for their effects, and then gives the result the
+        operand's one value decides.  A `never` operand's code already ends
+        where control stops (`WasmContext._end_never`), so a lowering needs
+        no rule for one, only a width or a type to read where it would read
+        the operand's."""
         ty = self._type_of(expr)
         if ty is None:
             return None
@@ -187,15 +190,6 @@ class InferenceMixin:
         if base_type(ty) == NEVER:
             return "never"
         return None
-
-    @staticmethod
-    def _after_never(instrs: list[str]) -> list[str]:
-        """*instrs*, an operand that does not complete (`Never`), and then
-        `unreachable`: what a lowering over the operand would compute is
-        never reached, and the instruction says so to the validator, which
-        then takes any stack the lowering's result is expected to leave
-        (#1870)."""
-        return [*instrs, "unreachable"]
 
     def _declared_width(self, node: ast.Node) -> str | None:
         """The WAT value a value declared at *node*, a type expression or a

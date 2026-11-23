@@ -707,9 +707,9 @@ INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
         "after `wasi:cli/exit`, which never returns",
     ),
     InternalTrap(
-        "wasm/inference.py:_after_never", "compiler_bug", 1,
-        "after an operand of type `Never` (a comparison's, a `match`'s "
-        "scrutinee), which does not complete (#1870)",
+        "wasm/context.py:_end_never", "compiler_bug", 1,
+        "after an expression of type `Never` whose code does not already "
+        "end where control stops, which does not complete (#1870)",
     ),
     InternalTrap(
         "wasm/calls_handlers.py:_translate_handle_exn", "compiler_bug", 1,

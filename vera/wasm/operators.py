@@ -82,27 +82,18 @@ class OperatorsMixin:
         # before any dispatch by the operands' type (the `@Nat` subtraction
         # guard, the `@Byte` lowering, the arithmetic and comparison
         # tables), so no dispatch below can take one.
+        #
+        # An operand of type `Never` needs no rule: its code ends where
+        # control stops (`WasmContext._end_never`), so whatever follows it
+        # validates and is never reached.  The checker admits one on the
+        # right of `==` and `!=` (and on either side of `&&`, `||` and
+        # `==>`, whose lowering reads no width); there it reads as the
+        # left operand does, which picks a width for the operator's code,
+        # never reached, and repairs nothing.
         lnothing = self._holds_nothing(expr.left)
-        rnothing = self._holds_nothing(expr.right)
-        short_circuit = expr.op in (
-            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES)
-        if lnothing == "never" or (rnothing == "never" and not short_circuit):
-            # An operand that does not complete (`Never`, a `throw`): the
-            # operator is never reached, and `unreachable` says so to the
-            # validator, whatever the other operand pushed.  A left one is
-            # all that runs; a right one runs after the left.  The right
-            # operand of `&&`, `||` and `==>` runs only where the left
-            # does not decide, so it keeps the short-circuit lowering below.
-            left = self.translate_expr(expr.left, env)
-            if left is None:
-                return None  # pragma: no cover — the [E615] channel
-            if lnothing == "never":
-                return self._after_never(left)
-            right = self.translate_expr(expr.right, env)
-            if right is None:
-                return None  # pragma: no cover — the [E615] channel
-            return self._after_never(left + right)
-        if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E140, E142, E143, E144, E145), and beside a `Never` one took the branch above
+        right_never = self._holds_nothing(expr.right) == "never"
+        rnothing = lnothing if right_never else self._holds_nothing(expr.right)
+        if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E140, E142, E143, E144, E145)
                 and rnothing == "unit"):
             # Two values of a type with no WebAssembly value (`Unit`, a
             # `Future` of one, a refinement of one) are equal, since the
@@ -237,7 +228,9 @@ class OperatorsMixin:
 
         # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
-            rtype = self._expr_width(expr.right)
+            # A `Never` right operand reads as the left (see the top of
+            # this function): a width for code never reached.
+            rtype = ltype if right_never else self._expr_width(expr.right)
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison
@@ -1486,7 +1479,11 @@ class OperatorsMixin:
                 vera_type = self._interp_resolved_type_name(
                     self._type_name_of(p),
                 )
-                if vera_type == "String":
+                if vera_type == "String" or self._holds_nothing(p) == "never":
+                    # A `Never` part (#1870) is concatenated as a `String`
+                    # would be: its code ends where control stops
+                    # (`WasmContext._end_never`), so the concatenation is
+                    # never reached, and the reading repairs nothing.
                     parts.append(p)
                 elif vera_type in self._INTERP_TO_STRING:
                     # Wrap with the appropriate to_string call, which stands

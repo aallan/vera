@@ -7,14 +7,31 @@ This module extracts that shared logic to avoid duplication.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import dataclasses
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from vera import ast
 from vera.environment import FunctionInfo, TypeAliasInfo, TypeEnv
-from vera.naming import alias_env_of_decls, alias_mentions, alias_visible
+from vera.naming import (
+    EMPTY_ALIAS_ENV,
+    AliasEnv,
+    alias_env_from_environment,
+    alias_env_of_decls,
+    alias_mentions,
+    alias_visible,
+    resolve_type_expr,
+)
 from vera.obligations.cache import walk_nodes
-from vera.types import PRIMITIVES, EffectRowType, Type, TypeVar
+from vera.types import (
+    PRIMITIVES,
+    UNIT,
+    EffectRowType,
+    Type,
+    TypeVar,
+    erases_to_unit,
+    substitute,
+)
 
 if TYPE_CHECKING:
     pass
@@ -22,7 +39,7 @@ if TYPE_CHECKING:
 
 def _forall_vars_read(
     decl: ast.FnDecl,
-    aliases: Mapping[str, TypeAliasInfo] | None = None,
+    aliases: AliasEnv | None = None,
 ) -> frozenset[str]:
     """Which of ``decl``'s forall type-vars are READ via a `@T.n` slot, or a
     `@T.result` reference (#1870), anywhere that lowers to WASM — the *body*
@@ -47,6 +64,8 @@ def _forall_vars_read(
     if not decl.forall_vars:
         return frozenset()
     fvars = set(decl.forall_vars)
+    alias_env = dataclasses.replace(
+        aliases or EMPTY_ALIAS_ENV, type_params=frozenset(fvars))
     nodes = list(walk_nodes(decl.body))
     for contract in decl.contracts:
         if isinstance(contract, (ast.Requires, ast.Ensures)):
@@ -57,7 +76,7 @@ def _forall_vars_read(
         # reads a binding, so `@T.result` in an `ensures` reads `T`.
         if isinstance(n, (ast.SlotRef, ast.ResultRef)):
             read |= _vars_a_reference_erases(
-                n.type_name, n.type_args, fvars, aliases or {})
+                n.type_name, n.type_args, fvars, alias_env)
     return frozenset(read)
 
 
@@ -65,65 +84,28 @@ def _vars_a_reference_erases(
     name: str,
     args: tuple[ast.TypeExpr, ...] | None,
     fvars: set[str],
-    aliases: Mapping[str, TypeAliasInfo],
-    bind: Mapping[str, ast.TypeExpr] | None = None,
-    depth: int = 0,
+    alias_env: AliasEnv,
 ) -> set[str]:
     """The type variables at which a reference of type *name* with *args*
     reads a value that erases when the variable is zero-size (#1870).
 
-    The reference's local exists unless its type erases, and a type erases
-    when it is the variable itself, the built-in `Future` of a type that
-    erases (`erases_to_unit`, which `Future` wraps transparently, at any
-    depth), a refinement of one, or an alias whose body is one of these.  A
-    variable named anywhere else in the type, as `Option<T>`'s or
+    The reference's type is resolved by the namespace's own resolution
+    (:func:`vera.naming.resolve_type_expr`, which the checker's
+    ``_resolve_type`` agrees with: every alias chain, however long, each
+    parameter substituted into compound arguments too), and a variable is
+    read when the resolved type erases with the variable at `Unit`
+    (:func:`vera.types.erases_to_unit`): the variable itself, the built-in
+    `Future` of a type that erases, at any depth, or a refinement of one.
+    A variable named anywhere else in the type, as `Option<T>`'s or
     `Array<Future<T>>`'s argument, stands inside a value that has a local
     of its own (a pointer), so the read does not dangle at `Unit` and is not
     a read of the variable.  A slot reference and a result reference are
-    decided here alike.  *bind* maps an alias's parameters, while its body
-    is read, to the type expressions the reference gave them.
+    decided here alike.
     """
-    bind = bind or {}
-    if depth > 32:  # pragma: no cover — an alias cycle is refused at check
-        return set()
-    if name in bind and not args:
-        return _vars_a_type_erases(bind[name], fvars, aliases, {}, depth + 1)
-    if name in fvars:
-        return {name}
-    if name == "Future" and args is not None and len(args) == 1:
-        return _vars_a_type_erases(args[0], fvars, aliases, bind, depth + 1)
-    alias = aliases.get(name)
-    if alias is not None and alias.body is not None:
-        inner = {
-            param: _bound(arg, bind)
-            for param, arg in zip(alias.type_params or (), args or ())
-        }
-        return _vars_a_type_erases(alias.body, fvars, aliases, inner, depth + 1)
-    return set()
-
-
-def _bound(te: ast.TypeExpr, bind: Mapping[str, ast.TypeExpr]) -> ast.TypeExpr:
-    """*te*, an alias's argument, with a bare name of an enclosing alias's
-    parameter replaced by what that parameter was given."""
-    if isinstance(te, ast.NamedType) and not te.type_args and te.name in bind:
-        return bind[te.name]
-    return te
-
-
-def _vars_a_type_erases(
-    te: ast.TypeExpr,
-    fvars: set[str],
-    aliases: Mapping[str, TypeAliasInfo],
-    bind: Mapping[str, ast.TypeExpr],
-    depth: int,
-) -> set[str]:
-    """`_vars_a_reference_erases` for a written type expression."""
-    while isinstance(te, ast.RefinementType):
-        te = te.base_type
-    if isinstance(te, ast.NamedType):
-        return _vars_a_reference_erases(
-            te.name, te.type_args, fvars, aliases, bind, depth)
-    return set()
+    ty = resolve_type_expr(
+        ast.NamedType(name=name, type_args=args), alias_env)
+    return {var for var in fvars
+            if erases_to_unit(substitute(ty, {var: UNIT}))}
 
 
 def build_fn_info(
@@ -158,7 +140,8 @@ def build_fn_info(
             param_type_exprs=decl.params,
             visibility=visibility,
             forall_constraints=decl.forall_constraints or (),
-            forall_vars_read=_forall_vars_read(decl, env.type_aliases),
+            forall_vars_read=_forall_vars_read(
+                decl, alias_env_from_environment(env)),
         )
     finally:
         env.type_params = saved_params

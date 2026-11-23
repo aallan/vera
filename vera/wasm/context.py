@@ -1134,7 +1134,45 @@ class WasmContext(
         # translated (`vera.wasm.coercion`).
         for row in self._walk_rows(expr):
             instructions = self._walk_coerced_value(expr, instructions, row)
-        return self._scope_shadow_roots(expr, instructions)
+        return self._end_never(
+            expr, self._scope_shadow_roots(expr, instructions))
+
+    def _end_never(
+        self, expr: ast.Expr, instructions: list[str]
+    ) -> list[str]:
+        """*instructions*, the code of *expr*, ended where control stops
+        when *expr* is of type `Never` (#1870).
+
+        An expression of type `Never` does not complete, and its code
+        pushes nothing.  The validator must be told that control stops
+        there, or the code around it, which expects the value of the type
+        the expression stands in for, does not validate: an `if` or a
+        `match` whose arms all throw ends in a result-less ``end``, after
+        which the stack is empty, not polymorphic.  Every expression's
+        lowering leaves through :meth:`translate_expr`, so the rule is
+        stated here, once, and no lowering that holds such an expression
+        (an operator, a call, a constructor, a ``let``, a condition) has
+        a rule of its own for it.
+
+        The code already ends so when its last instruction is one after
+        which the stack is polymorphic, of the ones code generation emits
+        as an expression's last: ``throw`` (a `throw`), ``unreachable``
+        (``IO.exit``, a divergent ``handle[Exn]``, a trap) and
+        ``return_call`` (a self tail call).  ``br`` and ``return`` are
+        polymorphic too, but code generation emits them only inside a
+        runtime helper or a parse loop, never as an expression's last
+        top-level instruction, so they are not looked for.  Any other
+        ending gains an ``unreachable``, which control never reaches."""
+        if self._holds_nothing(expr) != "never":
+            return instructions
+        stop = "unreachable"
+        last = instructions[-1].split(None, 1) if instructions else []
+        if last and last[0] in (
+                "throw",
+                "return_call",  # pragma: no mutate — equivalent today: a `Never` expression ending in one is a self tail call of a function declared to return `Never`, which code generation drops (#1909); dropped from the set, it would gain an `unreachable` never reached
+                stop):
+            return instructions
+        return [*instructions, stop]
 
     def _scope_shadow_roots(
         self, expr: ast.Expr, instructions: list[str]

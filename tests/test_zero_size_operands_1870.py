@@ -44,10 +44,12 @@ from vera.types import AdtType, FunctionType, PrimitiveType, Type, TypeVar
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/wasm/operators.py",
+    "vera/wasm/context.py",
     "vera/wasm/calls_handlers.py",
     "vera/wasm/data.py",
     "vera/wasm/inference.py",
     "vera/environment.py",
+    "vera/registration.py",
     "vera/builtins.py",
     "vera/prelude.py",
     "vera/checker/expressions.py",
@@ -940,6 +942,10 @@ def test_repro_a_short_circuit_never_reaches_a_right_operand_it_skips() -> None:
 # stands inside a value with a local of its own.  A slot reference and a
 # result reference are decided alike.
 
+#: A reference cell whose argument is a parameter of a function that holds
+#: one, not a value written out.
+SLOT = "@"
+
 REFERENCE_TYPES: dict[str, tuple[str, str, bool]] = {
     # kind: (the reference's type, a value of it from `{v}`, erases at Unit)
     "head": ("T", "{v}", True),
@@ -948,21 +954,51 @@ REFERENCE_TYPES: dict[str, tuple[str, str, bool]] = {
     "nested-future": ("Future<Future<T>>", "async(async({v}))", True),
     "nested-argument": ("Option<Future<T>>", "Some(async({v}))", False),
     "alias-of-future": ("FU<T>", "async({v})", True),
+    # #1870 round 4: the reference's type is resolved by the namespace's
+    # own resolution, so no length of alias chain or of `Future` nesting
+    # drops a read, and a parameter given a compound argument stays bound.
+    **{f"alias-chain-{n}": (f"C{n}<T>", "{v}", True) for n in (1, 2, 40, 200)},
+    # A value of a `Future` nested this deep is not written out: the
+    # checker's synthesis of `async(...)` nested 150 deep exceeds Python's
+    # recursion (a find, outside this class).  The generic is called with a
+    # parameter of a function that holds one (`SLOT`).
+    **{f"future-{n}-deep": ("Future<" * n + "T" + ">" * n, SLOT, True)
+       for n in (33, 200)},
+    "alias-of-compound": ("Outer<T>", "async({v})", True),
+    "alias-of-compound-twice": ("Outer2<T>", "async(async({v}))", True),
+    "alias-declared-later": ("Late<T>", "async({v})", True),
 }
+
+
+def _alias_chain(n: int) -> str:
+    """`C1<A> = A`, then each `Ck<A> = C(k-1)<A>`, to `Cn`."""
+    lines = ["type C1<A> = A;"]
+    lines += [f"type C{k}<A> = C{k - 1}<A>;" for k in range(2, n + 1)]
+    return "\n".join(lines) + "\n\n"
+
 
 REFERENCE_PROLOGUE = """\
 type FU<A> = Future<A>;
 
 type Gen<A> = fn(Unit -> A) effects(<Async>);
 
-"""
+type Inner<B> = B;
+
+type Outer<A> = Inner<Future<A>>;
+
+type Outer2<A> = Outer<Future<A>>;
+
+""" + _alias_chain(200)
+
+#: Declared below the generic that reads it.
+REFERENCE_EPILOGUE = "type Late<A> = Future<A>;\n\n"
 
 
 def _reference_program(kind: str, by: str, at: str) -> str:
     ty, ctor, _ = REFERENCE_TYPES[kind]
     v = "()" if at == "Unit" else "1"
-    arg = ctor.format(v=v)
     inst = ty.replace("T", at)
+    arg = f"@{inst}.0" if ctor == SLOT else ctor.format(v=v)
     if by == "slot":
         gen = (f"private forall<T> fn g(@{ty}, @Int -> @Int)\n"
                "  requires(true)\n  ensures(true)\n  effects(<Async>)\n{\n"
@@ -973,7 +1009,12 @@ def _reference_program(kind: str, by: str, at: str) -> str:
                f"  requires(true)\n  ensures(@{ty}.result == @{ty}.result)\n"
                f"  effects(<Async>)\n{{\n  apply_fn(@Gen<{ty}>.0, ())\n}}\n\n")
         call = f"  g(fn(@Unit -> @{inst}) effects(<Async>) {{ {arg} }});\n"
-    return program(call + '  IO.print("x")', before=REFERENCE_PROLOGUE + gen)
+    if ctor == SLOT:
+        gen += (f"private fn h(@{inst} -> @Int)\n  requires(true)\n"
+                f"  ensures(true)\n  effects(<Async>)\n{{\n{call}  1\n}}\n\n")
+        call = ""
+    return program(call + '  IO.print("x")',
+                   before=REFERENCE_PROLOGUE + gen + REFERENCE_EPILOGUE)
 
 
 REFERENCE_CELLS = [
@@ -988,8 +1029,15 @@ def test_a_reference_reads_the_variables_its_type_erases_at(
     kind: str, by: str, at: str,
 ) -> None:
     erases = REFERENCE_TYPES[kind][2] and at == "Unit"
-    assert_cell(_reference_program(kind, by, at),
-                Expect(code="E206") if erases else Expect(stdout="x"))
+    source = _reference_program(kind, by, at)
+    if REFERENCE_TYPES[kind][1] == SLOT and not erases:
+        # The verifier's walk of a `Future` nested 33 deep for a refinement
+        # takes minutes (a find, outside this class): the cell is the
+        # check's judgment and the run.
+        assert pipeline.check(source).ok, source
+        assert pipeline.run(source).stdout == "x", source
+        return
+    assert_cell(source, Expect(code="E206") if erases else Expect(stdout="x"))
 
 
 def test_repro_a_future_result_reference_reads_its_argument() -> None:
@@ -1008,3 +1056,308 @@ def test_repro_an_option_reference_is_not_a_read_of_its_argument() -> None:
 def test_repro_an_alias_of_a_future_is_read_through() -> None:
     source = _reference_program("alias-of-future", "slot", "Unit")
     assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+# --- A `Never` expression, by form and by position --------------------------
+#
+# An expression of type `Never` does not complete.  Its code ends in an
+# instruction after which the validator takes any stack (`throw`,
+# `unreachable`, `return_call`): `WasmContext.translate_expr` appends an
+# `unreachable` to one whose code does not already end so, the producer
+# rule, and no lowering that holds such an expression has a rule for it.
+# Before, a structured form (an `if` or a `match` whose arms all throw)
+# ended in a result-less `end`, and every position that needed a value
+# from it gave a module that does not load.  The matrix is the forms by
+# every position an expression can stand in.
+
+#: A `Never` expression, written with no string literal (`m(1)` is "x"), so
+#: a form stands inside a string interpolation as well as anywhere else.
+NEVER_FORMS: dict[str, str] = {
+    "throw": "throw(m(1))",
+    "if": "if true then { throw(m(1)) } else { throw(m(2)) }",
+    "match-one-arm": "match 1 { _ -> throw(m(1)) }",
+    "match-two-arms": "match 1 { 0 -> throw(m(1)), _ -> throw(m(2)) }",
+    "block": "{ let @Int = 1; throw(m(1)) }",
+    "nested": ("if true then { if false then { throw(m(1)) } else "
+               "{ throw(m(2)) } } else { throw(m(3)) }"),
+    "handle": ("handle[Exn<Int>] { throw(@Int) -> { throw(m(@Int.0)) } } "
+               "in { throw(1) }"),
+    "handle-of-ifs": ("handle[Exn<Int>] { throw(@Int) -> "
+                      "{ if true then { throw(m(@Int.0)) } else "
+                      "{ throw(m(2)) } } } in "
+                      "{ if true then { throw(1) } else { throw(2) } }"),
+}
+
+#: Each position, as a handler body around `{N}`, and what the program
+#: prints: the handler's "caught", or the value a short-circuit's left
+#: operand decides without the right; or the code the check refuses it with
+#: (the operand tables of :func:`expected_binary`: arithmetic and ordering
+#: take no `Never`, and equality judges `Eq` by its left operand).
+NEVER_POSITIONS: dict[str, tuple[str, Expect]] = {
+    "arithmetic-left": ("show(({N}) + 1)", Expect(code="E140")),
+    "arithmetic-right": ("show(1 + ({N}))", Expect(code="E140")),
+    "ordering-left": ('if ({N}) < 1 then {{ "T" }} else {{ "F" }}',
+                      Expect(code="E143")),
+    "ordering-right": ('if 1 < ({N}) then {{ "T" }} else {{ "F" }}',
+                       Expect(code="E143")),
+    "equality-left": ('if ({N}) == 1 then {{ "T" }} else {{ "F" }}',
+                      Expect(code="E243")),
+    "equality-right": ('if 1 == ({N}) then {{ "T" }} else {{ "F" }}',
+                       Expect(stdout="caught")),
+    "string-equality-right": ('if "s" == ({N}) then {{ "T" }} else {{ "F" }}',
+                              Expect(stdout="caught")),
+    "and-left": ('if ({N}) && true then {{ "T" }} else {{ "F" }}',
+                 Expect(stdout="caught")),
+    "and-right": ('if true && ({N}) then {{ "T" }} else {{ "F" }}',
+                  Expect(stdout="caught")),
+    "and-right-skipped": ('if false && ({N}) then {{ "T" }} else {{ "F" }}',
+                          Expect(stdout="F")),
+    "or-left": ('if ({N}) || true then {{ "T" }} else {{ "F" }}',
+                Expect(stdout="caught")),
+    "or-right": ('if false || ({N}) then {{ "T" }} else {{ "F" }}',
+                 Expect(stdout="caught")),
+    "or-right-skipped": ('if true || ({N}) then {{ "T" }} else {{ "F" }}',
+                         Expect(stdout="T")),
+    "implies-left": ('if ({N}) ==> true then {{ "T" }} else {{ "F" }}',
+                     Expect(stdout="caught")),
+    "implies-right": ('if true ==> ({N}) then {{ "T" }} else {{ "F" }}',
+                      Expect(stdout="caught")),
+    "implies-right-skipped": ('if false ==> ({N}) then {{ "T" }} else {{ "F" }}',
+                              Expect(stdout="T")),
+    "call-argument": ("int_to_string({N})", Expect(stdout="caught")),
+    "constructor-field": ('match Some({N}) {{ Some(@Int) -> "T", None -> "F" }}',
+                          Expect(stdout="caught")),
+    "tuple-component": ('match Tuple({N}, 1) {{ Tuple(@Int, @Int) -> "T" }}',
+                        Expect(stdout="caught")),
+    "array-element": ("show(array_length([1, {N}]))", Expect(stdout="caught")),
+    "let-value": ('let @Int = {N};\n    "T"', Expect(stdout="caught")),
+    "statement": ('{N};\n    "T"', Expect(stdout="caught")),
+    "if-condition": ('if {N} then {{ "T" }} else {{ "F" }}',
+                     Expect(stdout="caught")),
+    "match-scrutinee": ('match {N} {{ _ -> "T" }}', Expect(stdout="caught")),
+    "index": ("show([1, 2][{N}])", Expect(stdout="caught")),
+    "interpolation": ('"a\\({N})b"', Expect(stdout="caught")),
+    "tail": ("{N}", Expect(stdout="caught")),
+}
+
+NEVER_PROLOGUE = """\
+private fn m(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  "x"
+}
+
+"""
+
+
+def _never_program(form: str, position: str) -> str:
+    body = NEVER_POSITIONS[position][0].format(N=NEVER_FORMS[form])
+    return (NEVER_PROLOGUE
+            + "public fn main(@Unit -> @Unit)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n"
+            "  IO.print(handle[Exn<String>] {\n"
+            '    throw(@String) -> "caught"\n'
+            f"  }} in {{\n    {body}\n  }})\n}}\n")
+
+
+def _assert_never_cell(source: str, expect: Expect) -> None:
+    """Refused at check with *expect*'s code, or: compiles with no function
+    dropped, validates, and prints *expect*'s output."""
+    import wasmtime
+
+    checked = pipeline.check(source)
+    codes = {d.error_code for d in checked.errors}
+    if expect.code is not None:
+        assert expect.code in codes, (codes, source)
+        return
+    assert checked.ok, (codes, source)
+    compiled = pipeline.compile(source)
+    dropped = [d.error_code for d in compiled.diagnostics
+               if d.error_code is not None and d.error_code.startswith("E6")]
+    assert not dropped, (dropped, source)
+    config = wasmtime.Config()
+    config.wasm_exceptions = True
+    wasmtime.Module.validate(wasmtime.Engine(config),
+                             compiled.result.wasm_bytes)
+    ran = pipeline.run(compiled)
+    assert ran.ok, (ran.trap, source)
+    assert ran.stdout == expect.stdout, (ran.stdout, source)
+
+
+NEVER_MATRIX_CELLS = [
+    pytest.param(form, position, id=f"{form}-{position}")
+    for form in NEVER_FORMS for position in NEVER_POSITIONS
+]
+
+
+@pytest.mark.parametrize(("form", "position"), NEVER_MATRIX_CELLS)
+def test_a_never_expression_in_every_position(form: str, position: str) -> None:
+    _assert_never_cell(_never_program(form, position),
+                       NEVER_POSITIONS[position][1])
+
+
+def test_repro_a_structured_never_right_of_a_short_circuit() -> None:
+    """The fourth review's instance: an `if` of throws right of `&&`, left
+    of which `true` does not decide, ended in a result-less `end` where the
+    short-circuit's branch needs an `i32`."""
+    _assert_never_cell(_never_program("if", "and-right"),
+                       Expect(stdout="caught"))
+    _assert_never_cell(_never_program("if", "and-right-skipped"),
+                       Expect(stdout="F"))
+
+
+def test_repro_a_structured_never_where_a_value_is_needed() -> None:
+    for form in ("match-two-arms", "nested"):
+        for position in ("call-argument", "let-value", "tail"):
+            _assert_never_cell(_never_program(form, position),
+                               Expect(stdout="caught"))
+
+
+def test_repro_a_never_scrutinee_keeps_its_function() -> None:
+    """A `match` on a `Never` dropped its function (E602) before #1870."""
+    _assert_never_cell(_never_program("if", "match-scrutinee"),
+                       Expect(stdout="caught"))
+
+
+def test_repro_a_never_right_of_a_string_equality() -> None:
+    """The comparison dispatch reads the right operand's width from the
+    left when the right is `Never`: a `String` left and a `Never` right
+    reached its fail-closed guard."""
+    _assert_never_cell(_never_program("throw", "string-equality-right"),
+                       Expect(stdout="caught"))
+
+
+# --- A join whose every leaf is `Never`, bound by a `let` --------------------
+#
+# The programs `tests/test_obligation_table_1695.py` compiles for a join
+# (`if`, `match`, `handle`) with a leaf of type `Never`: before the producer
+# rule a `let` of such a join stored the value of a result-less `if` with a
+# `local.set` over an empty stack, a module that does not validate.
+
+def _validates(source: str) -> None:
+    import wasmtime
+
+    compiled = pipeline.compile(source, file="join.vera")
+    assert compiled.ok, ([d.error_code for d in compiled.diagnostics], source)
+    config = wasmtime.Config()
+    config.wasm_exceptions = True
+    wasmtime.Module.validate(wasmtime.Engine(config),
+                             compiled.result.wasm_bytes)
+
+
+def _join_programs() -> dict[str, str]:
+    from tests.test_obligation_table_1695 import (
+        _NEVER_JOINS,
+        _NEVER_LEAVES,
+        _never_join_program,
+    )
+
+    every_leaf = {
+        "if": "if @Bool.0 then { throw(4) } else { throw(5) }",
+        "match": ("match @Option<Nat>.0 {\n    Some(@Nat) -> throw(4),\n"
+                  "    None -> throw(5)\n  }"),
+    }
+    programs = {f"every-leaf-{join}": _never_join_program(value)
+                for join, value in every_leaf.items()}
+    for join, template in _NEVER_JOINS.items():
+        for leaf in ("throw", "nested"):
+            programs[f"{join}-{leaf}"] = _never_join_program(
+                template.format(n=_NEVER_LEAVES[leaf]))
+    return programs
+
+
+@pytest.mark.parametrize("name", sorted(_join_programs()))
+def test_a_let_of_a_join_with_a_never_leaf_validates(name: str) -> None:
+    _validates(_join_programs()[name])
+
+
+def test_repro_a_let_of_a_join_whose_every_leaf_is_never() -> None:
+    """The instance #1900's module validation found: a `let @Nat` of an
+    `if` whose arms both throw."""
+    _validates(
+        "private fn f(@Nat, @Nat, @Option<Nat>, @Bool -> @Nat)\n"
+        "  requires(true)\n  ensures(true)\n  effects(<Exn<Int>>)\n{\n"
+        "  let @Nat = if @Bool.0 then { throw(4) } else { throw(5) };\n"
+        "  0\n}\n\n"
+        "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO>)\n{\n  ()\n}\n")
+
+
+def test_repro_a_reference_through_a_long_alias_chain_reads_its_variable() -> None:
+    """A private walk of the aliases stopped after 32 steps and dropped the
+    read: `@C40<T>.0` and a `Future` nested 33 deep at `Unit` passed check."""
+    for kind in ("alias-chain-40", "future-33-deep"):
+        source = _reference_program(kind, "slot", "Unit")
+        assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+def test_repro_an_alias_parameter_inside_a_compound_argument_is_bound() -> None:
+    """`Outer<A> = Inner<Future<A>>` with `Inner<B> = B`: `@Outer<T>.0` is a
+    `Future<T>`, which reads `T`; the private walk lost `A` inside the
+    compound argument."""
+    source = _reference_program("alias-of-compound", "slot", "Unit")
+    assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+def test_an_array_of_the_variable_is_not_a_read() -> None:
+    """`Array<T>` is a pointer: a reference to one reads no `T`, at `Int`
+    it runs, and at `Unit` the element is refused by its own rule (E135)."""
+    gen = ("private forall<T> fn g(@Array<T>, @Int -> @Int)\n"
+           "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+           "  let @Array<T> = @Array<T>.0;\n  @Int.0\n}\n\n")
+    assert_cell(program('  let @Int = g([1], 1);\n  IO.print("x")',
+                        before=gen), Expect(stdout="x"))
+    codes = {d.error_code for d in pipeline.check(program(
+        '  let @Int = g([()], 1);\n  IO.print("x")', before=gen)).errors}
+    assert "E206" not in codes, codes
+
+
+def test_an_alias_cycle_is_refused_where_the_checker_refuses_it() -> None:
+    gen = ("type Cy<A> = Cy<A>;\n\n"
+           "private forall<T> fn g(@Cy<T>, @Int -> @Int)\n"
+           "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+           "  let @Cy<T> = @Cy<T>.0;\n  @Int.0\n}\n\n")
+    checked = pipeline.check(program('  IO.print("x")', before=gen))
+    assert not checked.ok
+    assert "E206" not in {d.error_code for d in checked.errors}
+
+
+def test_repro_code_that_already_stops_control_gains_no_unreachable() -> None:
+    """The producer rule appends `unreachable` only where the code of a
+    `Never` expression does not already end in an instruction after which
+    control stops: after a `throw` (a `let` of one) and after `IO.exit`'s
+    own `unreachable`, nothing is added."""
+    for value in ('throw("x")', "IO.exit(3)"):
+        source = (NEVER_PROLOGUE
+                  + "public fn main(@Unit -> @Unit)\n  requires(true)\n"
+                  "  ensures(true)\n  effects(<IO, Exn<String>>)\n{\n"
+                  f"  let @Int = {value};\n  ()\n}}\n")
+        compiled = pipeline.compile(source)
+        assert compiled.ok, ([d.error_code for d in compiled.diagnostics],
+                             source)
+        words = [line.split()[0] for line in compiled.result.wat.splitlines()
+                 if line.strip()]
+        stops = [i for i, w in enumerate(words)
+                 if w in ("throw", "unreachable")]
+        assert stops, compiled.result.wat
+        doubled = [i for i in stops if words[i + 1] == "unreachable"]
+        assert not doubled, (value, compiled.result.wat)
+
+
+def test_repro_a_never_right_of_a_unit_equality() -> None:
+    """`() == throw(..)`: the right reads as the left, a `Unit`, so the
+    comparison is the zero-size rule's constant, never reached."""
+    _runs("  IO.print(handle[Exn<String>] {\n"
+          '    throw(@String) -> "caught"\n'
+          "  } in {\n"
+          '    if () == throw("x") then { "T" } else { "F" }\n'
+          "  })", "caught")
+
+
+def test_repro_a_never_part_of_an_interpolation() -> None:
+    """A `Never` part dropped its function (E615): it is concatenated as a
+    `String` part, never reached."""
+    _assert_never_cell(_never_program("throw", "interpolation"),
+                       Expect(stdout="caught"))

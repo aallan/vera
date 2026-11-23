@@ -746,9 +746,10 @@ class DataMixin:
         scr_wasm_type = self._expr_width(expr.scrutinee)
         nothing = self._holds_nothing(expr.scrutinee)
         if nothing == "never":
-            # #1870: a scrutinee that does not complete (a `throw`): no arm
-            # is reached, and `unreachable` says so to the validator.
-            return self._after_never(scr_instrs)
+            # #1870: a scrutinee that does not complete (a `throw`) has no
+            # value to store and reaches no arm.  Its code already ends
+            # where control stops (`WasmContext._end_never`).
+            return scr_instrs
         if nothing == "unit":
             # #1870: a scrutinee with no WebAssembly value (`Unit`, a
             # `Future` of one, a refinement of one) is evaluated for its
