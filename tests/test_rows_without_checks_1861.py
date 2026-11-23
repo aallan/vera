@@ -1349,26 +1349,22 @@ public fn main(@Float64 -> @Int)
     assert _AT_THE_CALL in str(ran.trap)
 
 
-OPEN_CELLS = [("narrower", route) for route in ROUTES]
+NARROWER_CELLS = [("narrower", route) for route in ROUTES]
 
 
-@pytest.mark.parametrize(("relation", "route"), OPEN_CELLS,
-                         ids=["-".join(c) for c in OPEN_CELLS])
-@pytest.mark.xfail(strict=True, reason=(
-    "#1885's open line: a closure narrower than the function type it flows "
-    "into (a `fn(Pos -> Int)` at a `fn(Int -> Int)`, by every route, and at "
-    "a generic instance chosen from the argument) is accepted with no row at "
-    "the flow, and its entry check, recorded `verified`, traps on a value "
-    "the function type admits"))
+@pytest.mark.parametrize(("relation", "route"), NARROWER_CELLS,
+                         ids=["-".join(c) for c in NARROWER_CELLS])
 def test_a_closure_narrower_than_its_type_is_refused(
         relation: str, route: str) -> None:
-    source = variance_program(route, relation, "refuted")
-    verified = pipeline.verify(source, reconcile=True)
-    if not verified.ok:
-        return
-    # Accepted: then the run must not refuse a value the type admits.
-    ran = pipeline.run(source, fn="t", args=[1, 5.0])
-    assert ran.trap is None, str(ran.trap)
+    """#1885's narrower line: a closure narrower than the function type it
+    flows into (a `fn(Pos -> Int)` at a `fn(Int -> Int)`, by every route,
+    and at a generic instance chosen from the argument) was accepted with
+    no row at the flow, and its entry check, recorded `verified`, trapped
+    on a value the function type admits.  It is refused at check (E190,
+    spec §2.8), the one error."""
+    checked = pipeline.check(variance_program(route, relation, "refuted"))
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        d.description for d in checked.errors]
 
 
 # =====================================================================
