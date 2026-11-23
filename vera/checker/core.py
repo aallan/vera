@@ -39,6 +39,7 @@ from vera.errors import (
     source_lines,
 )
 from vera.lowering import ability_lowerable
+from vera.fold import walk
 from vera.naming import AliasEnv
 from vera.registration import NamespaceAliases, where_helper_parents
 from vera.environment import (
@@ -67,7 +68,9 @@ from vera.types import (
     base_type,
     PrimitiveType,
     canonical_type_name,
+    contains_typevar,
     erases_to_unit,
+    fits_narrowing_aside,
     holds_function,
     is_subtype,
     unfit_function_value,
@@ -939,6 +942,7 @@ class TypeChecker(
         call: tuple[FunctionInfo, int, Sequence[Type | None]] | None = None,
         *,
         value_node: bool = True,
+        own_error: bool = True,
     ) -> bool:
         """E190 at *node*, a function value of type *value_ty* that fits
         *position_ty* only by a narrowing (`unfit_function_value`): a
@@ -951,7 +955,12 @@ class TypeChecker(
         that argument.  *value_node* is False where a rewrite of *node*
         would not fix the flow pasted where it stands: a destructured value
         holding the function, and a join's arm, whose rewrite moves the
-        join's type with it.
+        join's type with it.  Where the pair does not fit even with every
+        narrowing set aside (`fits_narrowing_aside`), nothing is reported
+        and False is returned, so the caller reports the flow's own
+        mismatch; *own_error* False is for a caller that reports none (a
+        `match` binder, a join's arm), where E190 stands whatever the rest
+        of the pair is.
 
         The fix prints code only in the shapes the read-back generators
         paste: the pair at the value's root, met where *node* is that value
@@ -961,6 +970,13 @@ class TypeChecker(
         container, would not check pasted."""
         found = unfit_function_value(value_ty, position_ty)
         if found is None:
+            return False
+        # A type variable the rest of the pair holds (a built-in's lost
+        # one, #1688) is judged by the fit that reached here, not by the
+        # erased relation, which takes it for no type but itself.
+        if (own_error and not contains_typevar(value_ty)
+                and not contains_typevar(position_ty)
+                and not fits_narrowing_aside(value_ty, position_ty)):
             return False
         i = found.index
         if i is None:
@@ -1025,7 +1041,7 @@ class TypeChecker(
         else:
             told = (f"its parameter {i} is declared `{vp}`, and that type "
                     f"hands it any `{pp}`, not only a `{vp}`.")
-            example = ""
+            example = renumbers = ""
             if code:
                 # The header the rewrite prints, and its parameters as
                 # written: the closure's own header with parameter i at the
@@ -1034,13 +1050,24 @@ class TypeChecker(
                 # narrowing reads parameter i by that header's slots.
                 written: list[ast.TypeExpr | Type] = list(
                     found.position.params)
-                if isinstance(node, ast.AnonFn) and header is not None:
+                in_place = (node if isinstance(node, ast.AnonFn)
+                            and header is not None else None)
+                if in_place is not None:
                     written = [found.position.params[i] if j == i else te
-                               for j, te in enumerate(node.params)]
+                               for j, te in enumerate(in_place.params)]
                 else:
                     header = self._written_header(found.position)
                 slots = self._rewrite_slots(written)
-                if slots is not None and header is not None:
+                if (slots is not None and in_place is not None
+                        and self._body_reads_slot(in_place, slots[i])):
+                    # The closure's own body, kept for `...`, reads the
+                    # namespace the parameter joins: its references would
+                    # count the new parameter and read another value.
+                    renumbers = (
+                        f"  The new parameter is read as `@{slots[i]}`, so "
+                        f"it renumbers every `@{slots[i]}` reference the "
+                        f"body holds, captured ones included.")
+                elif slots is not None and header is not None:
                     narrow = (f"let @{vp} = "
                               f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
                     example = f": `{header} {{ {narrow} ... }}`"
@@ -1054,8 +1081,8 @@ class TypeChecker(
             else:
                 fix = (f"Declare the closure's parameter {i} as `@{pp}`, the "
                        f"type the position hands it, and narrow inside, "
-                       f"where there is a value to check{example}.{wrap}  "
-                       f"Or {other}.")
+                       f"where there is a value to check{example}."
+                       f"{renumbers}{wrap}  Or {other}.")
         self._error(
             node,
             (f"A function value of type {self._shown(found.value)}"
@@ -1084,6 +1111,14 @@ class TypeChecker(
             error_code="E190",
         )
         return True
+
+    def _body_reads_slot(self, closure: ast.AnonFn, slot: str) -> bool:
+        """Whether *closure*'s body, nested closures included, holds a slot
+        reference read by the name *slot* (`naming.slot_ref_key`)."""
+        env = self._naming_env()
+        return any(isinstance(n, ast.SlotRef)
+                   and naming.slot_ref_key(n, env) == slot
+                   for n in walk(closure.body))
 
     def _eta_wrapper(self, node: ast.Expr | ast.Pattern,
                      fn: FunctionType) -> str | None:

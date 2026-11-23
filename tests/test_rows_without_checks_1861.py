@@ -1324,7 +1324,12 @@ def variance_program(route: str, relation: str, arg: str) -> str:
                   f"  match @Holder.0 {{ H(@F) -> apply_fn(@F.0, {a}) }}\n"),
         "join_arm": (f"  let @F = if @Bool.0 then {{ {closure} }} "
                      f"else {{ {other} }};\n  apply_fn(@F.0, {a})\n"),
-        "generic": f"  let @F = {closure};\n  app(@F.0, {a})\n",
+        # The narrower closure is passed to `app` directly, beside a value
+        # of declared type, so `app`'s instance (`Int`, from the value) is
+        # the pair judged; bound by a `let` first, the `let` would judge it.
+        "generic": (f"  app({closure}, float_to_int(@Float64.0))\n"
+                    if relation == "narrower"
+                    else f"  let @F = {closure};\n  app(@F.0, {a})\n"),
     }[route]
     helper = {
         "param": ("private fn run_f(@F, @Float64 -> @Int)\n" + PLAIN
@@ -1419,9 +1424,20 @@ def test_a_closure_narrower_than_its_type_is_refused(
     no row at the flow, and its entry check, recorded `verified`, trapped
     on a value the function type admits.  It is refused at check (E190,
     spec §2.8), the one error."""
-    checked = pipeline.check(variance_program(route, relation, "refuted"))
+    source = variance_program(route, relation, "refuted")
+    checked = pipeline.check(source)
     assert [d.error_code for d in checked.errors] == ["E190"], [
         d.description for d in checked.errors]
+    if route != "generic":
+        return
+    # At the generic, the one E190 is placed at the closure argument:
+    # `app` judges the pair, at the instance the value argument fixes.
+    closure = "fn(@Pos -> @Int) effects(pure) { 7 }"
+    line = next(n for n, text in enumerate(source.splitlines(), 1)
+                if closure in text)
+    column = source.splitlines()[line - 1].index(closure) + 1
+    location = checked.errors[0].location
+    assert (location.line, location.column) == (line, column), source
 
 
 # =====================================================================

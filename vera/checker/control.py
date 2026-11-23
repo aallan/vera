@@ -459,7 +459,8 @@ class ControlFlowMixin:
             node = expr.expr if isinstance(expr, ast.Block) else expr
             if self._refuse_unfit_function_value(
                     node, ty, shared, "the join with its sibling arms",
-                    "declare every arm at", value_node=False):
+                    "declare every arm at", value_node=False,
+                    own_error=False):
                 break
         return shared
 
@@ -1344,7 +1345,7 @@ class ControlFlowMixin:
         # either direction and skips a function-typed scrutinee.
         if expected is None or not self._refuse_unfit_function_value(
                 pat, expected, resolved, "the binding pattern",
-                "write the binding pattern at"):
+                "write the binding pattern at", own_error=False):
             # #1320: the pattern/scrutinee rule, applied here because the
             # binder's type is resolved exactly once (see `_check_pattern`).
             self._check_pattern_scrutinee(pat, expected, bound=resolved)
