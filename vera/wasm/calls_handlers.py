@@ -117,13 +117,10 @@ class CallsHandlersMixin:
         # was the constant alone, so `show(IO.print("a"))` never printed
         # "a".  Keyed on the checked type's erasure (#1077), so an alias of
         # `Unit` and a `Future` of one take this arm too.
-        nothing = self._holds_nothing(arg)
-        if nothing is not None:
+        if self._holds_nothing(arg) is not None:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None  # pragma: no cover — the [E615] channel
-            if nothing == "never":
-                return self._after_never(arg_instrs)
             offset, length = self.string_pool.intern("unit")
             return arg_instrs + [f"i32.const {offset}", f"i32.const {length}"]
         vera_type = self._type_name_of(arg)
@@ -201,13 +198,10 @@ class CallsHandlersMixin:
         # #1870: an argument with no WebAssembly value is evaluated for its
         # effects, then hashed as its one value (or, a `Never`, not at all:
         # the constant after it is never reached).
-        nothing = self._holds_nothing(arg)
-        if nothing is not None:
+        if self._holds_nothing(arg) is not None:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None  # pragma: no cover — the [E615] channel
-            if nothing == "never":
-                return self._after_never(arg_instrs)
             return arg_instrs + ["i64.const 0"]
         vera_type = self._type_name_of(arg)
         if vera_type is None:
@@ -235,12 +229,9 @@ class CallsHandlersMixin:
         if vera_type == "Float64":
             return arg_instrs + ["i64.reinterpret_f64"]
 
-        # String → FNV-1a hash
-        if vera_type == "String":
-            return self._translate_hash_string(arg_instrs)
-
-        # Composite (#911): fold the constructor tag with each field's own
-        # hash, the field types read off the checked type (see show).
+        # String (FNV-1a over its bytes) and every composite (#911, folding
+        # the constructor tag with each field's own hash, the field types
+        # read off the checked type, see show) take `_hash_value`.
         param_type = vera_type
         composite = self._hash_value(param_type, arg_instrs, arg)
         if composite is not None:

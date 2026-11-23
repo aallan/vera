@@ -180,7 +180,7 @@ class InferenceMixin:
         them, for their effects, and then gives the result the operand's
         one value decides (`unit`), or none at all (`never`)."""
         ty = self._type_of(expr)
-        if ty is None or self._expr_width(expr) is not None:
+        if ty is None:
             return None
         if erases_to_unit(ty):
             return "unit"

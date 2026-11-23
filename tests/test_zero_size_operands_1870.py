@@ -569,3 +569,126 @@ def test_repro_1870_verifier_proves_unit_equality() -> None:
     verified = pipeline.verify(holds)
     assert verified.ok and verified.result.summary.tier3_runtime == 0
     assert "E500" in {d.error_code for d in pipeline.verify(refuted).errors}
+
+
+# --- Unparametrised: one cell per rule, for the sampled gate ----------------
+#
+# The gate on a pull request samples the matrix above, so each rule this
+# change adds has a cell here that runs on every pull request.
+
+def _runs(statements: str, stdout: str, before: str = "") -> None:
+    assert_cell(program(statements, before=before), Expect(stdout=stdout))
+
+
+def test_repro_unit_inequality_is_false() -> None:
+    _runs('  let @Bool = () != ();\n'
+          '  IO.print(if @Bool.0 then { "T" } else { "F" })', "F")
+
+
+def test_repro_both_operands_are_evaluated_in_order() -> None:
+    _runs('  let @Bool = IO.print("a") == IO.print("b");\n'
+          '  IO.print(if @Bool.0 then { "T" } else { "F" })', "abT")
+
+
+def test_repro_hash_of_an_effect_evaluates_it() -> None:
+    _runs('  IO.print(int_to_string(hash(IO.print("a"))))', "a0")
+
+
+def test_repro_a_match_on_an_effect_evaluates_it() -> None:
+    _runs('  IO.print(match IO.print("a") { _ -> "T" })', "aT")
+
+
+def test_repro_a_future_pattern_over_a_zero_size_scrutinee() -> None:
+    _runs('  IO.print(match async(IO.print("a")) { Future(@Unit) -> "T" })',
+          "aT")
+
+
+def test_repro_an_operand_that_does_not_complete() -> None:
+    for expr in ('if 1 == throw("x") then { "T" } else { "F" }',
+                 'match throw("x") { _ -> "T" }'):
+        _runs("  IO.print(handle[Exn<String>] {\n"
+              '    throw(@String) -> "caught"\n'
+              f"  }} in {{\n    {expr}\n  }})", "caught")
+
+
+def test_repro_show_and_hash_read_their_argument_s_slots() -> None:
+    """The argument is translated in the function's own environment: a
+    `Unit` call reading a parameter, and a `String` read from a slot."""
+    source = (PROLOGUE
+              + "private fn u(@Int -> @Unit)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n  ()\n}\n\n"
+              "public fn s(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+              "  effects(pure)\n{\n"
+              "  string_length(show(u(@Int.0))) + hash(u(@Int.0))\n}\n")
+    assert pipeline.run(source, fn="s", args=[1]).execution.value == 4
+    _runs('  let @String = "ab";\n  IO.print(show(@String.0))', "ab")
+
+
+def test_repro_hash_of_a_float_and_a_string() -> None:
+    """`Float64` hashes to its bit pattern, a `String` to FNV-1a over its
+    bytes (spec §9.8.1)."""
+    _runs("  IO.print(int_to_string(hash(1.5)))", "4609434218613702656")
+    _runs('  IO.print(int_to_string(hash("ab")))', "620445648566982762")
+
+
+def test_repro_array_fold_at_a_unit_accumulator_is_refused() -> None:
+    source = program(
+        "  array_fold([1], (), fn(@Unit, @Int -> @Unit) effects(pure) "
+        "{ () });\n  IO.print(\"x\")")
+    assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+def test_repro_a_zero_size_result_reference_is_refused() -> None:
+    callee = ("private fn g(@Int -> @Unit)\n  requires(true)\n"
+              "  ensures(@Unit.result == ())\n  effects(pure)\n{\n  ()\n}\n\n")
+    source = program('  IO.print("x")', before=callee)
+    assert "E182" in {d.error_code for d in pipeline.check(source).errors}
+
+
+def test_repro_a_contract_over_two_calls_returning_a_refined_unit() -> None:
+    """Two stand-in terms of a call's result were chosen unequal (E501)."""
+    callee = ("private fn c(@Int -> @Int)\n  requires(mk_u(1) == mk_u(2))\n"
+              "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n")
+    _runs("  IO.print(int_to_string(c(1)))", "1", before=callee)
+
+
+def test_repro_an_ordering_of_zero_size_values_is_an_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The checker refuses `<` over `Unit` (E143); with every integer
+    literal made to read as zero-size, `1 < 2` reaches the guard behind
+    it, which names the comparison."""
+    from vera import ast
+    from vera.wasm.inference import InferenceMixin
+
+    monkeypatch.setattr(
+        InferenceMixin, "_holds_nothing",
+        lambda self, expr: "unit" if isinstance(expr, ast.IntLit) else None)
+    source = program("  let @Bool = 1 < 2;\n"
+                     '  IO.print(if @Bool.0 then { "T" } else { "F" })')
+    compiled = pipeline.compile(source)
+    internal = [d for d in compiled.diagnostics if d.error_code == "E699"]
+    assert internal, [d.error_code for d in compiled.diagnostics]
+    assert ("an ordering of two values of a type with no WebAssembly value"
+            in internal[0].description), internal[0].description
+    line = source.splitlines().index("  let @Bool = 1 < 2;") + 1
+    assert internal[0].location.line == line, internal[0].location
+
+
+def test_repro_the_verifier_reads_both_operands_types() -> None:
+    """Two values are equal by their type only when both operands' checked
+    types erase: with no types recorded, or one side a value, the rule
+    gives no verdict."""
+    from vera import ast
+    from vera.smt import SmtContext
+    from vera.types import INT, UNIT
+
+    left, right = ast.UnitLit(), ast.IntLit(value=1)
+    expr = ast.BinaryExpr(left=left, op=ast.BinOp.EQ, right=right)
+    ctx = SmtContext()
+    assert not ctx._compares_two_zero_size_values(expr)
+    types = {id(left): UNIT, id(right): INT}
+    ctx._recorded_type_hook = lambda node: types.get(id(node))
+    assert not ctx._compares_two_zero_size_values(expr)
+    types[id(right)] = UNIT
+    assert ctx._compares_two_zero_size_values(expr)

@@ -211,8 +211,9 @@ def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]
     spans.extend(m.span() for m in _CREDENTIAL_RE.finditer(text))
     if cut:
         for spelling in spellings:
-            for n in range(min(len(spelling) - 1, len(text)), 0, -1):
-                if text.endswith(spelling[:n]):
+            proper = spelling[:-1]
+            for n in range(len(proper), 0, -1):
+                if text.endswith(proper[:n]):
                     spans.append((len(text) - n, len(text)))
                     break
         tail = _CREDENTIAL_TAIL_RE.search(text)

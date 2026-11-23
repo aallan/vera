@@ -417,9 +417,66 @@ def test_repro_1854_a_key_across_the_cap_leaves_nothing() -> None:
 def test_repro_1854_a_key_with_a_line_end_never_reaches_the_err(
     local_endpoints: None,
 ) -> None:
-    for provider in ("anthropic", "openai"):
+    for provider, model, var in (
+            ("anthropic", "claude-opus-5", "VERA_ANTHROPIC_API_KEY"),
+            ("openai", "gpt-5.6-sol", "VERA_OPENAI_API_KEY")):
         message = _message(provider, KEY + "\r\n")
+        assert message.startswith(
+            f"Inference provider '{provider}' ({model}): {var} holds a "
+            f"character an HTTP header cannot carry"), message
         assert_no_part_of(KEY, message)
+
+
+# --- Unparametrised: each rule's exact output, for the sampled gate --------
+
+_BACKSLASH_KEY = KEY[:15] + "\\" + KEY[15:30]
+_ESCAPED = repr(_BACKSLASH_KEY)[1:-1]
+
+
+def test_repro_the_key_whole_is_replaced_once() -> None:
+    assert inference._redact(f"x {KEY} y", KEY) == "x [redacted] y"
+    assert inference._redact(f"x {_ESCAPED} y", _BACKSLASH_KEY) == (
+        "x [redacted] y")
+    assert inference._redact(f"x {_BACKSLASH_KEY} y", _BACKSLASH_KEY) == (
+        "x [redacted] y")
+
+
+def test_repro_a_credential_shaped_token_is_replaced() -> None:
+    assert inference._redact("x sk-ABCDEFGH y", "") == "x [redacted] y"
+
+
+def test_repro_no_key_redacts_nothing_but_tokens() -> None:
+    assert inference._redact("plain text sk", "") == "plain text sk"
+    assert inference._redact_cut("plain text", "") == "plain text"
+
+
+def test_repro_every_proper_prefix_of_the_key_at_the_cut() -> None:
+    """The longest (all but one character) and the shortest (one) prefix,
+    in each spelling."""
+    assert inference._redact_cut(" " + KEY[:-1], KEY) == " [redacted]"
+    assert inference._redact_cut(" " + KEY[:1], KEY) == " [redacted]"
+    assert inference._redact_cut(" " + KEY[:2], KEY) == " [redacted]"
+    assert inference._redact_cut(" " + _ESCAPED[:-1], _BACKSLASH_KEY) == (
+        " [redacted]")
+    assert inference._redact_cut(" " + _ESCAPED[:17], _BACKSLASH_KEY) == (
+        " [redacted]")
+
+
+def test_repro_a_token_s_start_at_the_cut() -> None:
+    assert inference._redact_cut(" ask-12", "") == " a[redacted]"
+    assert inference._redact("x sk-12", "") == "x sk-12"
+
+
+@pytest.mark.usefixtures("local_endpoints")
+def test_repro_the_refusal_s_bounds() -> None:
+    """A space and `~` (0x20 and 0x7E) are carried by a header and sent;
+    DEL (0x7F) is a control character and refused."""
+    for key in (KEY + " x", KEY + "~"):
+        with patch("urllib.request.urlopen",
+                   MagicMock(side_effect=urllib.error.URLError("sent"))):
+            with pytest.raises(urllib.error.URLError):
+                inference._call_inference_provider("anthropic", "hi", "", key)
+    assert "cannot carry" in _message("anthropic", KEY + "\x7f")
 
 
 def test_a_cut_text_with_no_secret_at_its_end_keeps_its_end() -> None:

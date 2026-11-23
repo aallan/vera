@@ -474,7 +474,7 @@ class ExpressionsMixin:
             # type is (§2.2.2), so it is refused as one is (E182): there is
             # no value to read, and the read lowered to a local that does
             # not exist (E699).
-            if key == ret_key and erases_to_unit(ret):
+            if erases_to_unit(ret):
                 self._error(
                     ref,
                     f"Cannot read @{key}.result: type "

@@ -208,7 +208,8 @@ class OperatorsMixin:
                 # the comparison is never reached, and `unreachable` says
                 # so to the validator, whatever the other operand pushed.
                 return self._after_never(left + right)
-            if lnothing == "unit" and rnothing == "unit":
+            if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E142, E243), and beside a `Never` one took the branch above
+                    and rnothing == "unit"):
                 if op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
                     raise CodegenInvariantError(
                         "an ordering of two values of a type with no "

@@ -708,8 +708,8 @@ INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
     ),
     InternalTrap(
         "wasm/inference.py:_after_never", "compiler_bug", 1,
-        "after an operand of type `Never` (a comparison's, `show`'s, "
-        "`hash`'s, a `match`'s scrutinee), which does not complete (#1870)",
+        "after an operand of type `Never` (a comparison's, a `match`'s "
+        "scrutinee), which does not complete (#1870)",
     ),
     InternalTrap(
         "wasm/calls_handlers.py:_translate_handle_exn", "compiler_bug", 1,
