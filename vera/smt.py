@@ -28,6 +28,8 @@ from vera.regularity import RegularityIndex, adt_names_in
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES, domain_contract
 from vera.slots import substitute_parameters
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera import literals
+from vera.literals import NO_LITERAL
 from vera.types import (
     AdtType,
     PrimitiveType,
@@ -161,6 +163,50 @@ class SlotEnv:
 # SMT result
 # =====================================================================
 
+@dataclass(frozen=True)
+class Counterexample:
+    """A refutation's model, read at the function's inputs (#1871).
+
+    Two representations, kept apart: :attr:`values` is the data, the model's
+    value of each input, which a decision reads
+    (`ContractVerifier._discharging_clause`); :attr:`shown` and
+    :attr:`result` are the display, each value written as the program would
+    write it (`vera.literals`), which only a diagnostic prints.  A change to
+    how a value is written moves no verdict.
+
+    The inputs are the function's parameters, named by the slot references
+    the source binds them to (#1767) and listed by name, or a refinement
+    predicate's binder; a constant the context declared for
+    itself (a call's stand-in, an array literal, a shadow) is none of them
+    and appears in neither.  A zero-size input (`@Unit`) is not listed; one
+    with no literal form is listed with :data:`vera.literals.NO_LITERAL`.
+    """
+
+    values: Mapping[str, z3.ExprRef]
+    shown: tuple[tuple[str, str], ...]
+    result: str | None = None
+
+    def value(self, name: str) -> z3.ExprRef | None:
+        """The model's value of the input *name*."""
+        return self.values.get(name)
+
+    def lines(self, result_name: str | None = None) -> list[str]:
+        """Each listed input as ``name = literal`` (or the no-literal note),
+        then ``result_name = literal`` when a name is given."""
+        listed = list(self.shown)
+        if result_name is not None and self.result is not None:
+            listed.append((result_name, self.result))
+        return [f"{name}: {text}" if text == NO_LITERAL else f"{name} = {text}"
+                for name, text in listed]
+
+    def as_dict(self) -> dict[str, str]:
+        """The display, keyed by name (an obligation's record)."""
+        out = dict(self.shown)
+        if self.result is not None:
+            out["@result"] = self.result
+        return out
+
+
 @dataclass
 class SmtResult:
     """Outcome of a Z3 validity check."""
@@ -173,7 +219,7 @@ class SmtResult:
     #: ``ContractVerifier._undecided_reason``); a fifth added here is a
     #: decision they have to make, not one to inherit.
     status: str  # "verified" | "violated" | "unknown" | "opaque" | "disclosed"
-    counterexample: dict[str, str] | None = None  # slot_name → value
+    counterexample: Counterexample | None = None
 
 
 @dataclass
@@ -183,7 +229,7 @@ class CallViolation:
     callee_name: str
     call_node: ast.FnCall | ast.ModuleCall
     precondition: ast.Requires
-    counterexample: dict[str, str] | None = None
+    counterexample: Counterexample | None = None
     #: A precondition in the caller's entry terms that the solver confirmed
     #: discharges this one, asked where the violation was found, under its
     #: premises (#1858; :attr:`SmtContext._violation_clause_hook`).
@@ -648,6 +694,11 @@ class SmtContext:
         # Retained so reset() can re-apply it on warm-session reuse.
         self._timeout_ms = timeout_ms
         self._vars: dict[str, z3.ExprRef] = {}
+        #: #1871: the inputs a counterexample lists: each name, its constant
+        #: and its Vera type
+        #: (:meth:`declare_input`).  Not ``_vars``, which also holds every
+        #: constant the context declares for itself.
+        self._inputs: list[tuple[str, z3.ExprRef, Type]] = []
         self._result_var: z3.ExprRef | None = None
         # Uninterpreted functions for length (constrained >= 0)
         # Keyed by domain sort — supports both Int and ADT domains
@@ -1192,6 +1243,13 @@ class SmtContext:
         v = z3.Const(name, array_sort)
         self._vars[name] = v
         return v
+
+    def declare_input(self, name: str, var: z3.ExprRef, ty: Type) -> None:
+        """Record *var*, declared under *name*, as an input of type *ty*: a
+        parameter of the function this context verifies, or the binder of
+        the refinement predicate it checks.  A counterexample lists exactly
+        these (#1871)."""
+        self._inputs.append((name, var, ty))
 
     def set_result_var(self, var: z3.ExprRef | None) -> None:
         """Set the variable used for @T.result references."""
@@ -2859,7 +2917,7 @@ class SmtContext:
     def _violation_clause(
         self, callee_info: Any, precondition: ast.Expr | None,
         call_node: ast.FnCall | ast.ModuleCall, goal: z3.ExprRef,
-        env: SlotEnv | None, counterexample: dict[str, str] | None,
+        env: SlotEnv | None, counterexample: Counterexample | None,
     ) -> str | None:
         """The E501 fix's clause for a refuted call (#1858), asked of
         :attr:`_violation_clause_hook` here, where the solver holds the
@@ -4864,7 +4922,7 @@ class SmtContext:
             # don't witness the violation (e.g. `@Int.0 = 0` for the goal
             # `@Int.0 >= 0`).  Affects E502 / E503 / call-site precondition
             # diagnostics alike.
-            ce: dict[str, str] | None = None
+            ce: Counterexample | None = None
             model: z3.ModelRef | None = None
             if result == z3.sat:
                 model = self.solver.model()
@@ -4991,8 +5049,12 @@ class SmtContext:
 
     def _extract_counterexample(
         self, model: z3.ModelRef
-    ) -> dict[str, str]:
-        """Extract variable values from a Z3 model.
+    ) -> Counterexample:
+        """The refutation *model* read at this context's inputs (#1871).
+
+        The inputs are the ones :meth:`declare_input` recorded, never every
+        constant in ``_vars``: a call's stand-in, an array literal's constant
+        and a shadow are the context's own, and no slot holds them.
 
         ``@result`` is the model's value of the term `@T.result` stands for
         when one is set (#1707): an `ensures` is asked with the body's term
@@ -5000,14 +5062,86 @@ class SmtContext:
         constant is in no query, and its model value, 0 whatever the body
         returned, named no value the body produces at the printed input.
         """
-        ce: dict[str, str] = {}
-        for name, var in self._vars.items():
-            val = model.evaluate(var, model_completion=True)
-            ce[name] = str(val)
-        if "@result" in ce and self._result_var is not None:
-            ce["@result"] = str(
-                model.evaluate(self._result_var, model_completion=True))
-        return ce
+        values: dict[str, z3.ExprRef] = {}
+        shown: list[tuple[str, str]] = []
+        for name, var, ty in self._inputs:
+            value = model.evaluate(var, model_completion=True)
+            values[name] = value
+            if erases_to_unit(ty):
+                continue
+            shown.append((name, self._input_text(model, value, ty)))
+        result: str | None = None
+        declared = self._vars.get("@result")
+        if declared is not None:
+            term = self._result_var if self._result_var is not None else declared
+            value = model.evaluate(term, model_completion=True)
+            result = (literals.z3_text(value, self._array_reader(model))
+                      or NO_LITERAL)
+        return Counterexample(
+            values=values, shown=tuple(sorted(shown)), result=result)
+
+    def _input_text(
+        self, model: z3.ModelRef, value: z3.ExprRef, ty: Type,
+    ) -> str:
+        """*value*, an input of type *ty*, as its literal, or the no-literal
+        note: a type whose values the solver models by a sort of their own
+        (a primitive, a data type, an `Array`) is written from the model;
+        any other (a `Map`, a `Set`, a function, a type variable) was
+        declared as a placeholder integer or an opaque carrier, and the
+        model's value of that says nothing about the input's.
+
+        A data type or an `Array` whose sort the context could not build
+        (`Option<Array<Int>>`, `Array<Array<Int>>`) was declared as a
+        placeholder integer too, so the sort decides, not the type's name:
+        only a data type's sort and an `Array` sort this context minted are
+        read."""
+        base = base_type(ty)
+        sort = value.sort()
+        if isinstance(base, PrimitiveType) and base.name in (
+                "Int", "Nat", "Byte", "Bool", "String", "Float64"):
+            text = literals.z3_text(value)
+        elif isinstance(base, AdtType) and (
+                isinstance(sort, z3.DatatypeSortRef)
+                or str(sort) in self._array_element_sorts):
+            text = literals.z3_text(value, self._array_reader(model))
+        else:
+            text = None
+        return text if text is not None else NO_LITERAL
+
+    def _array_reader(self, model: z3.ModelRef) -> literals.ArrayReader:
+        """How :func:`vera.literals.z3_text` reads an `Array` value in
+        *model*: its length and first elements, through the observer
+        functions this context minted for its sort.  A function the context
+        never minted constrains nothing, so the model is free there: a
+        length no query read is 0, an element no query read is the element
+        sort's default.  Where the elements were read but the length never
+        was, no length is fixed, and the value is not written."""
+
+        def read(value: z3.ExprRef) -> tuple[int, list[z3.ExprRef]] | None:
+            sort = value.sort()
+            element_sort = self._array_element_sorts.get(str(sort))
+            if element_sort is None:
+                return None
+            length_fn = self._length_fns.get(str(sort))
+            index_fn = self._index_fns.get(f"index_{sort}")
+            if length_fn is None:
+                if index_fn is not None:
+                    return None
+                return (0, [])
+            length = model.evaluate(length_fn(value), model_completion=True)
+            if not z3.is_int_value(length):
+                return None
+            count = length.as_long()
+            if index_fn is None:
+                index_fn = z3.Function(
+                    f"index_{sort}",  # pragma: no mutate — equivalent as any other name: minted where no query read an element, so the model is free on it and reads each element as the sort's default, whatever the function is called
+                    sort, z3.IntSort(), element_sort)
+            shown = [model.evaluate(index_fn(value, z3.IntVal(i)),
+                                    model_completion=True)
+                     for i in range(min(count, literals.ARRAY_CAP))]
+            return (count, shown)
+
+        return read
 
     def reset(self) -> None:
         """Reset per-function state for warm-session reuse (#222 Phase A).
@@ -5049,9 +5183,11 @@ class SmtContext:
         """
         self.solver.reset()
         # solver.reset() drops assertions but keeps parameters; re-apply
-        # the timeout anyway so reuse never depends on that detail.
+        # the timeout anyway so reuse never depends on that detail
+        # (test_repro_a_reset_context_reapplies_its_timeout_and_forgets_the_result).
         self.solver.set("timeout", self._timeout_ms)
         self._vars.clear()
+        self._inputs.clear()
         self._result_var = None
         self._call_violations.clear()
         self._call_demotions.clear()
@@ -5102,25 +5238,17 @@ _SmtArm = Callable[[SmtContext, Any, SlotEnv], "z3.ExprRef | None"]
 def _translate_string_lit(
     ctx: SmtContext, expr: ast.StringLit, env: SlotEnv,
 ) -> z3.ExprRef | None:
-    # #802: Z3's string sort cannot faithfully model two kinds of code
-    # point, so a literal containing either defers to Tier 3 (return
-    # None) rather than be reasoned over as a corrupted term.  For both,
-    # the Python binding silently stores the code point's *escape text*
-    # instead of the character (e.g. z3.StringVal("\U00030000") holds
-    # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
-    # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
-    # never sees, proving false contracts.  The two cases:
-    #   - above the alphabet (> U+2FFFF); and
-    #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
-    #     UTF-8 encoding at all (see string_length in `_translate_call`).
-    # We must return None *before* z3.StringVal sees either.  (string_length
-    # models a literal via its UTF-8 byte count, not z3.StringVal, so it
-    # is unaffected by the alphabet limit — but it too must guard the
-    # surrogate case, there, where the byte encoding genuinely fails.)
-    if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
-           for ch in expr.value):
-        return None
-    return z3.StringVal(expr.value)
+    # The literal's term, every character read as itself, built by the one
+    # builder of a solver string (`vera.literals.string_term`, #1871): a
+    # backslash in the program's text is no escape to the solver, so
+    # `"\\u{41}"` is six characters, not "A".  #802: a literal holding
+    # a code point the sort cannot hold (above U+2FFFF, or a lone
+    # surrogate, which also has no UTF-8 encoding; see string_length in
+    # `_translate_call`) has no term, and defers to Tier 3 (None) rather
+    # than be reasoned over as the escape text the binding would store.
+    # (string_length models a literal by its UTF-8 byte count, so the
+    # alphabet limit does not reach it, but it guards the surrogate.)
+    return literals.string_term(expr.value)
 
 
 def _translate_effect_op(
