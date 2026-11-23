@@ -32,7 +32,7 @@ Every expression in a Vera program has a statically determined type. There is no
 `Int` and `Nat` interoperate in both directions, but the two directions sit at different layers of the type system:
 
 - **`Nat <: Int` is a formal subtyping rule** at the *type* level. It follows from refinement subtyping (§2.6.2, §2.8 rule 3): `Nat` is `{ @Int | @Int.0 >= 0 }`, and a refined type is always a subtype of its base.  Use a `@Nat` anywhere `@Int` is expected, with no `nat_to_int` call and no source-level conversion.  The widening is a no-op at the *value* level as well: a `@Nat` is an `@Int` whose value is non-negative, in the same representation, so it is read as an `@Int` unchanged and nothing is checked where it is.
-- **`Int -> Nat` is not a formal subtyping rule** (it is explicitly excluded by §2.8 rule 5: "no other subtyping").  Instead, the type checker permits the flow as a **verifier-mediated relaxation**: the narrowing requires `@Int.0 >= 0`, and the type checker emits a verification obligation that the contract verifier (Tier 1) discharges via Z3 from the surrounding context (`requires`, `if` conditions, prior `assert`s).  If the obligation cannot be discharged statically, it falls to a runtime check (Tier 3).  The implementation note in §2.8 documents this relaxation alongside the formal rules.
+- **`Int -> Nat` is not a formal subtyping rule** (it is explicitly excluded by §2.8 rule 5: "no other subtyping").  Instead, the type checker permits the flow as a **verifier-mediated relaxation**: the narrowing requires `@Int.0 >= 0`, and the type checker emits a verification obligation that the contract verifier (Tier 1) discharges via Z3 from the surrounding context (`requires`, `if` conditions, prior `assert`s).  If the obligation cannot be discharged statically, it falls to a runtime check (Tier 3).  The relaxation applies where a value can be checked: a scalar, a construction's component, a data value's.  It never applies inside a function type, whose parameter and result hold no value, so `fn(@Nat -> @Int)` does not fit `fn(Int -> Int)` nor `fn(@Int -> @Int)` fit `fn(Int -> Nat)` (**E190**).  The implementation note in §2.8 documents this relaxation alongside the formal rules.
 
 The distinction matters because of §0.2.2 ("no implicit behaviour"): `Nat <: Int` is a true formal subtyping rule consistent with the principle (it's a logical consequence of refinement subtyping, not an implicit conversion); `Int -> Nat` is a verifier-mediated convenience that's syntactically silent but semantically verified: the verifier is the explicit check, not the syntax.
 
@@ -380,6 +380,33 @@ Vera has minimal subtyping, and the complete subtyping relation is:
 5. **No other subtyping**, beyond the variance of compound types: a data type, built-in (`Array`, `Map`, `Set`, `Tuple`, `Option`, `Result`) or declared with `data`, is covariant in each of its type arguments (`C<S> <: C<T>` if `S <: T`, so `Array<PosInt> <: Array<Int>`), and a function type is contravariant in its parameters and covariant in its result and its effect row (`fn(A1 -> B1) effects(E1) <: fn(A2 -> B2) effects(E2)` if `A2 <: A1`, `B1 <: B2` and `E1 <: E2`, Chapter 7, Section 7.8). There is no structural subtyping between different types and no implicit numeric conversion.
 
 > **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone; the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative. Rule 5 carries the relaxation into a data type's type argument: an `Array<Int>` where an `Array<Nat>` is expected is a narrowing of its elements, obligated, and checked at run time where the verifier cannot discharge it.
+
+The narrowing the checker permits for a value, an `Int` where a `Nat` or a refinement of `Int` is expected, obligated and checked where the value is, does not reach inside a function type. An argument is the caller's to check, at the call, and a result is the function's own guarantee, checked on its return; a function type's parameter and result hold no value. So inside a function type the parameters compare contravariantly and the result covariantly, with no narrowing of a value. Rule 2's implication is the verifier's to decide, of a value at a flow, and a function type's positions hold none: inside a function type two refinements of one base fit only where they state the same predicate, a comparison the checker makes of the predicates' structure, with no solver call. `Nat` is the refinement `{ @Int | @Int.0 >= 0 }` (§2.2.1), so a refinement written exactly so is `Nat` there too, in both directions; any other spelling of the predicate (`0 <= @Int.0`, `@Int.0 > -1`) is another refinement. Neither `fn(@Pos -> @Int)` nor `fn(@Nat -> @Int)` fits `fn(Int -> Int)`, `fn(@Pos -> @Int)` does not fit `fn(Big -> Int)` either, though `Big` implies `Pos`, and `fn(@Int -> @Int)` fits neither `fn(Int -> Nat)` nor `fn(Int -> Pos)`, since a closure declared `-> @Int` guarantees neither (**E190**, by a `let`, an argument, a constructor field, a join, a return, an element or a generic instance alike). Declare the closure's result as the position states (`fn(@Int -> @Pos)`), and its own return is proved or checked where the value is. Declare its parameter at the type the position gives it and narrow inside, where there is a value to check:
+
+<!-- vera:run fn="halve_positives" args="9" stdout="4" -->
+```vera
+type Pos = { @Int | @Int.0 > 0 };
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn half_of_positive(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0 / 2
+}
+
+public fn halve_positives(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = fn(@Int -> @Int) effects(pure) {
+    if @Int.0 > 0 then { half_of_positive(@Int.0) } else { 0 }
+  };
+  apply_fn(@IntToInt.0, @Int.0)
+}
+```
 
 ![The complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base and reflexivity; a data type is covariant in its type arguments, and a function type is contravariant in its parameters and covariant in its result and effect row. The checker additionally permits Int where Nat is expected; the verifier enforces the non-negativity proof.](../assets/diagrams/subtyping-lattice.svg)
 

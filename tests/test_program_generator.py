@@ -2394,9 +2394,10 @@ def test_the_held_refinement_class_reads_its_mechanism(member: str) -> None:
     assert all(f.known for f in finds), finds
 
 
+@pytest.mark.usefixtures("injected_false_proof")
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
-    """The function-type coercion on #1695's line: proved, and refuted by its
-    one run.  The
+    """A false proof injected at the check (`tests/injected_false_proof.py`):
+    proved, and refuted by its one run.  The
     neighbour binds the call and compares the binding with itself, true of
     whatever value it holds, and its proof holds."""
     finds = distrust_finds(_FALSE_PROOF)
@@ -2459,8 +2460,9 @@ def test_a_refusal_of_its_own_stays_a_find(tmp_path: Path) -> None:
         ("contract", ("verify", "E501"), "")], finds
 
 
+@pytest.mark.usefixtures("injected_false_proof")
 def test_a_refutation_names_its_function_and_arguments() -> None:
-    """The false proof refuted over a parameter the precondition pins: the
+    """The injected false proof refuted over a parameter the precondition pins: the
     find names the function and the arguments it was refuted on, which the
     record hands `program_generator.expectations`.  The diagnostic alone
     names neither."""
