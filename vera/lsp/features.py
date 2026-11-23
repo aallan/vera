@@ -29,6 +29,7 @@ Feature scope (per the #222 plan):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from lsprotocol import types as lsp
 
@@ -55,7 +56,8 @@ from vera.obligations.session import (
     resolve_document_imports,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
-from vera.resolver import own_module_path
+from vera.parser import normalize_line_ends
+from vera.resolver import ResolvedModule, own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -94,6 +96,9 @@ class Analysis:
     #: `module ma;` as the call to `f` it is.  ``None`` for a document with
     #: no path of its own, or one that did not parse.
     own_path: tuple[str, ...] | None = None
+    #: The modules this analysis resolved, direct and transitive: where a
+    #: diagnostic located in one of them is published (#1788).
+    modules: list[ResolvedModule] = field(default_factory=list)
 
 
 def analyze(
@@ -104,12 +109,20 @@ def analyze(
     Parse/transform failures stop the pipeline and surface as the
     single diagnostic those exceptions carry — matching the CLI, where
     a parse error precludes everything downstream.
+
+    The compiler is handed *text* after the file reader's line-end rule
+    (:func:`vera.parser.normalize_line_ends`), so it numbers the lines
+    the protocol does, a lone ``\\r`` included, and reads the program the
+    CLI reads from the same bytes (#1788).  ``Analysis.text`` stays the
+    client's text: the currency check compares it with the buffer, and the
+    edit methods splice it, keeping the client's own line ends.
     """
     from vera.checker.core import typecheck_with_artifacts
     from vera.parser import parse
     from vera.transform import transform
 
     index = LineIndex(text)
+    source = normalize_line_ends(text)
     # The pipeline is driven with the PATH, never the URI (#1246): the
     # module resolver reads imports from `Path(file).parent`, and a
     # `file://` URI makes that the directory `file:`, so a document with
@@ -117,7 +130,7 @@ def analyze(
     path = uri_to_path(uri)
     analysis = Analysis(uri=uri, text=text, index=index, path=path)
     try:
-        program = transform(parse(text, file=path))
+        program = transform(parse(source, file=path))
     except (ParseError, TransformError) as exc:
         analysis.diagnostics = [exc.diagnostic]
         return analysis
@@ -129,16 +142,17 @@ def analyze(
     # would stop every document that imports anything short of verification
     # and publish a false error on each imported call.
     resolved, resolver_errors = resolve_document_imports(program, path)
+    analysis.modules = list(resolved)
     analysis.own_path = own_module_path(program, None, resolved)
     check_diags, artifacts = typecheck_with_artifacts(
-        program, text, file=path, resolved_modules=resolved,
+        program, source, file=path, resolved_modules=resolved,
     )
     analysis.artifacts = artifacts
     analysis.alias_env = artifacts.alias_env
     analysis.diagnostics = resolver_errors + list(check_diags)
 
     if not any(d.severity == "error" for d in analysis.diagnostics):
-        result = session.verify_source(text, file=path)
+        result = session.verify_source(source, file=path)
         # `verify_source` re-checks, and hands its check diagnostics back as
         # `check_diagnostics` — which were once discarded, so
         # `glib::takes_int("nope")` published a warning, produced no
@@ -156,10 +170,12 @@ def analyze(
 
 
 def _diag_key(d: Diagnostic) -> tuple[object, ...]:
-    """Identity of a diagnostic for de-duplication across two passes."""
+    """Identity of a diagnostic for de-duplication across two passes:
+    the whole location, its file with its line and column, so the same
+    message at one position of two files is two diagnostics (#1788)."""
     return (
         d.error_code, d.severity, d.description,
-        d.location.line, d.location.column,
+        d.location.file, d.location.line, d.location.column,
     )
 
 
@@ -249,31 +265,148 @@ def current_analysis(
     return analysis
 
 
-def _to_lsp(d: Diagnostic, index: LineIndex) -> lsp.Diagnostic:
-    """One Vera diagnostic in LSP shape.
+@dataclass
+class _Placement:
+    """Where one analysis's diagnostics are published: the document, by
+    its line index and the path the pipeline was given, and each module
+    it resolved, by the import that brings it in (#1788)."""
+
+    index: LineIndex
+    path: str
+    #: A module's file (as its diagnostics name it) → the range of the
+    #: document's import that brings it in.
+    imports: dict[str, lsp.Range] = field(default_factory=dict)
+    #: A module's file → its text, as the resolver read it.
+    sources: dict[str, str] = field(default_factory=dict)
+    #: Each import of the document or of a resolved module, by its module
+    #: path, with the range of the document's import it is reached under:
+    #: where a module the resolver could not read (its E024) is placed.
+    unread: list[tuple[tuple[str, ...], lsp.Range]] = field(
+        default_factory=list)
+    #: Whether the client takes ``relatedInformation``.
+    related: bool = False
+
+    def head_for(self, file: str) -> lsp.Range:
+        """The range a diagnostic located in *file*, a module, is
+        published at: the import that brings it in; for a module the
+        resolver did not read, the first import whose module path names
+        the file (``a.b`` names ``…/a/b.vera``); else the document's first
+        token, for a file no import of the document reaches (none is
+        known)."""
+        if file in self.imports:
+            return self.imports[file]
+        parts = Path(file).with_suffix("").parts
+        for mod_path, head in self.unread:
+            if tuple(parts[-len(mod_path):]) == mod_path:
+                return head
+        return location_to_range(SourceLocation(line=1, column=1), self.index)
+
+
+def _placement(analysis: Analysis, related: bool) -> _Placement:
+    """The :class:`_Placement` of *analysis*.
+
+    A module is published at the first import of the document that names
+    it; one the document reaches only through another module, at the
+    first import whose module reaches it.  A diagnostic is named by
+    ``str(file_path)``, the file the checker stamps on a module's
+    diagnostics.
+    """
+    place = _Placement(index=analysis.index, path=analysis.path,
+                       related=related)
+    if analysis.program is None:
+        return place
+    by_path = {m.path: m for m in analysis.modules}
+    heads = [
+        (imp.path, span_to_range(imp.span, analysis.index))
+        for imp in analysis.program.imports if imp.span is not None
+    ]
+    for mod_path, head in heads:
+        mod = by_path.get(mod_path)
+        if mod is not None:
+            place.imports.setdefault(str(mod.file_path), head)
+    for mod_path, head in heads:
+        place.unread.append((mod_path, head))
+        queue, seen = [mod_path], set()
+        while queue:
+            current = queue.pop(0)
+            mod = by_path.get(current)
+            if current in seen or mod is None:
+                continue
+            seen.add(current)
+            place.imports.setdefault(str(mod.file_path), head)
+            for imp in mod.program.imports:
+                place.unread.append((imp.path, head))
+                queue.append(imp.path)
+    place.sources = {str(m.file_path): m.source for m in analysis.modules}
+    return place
+
+
+def _file_uri(path: str) -> str | None:
+    """The ``file:`` URI of the absolute *path*, or ``None`` for a path
+    no URI names without guessing a directory (a relative one)."""
+    try:
+        return Path(path).as_uri()
+    except ValueError:
+        return None
+
+
+def _to_lsp(d: Diagnostic, place: _Placement) -> lsp.Diagnostic:
+    """One Vera diagnostic in LSP shape, on the document it is published on.
 
     The editor surface honours the same diagnostics-as-instructions
     contract as --json: description, then the rationale paragraph, then
     the Fix: paragraph (#728).
+
+    A diagnostic whose file is the document's, or that names no file (a
+    transform error), is placed at its own line and column.  One located
+    in a module the document imports is not this document's line to mark
+    (#1788): it is published on the import that brings the module in,
+    with its description prefixed by the module's location as ``vera
+    check`` prints it, and, for a client that takes it, a
+    ``relatedInformation`` entry at that location in the module.
     """
+    loc = d.location
+    foreign = loc.file is not None and loc.file != place.path
     message = d.description
+    related: list[lsp.DiagnosticRelatedInformation] | None = None
+    if foreign:
+        message = f"In imported module {loc}: {message}"
+        doc_range = place.head_for(loc.file or "")
+        module_text = place.sources.get(loc.file or "")
+        module_uri = _file_uri(loc.file or "")
+        if place.related and module_text is not None and module_uri:
+            related = [lsp.DiagnosticRelatedInformation(
+                location=lsp.Location(
+                    uri=module_uri,
+                    range=location_to_range(loc, LineIndex(module_text)),
+                ),
+                message=d.description,
+            )]
+    else:
+        doc_range = location_to_range(loc, place.index)
     if d.rationale:
         message += f"\n\n{d.rationale}"
     if d.fix:
         message += f"\n\nFix: {d.fix}"
     return lsp.Diagnostic(
-        range=location_to_range(d.location, index),
+        range=doc_range,
         message=message,
         severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
         source="vera",
         code=d.error_code or None,
+        related_information=related,
         data={"tier": d.tier} if d.tier is not None else None,
     )
 
 
-def to_lsp_diagnostics(analysis: Analysis) -> list[lsp.Diagnostic]:
-    """Map Vera diagnostics (+ synthesised tier hints) to LSP shape."""
-    out = [_to_lsp(d, analysis.index) for d in analysis.diagnostics]
+def to_lsp_diagnostics(
+    analysis: Analysis, related_information: bool = False,
+) -> list[lsp.Diagnostic]:
+    """Map Vera diagnostics (+ synthesised tier hints) to LSP shape, in
+    the compiler's order.  *related_information* is the client's
+    ``textDocument.publishDiagnostics.relatedInformation`` capability."""
+    place = _placement(analysis, related_information)
+    out = [_to_lsp(d, place) for d in analysis.diagnostics]
     out.extend(_tier_hints(analysis))
     return out
 
@@ -292,8 +425,8 @@ def analysis_failure(
     diagnostics stay up, or none.
     """
     path = uri_to_path(uri)
-    index = LineIndex(text)
-    recorded = [_to_lsp(d, index) for d in partial_diagnostics(exc)]
+    place = _Placement(index=LineIndex(text), path=path)
+    recorded = [_to_lsp(d, place) for d in partial_diagnostics(exc)]
     return recorded + [_to_lsp(Diagnostic(
         description=(
             f"Internal compiler error while analysing '{path}': "
@@ -315,7 +448,7 @@ def analysis_failure(
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
         severity="error",
         error_code="E699",
-    ), index)]
+    ), place)]
 
 
 def _span_contains(

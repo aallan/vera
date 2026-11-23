@@ -6,13 +6,19 @@ must convert through this module — nobody hand-rolls the arithmetic:
 1. **``ast.Span``** — raw Lark positions: 1-based line, 1-based
    *code-point* column, exclusive 1-based end column
    (``transform._span_from_meta`` copies Lark's meta verbatim).
-2. **``errors.SourceLocation``** — diagnostics: 1-based line but
-   **0-based** code-point column (the historical convention of
-   ``ContractVerifier._error`` / the checker; note the base differs
-   from ``Span``, which is why every converter here takes its source
-   type explicitly rather than guessing).
+2. **``errors.SourceLocation``** — diagnostics: a point, the 1-based
+   line and 1-based code-point column of the node it names (every stage
+   copies a ``Span``'s start or Lark's ``exc.column``; the CLI's caret
+   reads it that way).  Column ``0`` means "no column".  A diagnostic
+   carries no end (#1637).
 3. **LSP ``Position``** — 0-based line, 0-based **UTF-16 code unit**
    column (the protocol's mandatory default encoding).
+
+Lines are counted as the protocol counts them, at ``\\n``, ``\\r\\n`` and
+a lone ``\\r`` (LSP 3.17, "Text Documents"): the server hands the
+compiler a document's text through :func:`vera.parser.normalize_line_ends`
+(the file reader's rule), so the compiler's line *n* is the protocol's
+line *n - 1* (#1788).
 
 The UTF-16 wrinkle: Python string indices count code points, LSP
 columns count UTF-16 code units, so any astral-plane character (emoji,
@@ -31,6 +37,7 @@ from lsprotocol import types as lsp
 
 from vera.ast import Span
 from vera.errors import SourceLocation, source_lines
+from vera.parser import normalize_line_ends
 
 
 def uri_to_path(uri: str) -> str:
@@ -109,15 +116,17 @@ class LineIndex:
     """Code-point ↔ UTF-16 column transcoding for one document text.
 
     Built once per document version (the store caches it; see
-    ``documents.py``) and queried per conversion.  Lines are split with
-    :func:`vera.errors.source_lines`, at ``\\n`` alone, which is where Lark
-    counts a line (#1853); out-of-range lines degrade to identity
+    ``documents.py``) and queried per conversion.  Lines are the
+    protocol's, cut at ``\\n``, ``\\r\\n`` and a lone ``\\r`` (#1788):
+    :func:`vera.errors.source_lines` of the text after the reader's
+    line-end rule, which are also the lines the compiler numbers, since it
+    is handed that text (#1853).  Out-of-range lines degrade to identity
     transcoding rather than raising, because diagnostics can point at
     a virtual line just past EOF (e.g. unexpected-end-of-input).
     """
 
     def __init__(self, text: str) -> None:
-        self._lines = source_lines(text)
+        self._lines = source_lines(normalize_line_ends(text))
 
     def _line_text(self, line0: int) -> str:
         if 0 <= line0 < len(self._lines):
@@ -169,11 +178,12 @@ def span_to_range(span: Span, index: LineIndex) -> lsp.Range:
 def location_to_position(
     loc: SourceLocation, index: LineIndex,
 ) -> lsp.Position:
-    """``SourceLocation`` (1-based line, 0-based cp col) → LSP
-    ``Position``.  Note the column base differs from ``Span``."""
+    """``SourceLocation`` (1-based line, 1-based cp col) → LSP
+    ``Position``; a location with no line or column clamps to 0."""
     return lsp.Position(
         line=max(0, loc.line - 1),
-        character=index.cp_to_utf16(max(0, loc.line - 1), loc.column),
+        character=index.cp_to_utf16(
+            max(0, loc.line - 1), max(0, loc.column - 1)),
     )
 
 
@@ -183,15 +193,17 @@ def location_to_range(
     """Point diagnostic location → a usable squiggle range.
 
     Diagnostics carry a point, not a span (the verifier copies only
-    ``span.line``/``span.column``).  Widen point → end-of-token using
-    a conservative token heuristic: extend across identifier-ish
-    characters (``@`` slot sigils, alphanumerics, ``_``, ``.``); if
-    the position is not on such a token, fall back to a single
-    character so the squiggle is at least visible.
+    ``span.line``/``span.column``), at a 1-based column (#1637): the
+    range starts ON the character the CLI's caret is under.  Widen point
+    → end-of-token using a conservative token heuristic: extend across
+    identifier-ish characters (``@`` slot sigils, alphanumerics, ``_``,
+    ``.``), exclusive; if the position is not on such a token, fall back
+    to a single character so the squiggle is at least visible, and to an
+    empty range at the end of a line.
     """
     line0 = max(0, loc.line - 1)
     text = index._line_text(line0)
-    start_cp = min(loc.column, len(text))
+    start_cp = min(max(0, loc.column - 1), len(text))
     end_cp = start_cp
     while end_cp < len(text) and (
         text[end_cp].isalnum() or text[end_cp] in "@_."

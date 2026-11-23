@@ -81,7 +81,19 @@ included) and publishes:
   a `tier` annotation on verification diagnostics (a Tier 3 fallback
   has `tier: 3` in its data).  The server compiles nothing, so the
   reconciliation `vera verify` runs after verifying (E541, W004, W005,
-  and a code generation refusal) is the command's alone.
+  and a code generation refusal) is the command's alone.  A diagnostic
+  starts on the character `vera check`'s caret is under and covers the
+  name or slot reference there (one character elsewhere).  The buffer is
+  read with the line-end rule the commands read a file with, so `\n`,
+  `\r\n` and a lone `\r` each end a line, as the protocol counts them,
+  and the program is the one `vera check` reads from the same bytes.  A
+  diagnostic located in an imported module is published on the `import`
+  that brings that module in (for a module reached only through another,
+  the import of the module that reaches it), its message starting with
+  the module's location as `vera check` prints it (`In imported module
+  /path/lib.vera, line 8, column 3: …`), and, for a client that
+  advertises `textDocument.publishDiagnostics.relatedInformation`, a
+  related location at that line and column of the module.
 - **Per-function verification-tier hints**: a Hint-severity
   diagnostic per function summarising its proof state:
   `Tier 1 — all contracts proven by Z3`,
@@ -204,9 +216,9 @@ relocated obligation is still an entry in `removed` at its old span
 plus an entry in a status list at its new one.  It has the
 `status_before` it paired with, where an
 obligation the edit really did introduce carries `null`.  The gate
-reads that: a `newly_undischarged` entry whose `status_before` equals
-its `status_after` only moved, so it introduced nothing and took
-nothing away.  Relocation is invisible to the gate; the presentation
+reads that: a `newly_undischarged` or `timed_out` entry whose
+`status_before` equals its `status_after` only moved, so it introduced
+nothing and took nothing away.  Relocation is invisible to the gate; the presentation
 keeps its span view.
 
 Each `proof_regressions` entry has both ends: `line` / `column` are
@@ -221,12 +233,10 @@ not contracts.  The removal is visible in the edit itself, and no
 unproved code is left behind.  It is reported under `removed` with the
 status it had.  Replacing a proved contract with a differently-worded
 one is a deletion plus an addition, so the replacement is judged as an
-addition: refused if it is `violated`, `tier3` or `tier3_unguarded`
-(every after-status other than `verified` and `timeout` reaches
-`newly_undischarged`, and with no `before` to match, a `status_before`
-of `null` differs from any `status_after`), and applied if it only
-times out, which is the same boundary any newly introduced timeout
-already sits on.  The pairing key does not cover
+addition: refused unless it is `verified` (with no `before` to match, a
+`status_before` of `null` differs from any `status_after`), a
+replacement that only times out included, as any newly introduced
+timeout is.  The pairing key does not cover
 renaming the function, changing the obligation's kind, rewriting the
 predicate text, or moving the code to another file all make it a new
 obligation to the gate.
@@ -242,10 +252,15 @@ The whole edit → verify → apply sequence as one method, so the
 verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
 `proof_regressions` (no obligation lost a proof, whatever it lost it
-to and wherever in the file it now sits), no `newly_undischarged`
-entry whose `status_before` differs from its `status_after`, and no
-error diagnostics in the proposed state.  Neither list subsumes the
-other: `newly_undischarged` is the only one that can see an obligation
+to and wherever in the file it now sits), no `newly_undischarged` or
+`timed_out` entry whose `status_before` differs from its
+`status_after`, and no error diagnostics in the proposed state.  So
+every obligation the edit leaves is `verified` or is what it was.  A
+check the solver did not finish is not a proof: an edit that introduces
+a `timeout`, or moves an obligation to `timeout` from `tier3`,
+`tier3_unguarded` or `violated`, is refused as one that moves it to
+`tier3` is, and needs `force`.  Neither list subsumes the
+other: the status lists are the only ones that can see an obligation
 the edit INTRODUCES, which has no `before` to regress from and so
 arrives with `status_before: null`.  The `status_before` qualifier is
 what lets a **relocated** obligation through: one that is undischarged

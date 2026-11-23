@@ -76,12 +76,25 @@ def decode_source(raw: bytes, file: Optional[str] = None) -> str:
     return text[1:] if text.startswith(_BYTE_ORDER_MARK) else text
 
 
+def normalize_line_ends(text: str) -> str:
+    """*text* with every line end a ``\\n``: ``\\r\\n`` and a lone ``\\r``
+    read as ``\\n``, as ``Path.read_text`` reads a file.
+
+    The one line-end rule: :func:`read_source` applies it to a file, and
+    the language server to an editor's buffer before the compiler sees it
+    (#1788), so a text the protocol cuts into lines at ``\\n``, ``\\r\\n``
+    and ``\\r`` reaches the lexer cut at the same places.  Only line ends
+    change, so every column is the column it was.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def read_source(path: str | Path, file: Optional[str] = None) -> str:
     """The text of the source file at *path*, as every command reads one.
 
     Its bytes through :func:`decode_source`, reported under *file* (the
-    path, by default), with universal newlines: ``\\r\\n`` and ``\\r`` read
-    as ``\\n``, as ``Path.read_text`` reads a file.
+    path, by default), with universal newlines
+    (:func:`normalize_line_ends`).
 
     Raises:
         SourceEncodingError: If the file is not UTF-8 (E024).
@@ -91,7 +104,7 @@ def read_source(path: str | Path, file: Optional[str] = None) -> str:
     path = Path(path)
     text = decode_source(path.read_bytes(),
                          file if file is not None else str(path))
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalize_line_ends(text)
 
 
 def parse(source: str, file: Optional[str] = None) -> Tree[Any]:

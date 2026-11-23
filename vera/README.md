@@ -152,9 +152,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  cache.py` | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations; `called_name` is the one rule for which calls name a program function, a call by the program's own path included | |
 | `  session.py` | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint | |
 | `lsp/` | Serve | Language Server Protocol over stdio | `create_server()`, `vera lsp` |
-| `  convert.py` | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
+| `  convert.py` | | Span/SourceLocation/LSP coordinate conversions (both compiler columns 1-based), UTF-16 transcoding, lines cut at the protocol's line ends | |
 | `  documents.py` | | URI-keyed document store, full-text sync | |
-| `  features.py` | | Diagnostics + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
+| `  features.py` | | Diagnostics (an imported module's on the import that brings it in) + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
 | `  extensions.py` | | vera/speculativeEdit proof-delta | |
 | `  server.py` | | pygls wiring, single-session serialisation, coroutine edit handlers | |
 | `  workflows.py` | | Skill-layer workflows: enforced edit sequences, applied only through the client | |

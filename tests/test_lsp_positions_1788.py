@@ -1,0 +1,574 @@
+"""Every place the language server turns a compiler location into a
+protocol position (#1788, #1637).
+
+A compiler location is (file, 1-based line, 1-based code-point column),
+with lines cut wherever the CLI's reader (`vera.parser.read_source`) cuts
+them.  A protocol position is (document, 0-based line, 0-based UTF-16 code
+unit), with lines cut at ``\\n``, ``\\r\\n`` and a lone ``\\r`` (LSP 3.17,
+"Position" and "Text Documents").  The class is every published position
+or range, by:
+
+* the surface: a diagnostic of the document, a diagnostic of the
+  transform stage (which carries no file), a diagnostic of a module the
+  document imports directly or only reaches through another module, the
+  E024 of an imported module the resolver could not read, the
+  tier hint, hover, go-to-definition, completion, and the two text
+  positions the edit methods compute (the whole-document range and the
+  splice offsets of `vera/strengthenContract` and `vera/addEffect`);
+* the line-end style: LF, CRLF, lone CR, a mixed document, and a mixed
+  document with a lone CR inside a string literal (the grammar lets a
+  string span lines);
+* whether a character outside the Basic Multilingual Plane stands before
+  the column on its line.
+
+The oracle is independent of the converter: the expected position is
+computed here from `vera check --json`'s location for the same file on
+disk, by splitting the text at the protocol's line ends and counting
+UTF-16 units.  A diagnostic carries a point and no end, so the published
+range is the point widened over the identifier token under it (the
+characters a slot reference or a name is made of), or one character when
+the point is on no such token, or empty at the end of a line; the oracle
+widens with its own pattern, so a start that moves without its end, or
+the reverse, is a wrong range in every cell.
+"""
+
+from __future__ import annotations
+
+import json
+import pathlib
+import re
+
+import pytest
+from lsprotocol import types as lsp
+
+from tests import pipeline
+from vera.lsp.documents import Document
+from vera.lsp.features import (
+    analyze,
+    completion_at,
+    definition_at,
+    hover_at,
+    to_lsp_diagnostics,
+)
+from vera.lsp.workflows import (
+    effect_row_rewrite,
+    full_document_range,
+    splice_contract,
+)
+from vera.obligations.session import VerificationSession
+
+# A class instrument (tests/matrix_sample.py): a pull request runs a sample
+# of its parametrised cells, and all of them when it changes this file or a
+# module that decides a published position: the converters, the analysis
+# that hands the compiler its text and places each diagnostic, the edit
+# methods' text positions, and the reader whose line-end rule the server
+# shares.
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/lsp/convert.py",
+    "vera/lsp/features.py",
+    "vera/lsp/workflows.py",
+    "vera/lsp/extensions.py",
+    "vera/parser.py",
+])
+
+ASTRAL = "\U0001F389"
+
+#: The line-end styles.  `MIXED` cycles LF, CRLF and a lone CR line by
+#: line; `MIXED_STR` does the same and also puts a lone CR inside a string
+#: literal on the line under test, so the column is counted on the
+#: protocol line after it.
+STYLES = ("LF", "CRLF", "CR", "MIXED", "MIXED_STR")
+
+HDR = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+
+def lsp_lines(text: str) -> list[str]:
+    """*text*'s lines as the protocol cuts them."""
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def utf16(s: str) -> int:
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
+
+
+def with_ends(text: str, style: str) -> str:
+    """*text* (written with ``\\n``) with *style*'s line ends."""
+    if style == "LF":
+        return text
+    if style == "CRLF":
+        return text.replace("\n", "\r\n")
+    if style == "CR":
+        return text.replace("\n", "\r")
+    cycle = ("\n", "\r\n", "\r")
+    pieces = text.split("\n")
+    out = []
+    for i, piece in enumerate(pieces[:-1]):
+        out.append(piece + cycle[i % 3])
+    out.append(pieces[-1])
+    return "".join(out)
+
+
+def prefix(astral: bool, style: str) -> str:
+    """An Int-typed term and `+`, put before the column under test."""
+    inner = (ASTRAL if astral else "a") + ("\rb" if style == "MIXED_STR" else "")
+    return f'string_length("{inner}") + '
+
+
+def offset_to_pos(text: str, offset: int) -> tuple[int, int]:
+    """The protocol position of code-point *offset* in *text*."""
+    line, start = 0, 0
+    for m in re.finditer(r"\r\n|\r|\n", text):
+        if m.end() > offset:
+            break
+        line, start = line + 1, m.end()
+    return line, utf16(text[start:offset])
+
+
+def widened(text: str, line1: int, col1: int) -> tuple[int, int, int, int]:
+    """The range the oracle expects for a point diagnostic at the
+    compiler's (*line1*, *col1*): its own token pattern, not the
+    converter's."""
+    lines = lsp_lines(text)
+    line = lines[line1 - 1]
+    start = max(0, col1 - 1)
+    m = re.compile(r"[A-Za-z0-9_@.À-￿]*").match(line, start)
+    assert m is not None
+    end = m.end()
+    if end == start and start < len(line):
+        end = start + 1
+    return (line1 - 1, utf16(line[:start]), line1 - 1, utf16(line[:end]))
+
+
+def rng(r: lsp.Range) -> tuple[int, int, int, int]:
+    return (r.start.line, r.start.character, r.end.line, r.end.character)
+
+
+def write(path: pathlib.Path, text: str) -> None:
+    """The exact bytes, so the CLI reads the line ends the buffer has."""
+    path.write_bytes(text.encode("utf-8"))
+
+
+def cli(path: pathlib.Path) -> list[dict]:
+    """`vera check --json`'s diagnostics for the file at *path*, the CLI
+    run through `vera.cli.main` (tests/pipeline.py), reading the file's
+    bytes as the command does."""
+    return json.loads(pipeline.cli("check", "--json", path).stdout)[
+        "diagnostics"]
+
+
+# --- the programs -----------------------------------------------------
+
+def doc_program(pfx: str) -> str:
+    return ("public fn f(@Int -> @Int)\n" + HDR
+            + "{\n  " + pfx + "missing(@Int.0)\n}\n")
+
+
+def transform_program(pfx: str) -> str:
+    return ("public fn f(@Int -> @Int)\n" + HDR
+            + "{\n  " + pfx + "@Int.0 |> 1\n}\n")
+
+
+def lib_program(pfx: str) -> str:
+    return ("module lib;\n\npublic fn word(@Unit -> @Int)\n" + HDR
+            + "{\n  " + pfx + "missing(1)\n}\n")
+
+
+MAIN = ("import lib(word);\n\npublic fn main(@Unit -> @Int)\n" + HDR
+        + "{\n  word(())\n}\n")
+
+MID = ("module mid;\n\nimport lib(word);\n\npublic fn w2(@Unit -> @Int)\n"
+       + HDR + "{\n  word(())\n}\n")
+
+MAIN_T = ("import mid(w2);\n\npublic fn main(@Unit -> @Int)\n" + HDR
+          + "{\n  w2(())\n}\n")
+
+
+def ok_program(pfx: str) -> str:
+    return ("public fn g(@Int, @Int -> @Int)\n"
+            "  requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  " + pfx + "@Int.1 + @Int.0\n}\n")
+
+
+def hole_program(pfx: str) -> str:
+    return ("public fn f(@Int -> @Int)\n" + HDR + "{\n  " + pfx + "?\n}\n")
+
+
+def analysed(path: pathlib.Path, text: str):
+    write(path, text)
+    return analyze(VerificationSession(), path.as_uri(), text)
+
+
+# --- the cells --------------------------------------------------------
+
+SURFACES = (
+    "diag_document", "diag_transform", "diag_imported", "diag_transitive",
+    "diag_unread",
+    "hint", "hover", "definition", "completion",
+    "full_document_range", "splice_contract", "effect_row",
+)
+
+
+@pytest.mark.parametrize("astral", [False, True], ids=["bmp", "astral"])
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("surface", SURFACES)
+def test_published_position(
+    surface: str, style: str, astral: bool, tmp_path: pathlib.Path,
+) -> None:
+    pfx = prefix(astral, style)
+    if surface in ("diag_document", "diag_transform"):
+        src = with_ends(
+            (doc_program if surface == "diag_document"
+             else transform_program)(pfx), style)
+        path = tmp_path / "t.vera"
+        a = analysed(path, src)
+        (want,) = cli(path)
+        loc = want["location"]
+        got = [rng(d.range) for d in to_lsp_diagnostics(a)
+               if d.code == want["error_code"]]
+        assert got == [widened(src, loc["line"], loc["column"])], (
+            want, got)
+        return
+
+    if surface in ("diag_imported", "diag_transitive", "diag_unread"):
+        lib = with_ends(lib_program(pfx), style)
+        if surface == "diag_unread":
+            # Not UTF-8: the resolver reads no module, and the E024 is
+            # located in the module's file (#1666).
+            (tmp_path / "lib.vera").write_bytes(
+                lib.replace("missing(1)", "1").encode("utf-8") + b"\xe9")
+        else:
+            write(tmp_path / "lib.vera", lib)
+        if surface == "diag_transitive":
+            write(tmp_path / "mid.vera", with_ends(MID, style))
+            main, head = with_ends(MAIN_T, style), "import mid(w2);"
+        else:
+            main, head = with_ends(MAIN, style), "import lib(word);"
+        code = "E024" if surface == "diag_unread" else "E200"
+        path = tmp_path / "main.vera"
+        a = analysed(path, main)
+        (want,) = [d for d in cli(path) if d["error_code"] == code]
+        loc = want["location"]
+        assert pathlib.Path(loc["file"]).name == "lib.vera"
+        (pub,) = [d for d in to_lsp_diagnostics(a) if d.code == code]
+        # Published on the import that brings the module in, whole.
+        assert rng(pub.range) == (0, 0, 0, utf16(head)), pub
+        # Named the way `vera check` names it.
+        assert pub.message.startswith(
+            f"In imported module {loc['file']}, line {loc['line']}, "
+            f"column {loc['column']}: "), pub.message
+        return
+
+    if surface in ("hint", "hover", "definition", "completion"):
+        src = with_ends(
+            (hole_program if surface == "completion" else ok_program)(pfx),
+            style)
+        path = tmp_path / "g.vera"
+        a = analysed(path, src)
+        if surface == "hint":
+            (hint,) = [d for d in to_lsp_diagnostics(a) if d.code == "tier"]
+            want_line = next(i for i, ln in enumerate(lsp_lines(src))
+                             if "requires(" in ln)
+            assert rng(hint.range) == (want_line, 0, want_line, 0)
+        elif surface == "hover":
+            off = src.rindex("@Int.0")
+            line, ch = offset_to_pos(src, off)
+            h = hover_at(a, lsp.Position(line=line, character=ch))
+            assert h is not None
+            assert rng(h.range) == (line, ch, line, ch + 6)
+            assert "Int" in h.contents.value
+        elif surface == "definition":
+            off = src.rindex("@Int.0")
+            line, ch = offset_to_pos(src, off)
+            df = definition_at(a, lsp.Position(line=line, character=ch))
+            # The control: the same program with LF ends, whose line 0 the
+            # line-end style cannot move.
+            control = analysed(tmp_path / "control.vera", ok_program(pfx))
+            off0 = ok_program(pfx).rindex("@Int.0")
+            line0, ch0 = offset_to_pos(ok_program(pfx), off0)
+            want = definition_at(
+                control, lsp.Position(line=line0, character=ch0))
+            assert want is not None and df is not None
+            assert rng(df.range) == rng(want.range)
+            assert df.uri == path.as_uri()
+        else:
+            off = src.rindex("?") + 1
+            line, ch = offset_to_pos(src, off)
+            c = completion_at(a, lsp.Position(line=line, character=ch))
+            assert c is not None
+            assert [i.label for i in c.items] == ["@Int.0"]
+        return
+
+    src = with_ends(ok_program(pfx), style)
+    if surface == "full_document_range":
+        r = full_document_range(Document(uri="file:///x.vera", text=src))
+        lines = lsp_lines(src)
+        assert rng(r) == (0, 0, len(lines) - 1, utf16(lines[-1]))
+        return
+    a = analysed(tmp_path / "g.vera", src)
+    assert a.program is not None
+    if surface == "splice_contract":
+        cand = splice_contract(a.program, a.text, "g", "requires",
+                               "@Int.0 > 1")
+        assert cand == src.replace("requires(@Int.0 > 0)",
+                                   "requires(@Int.0 > 1)")
+    else:
+        (fn,) = [t.decl for t in a.program.declarations]
+        start, end, new = effect_row_rewrite(a.text, fn, "IO")
+        assert a.text[:start] + new + a.text[end:] == src.replace(
+            "effects(pure)", "effects(<IO>)")
+
+
+# --- the reported instances and the pins (every PR runs these) ---------
+
+def test_repro_1637_range_starts_at_the_cli_column(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The issue's program: `E200` at line 6, column 3, under the `m` of
+    `missing`; the range covered `issing`."""
+    src = ("public fn f(@Int -> @Int)\n" + HDR
+           + "{\n  missing(@Int.0)\n}\n")
+    path = tmp_path / "f.vera"
+    a = analysed(path, src)
+    (want,) = cli(path)
+    assert (want["location"]["line"], want["location"]["column"]) == (6, 3)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (5, 2, 5, 9)
+
+
+def test_repro_1788_an_imported_modules_diagnostic(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The issue's programs: `E121` at `lib.vera` line 8 was published on
+    `main.vera` line 8, `  IO.print(word(()));`."""
+    (tmp_path / "lib.vera").write_text(
+        "module lib;\n\npublic fn word(@Unit -> @String)\n" + HDR
+        + "{\n  42\n}\n", encoding="utf-8")
+    main = ("import lib(word);\n\npublic fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(<IO>)\n"
+            "{\n  IO.print(word(()));\n  0\n}\n")
+    path = tmp_path / "main.vera"
+    a = analysed(path, main)
+    (want,) = [d for d in cli(path) if d["error_code"] == "E121"]
+    loc = want["location"]
+    (got,) = [d for d in to_lsp_diagnostics(a, related_information=True)
+              if d.code == "E121"]
+    assert rng(got.range) == (0, 0, 0, len("import lib(word);"))
+    assert got.message.startswith(
+        f"In imported module {loc['file']}, line 8, column 3: ")
+    (rel,) = got.related_information or []
+    assert rel.location.uri == pathlib.Path(loc["file"]).as_uri()
+    assert rng(rel.location.range) == (7, 2, 7, 4)
+
+
+def test_repro_1788_a_lone_cr_document(tmp_path: pathlib.Path) -> None:
+    """The checklist line: a document whose line ends are lone carriage
+    returns was handed to the parser as one line."""
+    src = ("public fn f(@Int -> @Int)\n" + HDR
+           + "{\n  missing(@Int.0)\n}\n").replace("\n", "\r")
+    a = analysed(tmp_path / "f.vera", src)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (5, 2, 5, 9)
+
+
+def test_repro_1788_a_lone_cr_whole_document_range() -> None:
+    """An applied edit replaced only the first line of a lone-CR buffer:
+    its range ended at line 0."""
+    text = "a\rb\rcc"
+    r = full_document_range(Document(uri="file:///x.vera", text=text))
+    assert rng(r) == (0, 0, 2, 2)
+
+
+def test_repro_1788_a_transitive_modules_diagnostic(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A module the document reaches only through another module is
+    published on the import of the module that reaches it."""
+    write(tmp_path / "lib.vera", lib_program(""))
+    write(tmp_path / "mid.vera", MID)
+    a = analysed(tmp_path / "main.vera", MAIN_T)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (0, 0, 0, len("import mid(w2);"))
+
+
+def test_repro_1788_an_unread_modules_e024(tmp_path: pathlib.Path) -> None:
+    """A module that is not UTF-8 is never read, so no resolved module
+    names its file: its E024 is published on the import that names it."""
+    (tmp_path / "lib.vera").write_bytes(
+        lib_program("").replace("missing(1)", "1").encode("utf-8") + b"\xe9")
+    a = analysed(tmp_path / "main.vera", "\n\n" + MAIN)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E024"]
+    assert rng(got.range) == (2, 0, 2, len("import lib(word);"))
+
+
+def test_a_lone_cr_diagnostic_quotes_the_text_the_cli_quotes(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A diagnostic that quotes the program (E135's fix writes the type
+    out from its span) quotes what `vera check` quotes: the checker is
+    handed the text the spans were read from."""
+    src = (ok_program("") + "\npublic fn h(@Map<Array<Int>, Int> -> @Int)\n"
+           + HDR + "{\n  0\n}\n").replace("\n", "\r")
+    path = tmp_path / "h.vera"
+    a = analysed(path, src)
+    (want,) = [d for d in cli(path) if d["error_code"] == "E135"]
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E135"]
+    assert "replace 'Map<Array<Int>, Int>'" in want["fix"]
+    assert got.message == (f"{want['description']}\n\n{want['rationale']}"
+                           f"\n\nFix: {want['fix']}")
+    loc = want["location"]
+    assert rng(got.range) == widened(src, loc["line"], loc["column"])
+
+
+def test_a_module_three_imports_deep(tmp_path: pathlib.Path) -> None:
+    """main imports mid, mid imports low, low imports lib: lib's error is
+    published on `import mid`, the walk following every level."""
+    write(tmp_path / "lib.vera", lib_program(""))
+    write(tmp_path / "low.vera", MID.replace("module mid;", "module low;")
+          .replace("fn w2(", "fn w1("))
+    write(tmp_path / "mid.vera", MID.replace("import lib(word);",
+                                             "import low(w1);")
+          .replace("word(())", "w1(())"))
+    a = analysed(tmp_path / "main.vera", MAIN_T)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (0, 0, 0, len("import mid(w2);"))
+
+
+def test_a_resolved_module_is_placed_by_its_file_not_its_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two modules whose paths end alike (`lib` and `a.lib`): the error in
+    `a/lib.vera` is published on `import a.lib`, which resolved that file,
+    not on the first import whose last name is `lib`."""
+    write(tmp_path / "lib.vera",
+          "module lib;\n\npublic fn ok(@Unit -> @Int)\n" + HDR
+          + "{\n  1\n}\n")
+    (tmp_path / "a").mkdir()
+    write(tmp_path / "a" / "lib.vera",
+          lib_program("").replace("module lib;", "module a.lib;"))
+    main = ("import lib(ok);\nimport a.lib(word);\n\n"
+            "public fn main(@Unit -> @Int)\n" + HDR
+            + "{\n  ok(()) + word(())\n}\n")
+    a = analysed(tmp_path / "main.vera", main)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (1, 0, 1, len("import a.lib(word);"))
+
+
+def test_a_lone_cr_splice_keeps_the_buffers_line_ends(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`vera/strengthenContract` splices the client's text by the spans of
+    the text the compiler read: a line starts after a lone CR in both."""
+    src = ok_program("").replace("\n", "\r")
+    a = analysed(tmp_path / "g.vera", src)
+    assert a.program is not None
+    cand = splice_contract(a.program, a.text, "g", "requires", "@Int.0 > 1")
+    assert cand == src.replace("requires(@Int.0 > 0)", "requires(@Int.0 > 1)")
+
+
+def test_a_lone_cr_speculative_edit_of_its_own_text_changes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The speculative run numbers lines as the analysis it is compared
+    with does: the document's own text, proposed again, moves nothing."""
+    from vera.lsp.extensions import speculative_edit
+
+    src = ok_program("").replace("\n", "\r")
+    path = tmp_path / "g.vera"
+    write(path, src)
+    session = VerificationSession()
+    a = analyze(session, path.as_uri(), src)
+    assert a.obligations
+    out = speculative_edit(session, a.obligations, path.as_uri(), src)
+    delta = out["proof_delta"]
+    assert delta["removed"] == [] and delta["unchanged"] == len(a.obligations)
+
+
+def test_the_server_reads_the_related_information_capability() -> None:
+    """`analyze_and_publish` sends `relatedInformation` only to a client
+    whose `initialize` advertised it."""
+    from vera.lsp.server import create_server
+
+    server = create_server()
+    assert server.takes_related_information() is False
+    for flag in (True, False, None):
+        server.protocol.client_capabilities = lsp.ClientCapabilities(
+            text_document=lsp.TextDocumentClientCapabilities(
+                publish_diagnostics=lsp.PublishDiagnosticsClientCapabilities(
+                    related_information=flag)))
+        assert server.takes_related_information() is (flag is True)
+
+
+def test_related_information_follows_the_client_capability(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A client that does not advertise
+    `textDocument.publishDiagnostics.relatedInformation` is sent none;
+    the message's prefix still names the module's file and line."""
+    write(tmp_path / "lib.vera", lib_program(""))
+    path = tmp_path / "main.vera"
+    a = analysed(path, MAIN)
+    (off,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    (on,) = [d for d in to_lsp_diagnostics(a, related_information=True)
+             if d.code == "E200"]
+    assert off.related_information is None
+    assert on.related_information is not None
+    assert off.message == on.message
+
+
+def test_every_error_of_a_module_is_published_in_the_compilers_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """No cap, no collapse: two errors in one module with the same code
+    and message, on two lines, both publish on the import, in the order
+    `vera check` gives them."""
+    lib = ("module lib;\n\npublic fn word(@Unit -> @Int)\n" + HDR
+           + "{\n  missing(1) +\n  missing(2) +\n  missing(3)\n}\n")
+    write(tmp_path / "lib.vera", lib)
+    path = tmp_path / "main.vera"
+    a = analysed(path, MAIN)
+    want = [d for d in cli(path) if d["error_code"] == "E200"]
+    assert len(want) == 3
+    got = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert [d.message.split(": ", 1)[0] for d in got] == [
+        f"In imported module {d['location']['file']}, line "
+        f"{d['location']['line']}, column {d['location']['column']}"
+        for d in want
+    ]
+
+
+def test_the_cli_reads_line_ends_as_it_did(tmp_path: pathlib.Path) -> None:
+    """`read_source` (every command's reader) is what it was before the
+    server shared its rule: LF, CRLF, lone CR, a mixed text, and a lone CR
+    inside a string literal.  The expected texts are written out here, not
+    computed by the helper, so a change to the helper's rule is red.
+    Unparametrised, so every pull request runs it."""
+    from vera.parser import normalize_line_ends, read_source
+
+    cases = [
+        (b"a\nb\n", "a\nb\n"),
+        (b"a\r\nb\r\n", "a\nb\n"),
+        (b"a\rb\r", "a\nb\n"),
+        (b"a\nb\r\nc\rd\r\r\ne\n\r", "a\nb\nc\nd\n\ne\n\n"),
+        (b'x "s\rt"\r\n', 'x "s\nt"\n'),
+    ]
+    for i, (raw, read) in enumerate(cases):
+        path = tmp_path / f"t{i}.vera"
+        path.write_bytes(raw)
+        assert read_source(path) == read, raw
+        assert normalize_line_ends(raw.decode("utf-8")) == read, raw
+
+
+def test_a_document_error_and_a_module_error_at_one_position(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The de-duplication key names the file: the same code and message
+    at the same line and column of two files are two diagnostics."""
+    from vera.errors import Diagnostic, SourceLocation
+    from vera.lsp.features import _diag_key
+
+    def at(file: str) -> Diagnostic:
+        return Diagnostic(description="d", error_code="E200",
+                          location=SourceLocation(file=file, line=6,
+                                                  column=3))
+
+    assert _diag_key(at("/a/main.vera")) != _diag_key(at("/a/lib.vera"))

@@ -28,10 +28,14 @@ Response (plain JSON)::
 The gate: apply iff the proof delta has no ``proof_regressions`` (no
 obligation that was ``verified`` is anything else now — whatever it
 lost its proof to, and wherever in the file it now sits), no
-``newly_undischarged`` obligations (the only conjunct that can see an
-obligation the edit INTRODUCES, which has no ``before`` to regress
-from, so neither list subsumes the other), AND the proposed state has
-no error diagnostics.  ``force: true`` overrides
+``newly_undischarged`` or ``timed_out`` entry whose status moved (the
+only conjunct that can see an obligation the edit INTRODUCES, which has
+no ``before`` to regress from, so neither list subsumes the other; a
+check the solver did not finish is not a proof, so an edit that moves an
+obligation to ``timeout`` is refused as one that moves it to ``tier3``
+is, #1610), AND the proposed state has no error diagnostics.  So every
+obligation the edit leaves is ``verified`` or is what it was.
+``force: true`` overrides
 all three — "this edit knowingly weakens a proof" (or doesn't compile
 yet) is sometimes the intent, but it must be said out loud; the default
 is the enforced gate.
@@ -173,6 +177,7 @@ project model.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from typing import TYPE_CHECKING, Any
 
@@ -188,6 +193,10 @@ from vera.obligations.cache import (
 )
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
+from vera.parser import normalize_line_ends
+
+#: A line end as the protocol counts one (LSP 3.17, "Text Documents").
+_LINE_END = re.compile(r"\r\n|\r|\n")
 
 if TYPE_CHECKING:
     from vera.lsp.features import Analysis
@@ -250,8 +259,15 @@ def propose_edit(
         # review, case A2b).  A pair that WORSENED still has
         # `status_before != status_after` and is still refused, exactly
         # as the identical unmoved edit is.
+        #
+        # `timed_out` is read by the same rule (#1610): `proof_delta`
+        # files an obligation whose after-status is `timeout` there and
+        # nowhere else, so an edit that introduced one, or moved one from
+        # `tier3`, `tier3_unguarded` or `violated`, reached no conjunct
+        # and applied.  A check the solver did not finish is not a proof.
         and not [
-            item for item in delta["newly_undischarged"]
+            item
+            for item in delta["newly_undischarged"] + delta["timed_out"]
             if item["status_before"] != item["status_after"]
         ]
         and speculative["diagnostics"] == 0
@@ -269,9 +285,12 @@ def full_document_range(doc: Document) -> lsp.Range:
     """The whole-document replacement range for a full-text edit of the
     open document *doc*: from the start to its end, computed exactly
     (last line, UTF-16 end column, via the document's cached line
-    index)."""
-    end_line0 = doc.text.count("\n")
-    last_segment = doc.text.rsplit("\n", 1)[-1]
+    index).  Lines are the protocol's, so a lone ``\\r`` ends one (#1788):
+    a range that counted ``\\n`` alone ended on line 0 of a lone-CR
+    buffer, and a client applying it replaced the first line only."""
+    lines = normalize_line_ends(doc.text)
+    end_line0 = lines.count("\n")
+    last_segment = lines.rsplit("\n", 1)[-1]
     return lsp.Range(
         start=lsp.Position(line=0, character=0),
         end=lsp.Position(
@@ -585,12 +604,14 @@ def span_offsets(text: str, span: ast.Span) -> tuple[int, int]:
     Columns count code points, which are exactly Python string
     indices, so no UTF-16 transcoding is involved — that wrinkle only
     exists at the LSP wire boundary.  Spans come from a program parsed
-    from this very text, so they are in range by construction.
+    from this very text after the reader's line-end rule, which changes
+    no column, so a line starts after each ``\\n``, ``\\r\\n`` or lone
+    ``\\r`` of *text* (#1788) and the splice keeps the text's own line
+    ends.
     """
     line_starts = [0]
-    for i, ch in enumerate(text):
-        if ch == "\n":
-            line_starts.append(i + 1)
+    for match in _LINE_END.finditer(text):
+        line_starts.append(match.end())
     start = line_starts[span.line - 1] + (span.column - 1)
     end = line_starts[span.end_line - 1] + (span.end_column - 1)
     return start, end
