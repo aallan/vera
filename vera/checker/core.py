@@ -906,12 +906,16 @@ class TypeChecker(
         # `ResolutionMixin._literal_soft_type`.
         self._literal_soft_results: dict[
             tuple[int, int, int, int], Type] = {}
-        # #1684: the types an `if` branch or a `match` arm is synthesized
-        # again against because a sibling has them (`_synth_against`):
-        # a sibling's type is no type the value is expected at, so it
-        # fixes no variable a call leaves open
-        # (`ResolutionMixin._expected_bindings`).
-        self._sibling_types: list[Type] = []
+        # #1684, #1866: whether the type the synthesis in progress is
+        # expected at came from a sibling `if` branch or `match` arm
+        # (`_synth_against`) rather than from the value's context.  Every
+        # site that hands an expected type down states where it came from
+        # (`_synth_expr`'s `from_sibling`): a part of the type it was
+        # itself expected at keeps that origin, any other type is the
+        # context's.  A sibling's type is no type the value is expected
+        # at, so it fixes no variable a call leaves open
+        # (`ResolutionMixin._infer_type_args_in_context`).
+        self._expected_from_sibling: bool = False
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:
@@ -1925,7 +1929,8 @@ class TypeChecker(
             self._check_contract(contract, decl)
 
         # 6. Check body (pass return type as expected for bidirectional)
-        body_type = self._synth_expr(decl.body, expected=return_type)
+        body_type = self._synth_expr(decl.body, expected=return_type,
+                                     from_sibling=False)
         if body_type and not isinstance(body_type, UnknownType):
             if (not is_subtype(body_type, return_type)
                     and not self._refuse_unfit_function_value(

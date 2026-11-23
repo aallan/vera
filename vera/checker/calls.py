@@ -1077,7 +1077,8 @@ class CallsMixin:
                 pt = fn_info.param_types[i]
                 if not contains_fresh_typevar(pt):
                     exp = pt
-            arg_types.append(self._synth_expr(arg, expected=exp))
+            arg_types.append(self._synth_expr(arg, expected=exp,
+                                              from_sibling=False))
 
         # Arity check
         if len(args) != len(fn_info.param_types):
@@ -1274,7 +1275,8 @@ class CallsMixin:
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
-                arg_ty = self._synth_expr(args[i], expected=param_ty)
+                arg_ty = self._synth_expr(args[i], expected=param_ty,
+                                       from_sibling=False)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1282,7 +1284,8 @@ class CallsMixin:
             # enables bidirectional coercion (e.g. IntLit → Byte).
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
-                re = self._synth_expr(args[i], expected=param_ty)
+                re = self._synth_expr(args[i], expected=param_ty,
+                                       from_sibling=False)
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1299,7 +1302,8 @@ class CallsMixin:
                     and contains_literal_hole(
                         self._literal_soft_type(args[i], arg_ty)
                         or arg_ty)):
-                re = self._synth_expr(args[i], expected=param_ty)
+                re = self._synth_expr(args[i], expected=param_ty,
+                                       from_sibling=False)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, param_ty)):
                     arg_ty = re
@@ -1318,7 +1322,8 @@ class CallsMixin:
                     and isinstance(param_ty, AdtType)
                     and isinstance(args[i], (
                         ast.ConstructorCall, ast.NullaryConstructor))):
-                re = self._synth_expr(args[i], expected=param_ty)
+                re = self._synth_expr(args[i], expected=param_ty,
+                                       from_sibling=False)
                 if re is not None and not isinstance(re, UnknownType):
                     arg_ty = re
                     arg_types[i] = re
@@ -1564,7 +1569,8 @@ class CallsMixin:
                 pt = fn_ty.params[i]
                 if not contains_typevar(pt):
                     exp = pt
-            arg_types.append(self._synth_expr(arg, expected=exp))
+            arg_types.append(self._synth_expr(arg, expected=exp,
+                                              from_sibling=False))
 
         # Arity: every argument after the function value maps to one
         # parameter of the applied fn type.
@@ -1602,7 +1608,8 @@ class CallsMixin:
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
-                arg_ty = self._synth_expr(rest[i], expected=param_ty)
+                arg_ty = self._synth_expr(rest[i], expected=param_ty,
+                                       from_sibling=False)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1610,7 +1617,8 @@ class CallsMixin:
             # enables bidirectional coercion (e.g. IntLit → Byte).
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
-                re = self._synth_expr(rest[i], expected=param_ty)
+                re = self._synth_expr(rest[i], expected=param_ty,
+                                       from_sibling=False)
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1802,7 +1810,8 @@ class CallsMixin:
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
             exp = param_types[i] if i < len(param_types) else None
-            arg_types.append(self._synth_expr(arg, expected=exp))
+            arg_types.append(self._synth_expr(arg, expected=exp,
+                                              from_sibling=False))
 
         if len(args) != len(param_types):
             self._error(
@@ -2294,7 +2303,8 @@ class CallsMixin:
                         and not contains_fresh_typevar(param_ty)
                         and isinstance(args[i], (
                             ast.ConstructorCall, ast.NullaryConstructor))):
-                    resynth = self._synth_expr(args[i], expected=param_ty)
+                    resynth = self._synth_expr(args[i], expected=param_ty,
+                                       from_sibling=False)
                     if (resynth is not None
                             and not isinstance(resynth, UnknownType)):
                         arg_ty = resynth
@@ -2866,7 +2876,9 @@ class CallsMixin:
                     # sees a name mismatch, mints fresh, and the field-type
                     # check then rejects the genuinely ill-typed nesting).
                     field_expected = ft
-            arg_types.append(self._synth_expr(arg, expected=field_expected))
+            arg_types.append(self._synth_expr(
+                arg, expected=field_expected,
+                from_sibling=self._expected_from_sibling))
 
         if ci.field_types is None:
             if expr.args:
@@ -2913,9 +2925,20 @@ class CallsMixin:
             for tv in ci.parent_type_params or ())))
 
         # Merge expected-type mapping for unresolved vars
+        from_expected: set[str] = set()
         for tv, exp_ty in expected_mapping.items():
             if tv not in mapping:
                 mapping[tv] = exp_ty
+                from_expected.add(tv)
+        # #1866: a field's type holds a part of the type the construction
+        # is expected at where a variable of it took its type from there,
+        # and the arguments' variables are theirs: a field another
+        # argument fixed is no sibling's type, whatever the construction
+        # is expected at.
+        sibling_fields = [
+            self._expected_from_sibling
+            and bool(_typevar_names(ft) & from_expected)
+            for ft in ci.field_types]
 
         field_types = ci.field_types
         if mapping:
@@ -2985,7 +3008,9 @@ class CallsMixin:
             # Re-synth if arg still has unresolved TypeVars and the
             # subtype check would fail (e.g. List<T$2> vs List<Option<Int>>).
             if contains_typevar(arg_ty) and not is_subtype(arg_ty, field_ty):
-                arg_ty = self._synth_expr(expr.args[i], expected=field_ty)
+                arg_ty = self._synth_expr(
+                    expr.args[i], expected=field_ty,
+                    from_sibling=sibling_fields[i])
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -3011,7 +3036,9 @@ class CallsMixin:
                     and contains_literal_hole(
                         self._literal_soft_type(expr.args[i], arg_ty)
                         or arg_ty)):
-                re = self._synth_expr(expr.args[i], expected=field_ty)
+                re = self._synth_expr(
+                    expr.args[i], expected=field_ty,
+                    from_sibling=sibling_fields[i])
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, field_ty)):
                     arg_ty = re
@@ -3207,7 +3234,8 @@ class CallsMixin:
             t = self._synth_expr(arg)
             if components is not None:
                 t = self._check_in_literal_context(
-                    arg, t, components[i], component=True)
+                    arg, t, components[i], component=True,
+                    from_sibling=self._expected_from_sibling)
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:

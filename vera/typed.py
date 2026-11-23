@@ -888,6 +888,23 @@ def _example(te: ast.TypeExpr, variables: frozenset[str]) -> str | None:
     return None
 
 
+def _at_int(te: ast.TypeExpr, variables: frozenset[str]) -> str | None:
+    """*te* as the program writes it, each of *variables* at `Int`; None
+    where a variable stands in a type written otherwise than by name and
+    arguments (a function type, a refinement)."""
+    if isinstance(te, ast.NamedType):
+        if te.name in variables and not te.type_args:
+            return "Int"
+        if te.type_args:
+            inner = [_at_int(a, variables) for a in te.type_args]
+            if any(i is None for i in inner):
+                return None
+            return f"{te.name}<{', '.join(i for i in inner if i)}>"
+    if _mentions(te, variables):
+        return None
+    return ast.format_type(te)
+
+
 def _mentions(te: object, variables: frozenset[str]) -> bool:
     return any(isinstance(n, ast.NamedType) and n.name in variables
                for n in _walk(te))
@@ -932,8 +949,15 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
             # A variable the result's type does not hold (one only a
             # `where` constraint names): no binding of the result fixes it.
             return f"{head}: {param}"
-        return (f"{head}: bind its result at a type that {needs} (a `let` "
-                f"of that type), or {param}")
+        # The binding written out, each variable at Int, where the call is
+        # (inside a branch too: a sibling's type gives it none, #1866).
+        bound = _at_int(root.decl.return_type, variables)
+        if text is None or bound is None:
+            return (f"{head}: bind its result at a type that {needs} (a "
+                    f"`let` of that type), or {param}")
+        return (f"{head}: bind its result at a type that {needs}, where "
+                f"the call is: `let @{bound} = {text};`, then "
+                f"`@{bound}.0` in its place; or {param}")
     if text is None or call.span is None or len(args) != len(root.decl.params):
         return advice + "."
     edits: list[tuple[int, int, str]] = []

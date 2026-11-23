@@ -470,12 +470,10 @@ class ControlFlowMixin:
         the type the value is expected at: it fixes no type variable a call
         in *expr* leaves open (`_expected_bindings`, #1684), which the join
         settles as it settles a literal's element (the order of the
-        branches or arms never decides it)."""
-        self._sibling_types.append(sibling)
-        try:
-            return self._synth_expr(expr, expected=sibling)
-        finally:
-            self._sibling_types.pop()
+        branches or arms never decides it).  The synthesis carries that
+        origin with the type (*from_sibling*, #1866) into each part of it
+        handed down, and nowhere else."""
+        return self._synth_expr(expr, expected=sibling, from_sibling=True)
 
     def _join_either(self, ty: Type, onto: Type) -> Type | None:
         """The structure of a value join of an arm of *ty* with what the
@@ -509,8 +507,12 @@ class ControlFlowMixin:
                     error_code="E300",
                 )
 
-        then_ty = self._synth_expr(expr.then_branch, expected=expected)
-        else_ty = self._synth_expr(expr.else_branch, expected=expected)
+        then_ty = self._synth_expr(
+            expr.then_branch, expected=expected,
+            from_sibling=self._expected_from_sibling)
+        else_ty = self._synth_expr(
+            expr.else_branch, expected=expected,
+            from_sibling=self._expected_from_sibling)
 
         if then_ty is None or else_ty is None:  # pragma: no cover — defensive: _synth_expr returns UnknownType, not None
             return then_ty or else_ty
@@ -613,7 +615,9 @@ class ControlFlowMixin:
                 self.env.bind(b.type_name, b.resolved_type, "match")
 
             # Synth arm body type (pass expected for bidirectional)
-            arm_ty = self._synth_expr(arm.body, expected=expected)
+            arm_ty = self._synth_expr(
+                arm.body, expected=expected,
+                from_sibling=self._expected_from_sibling)
             self.env.pop_scope()
 
             if arm_ty is None or isinstance(arm_ty, UnknownType):
@@ -1964,7 +1968,8 @@ class ControlFlowMixin:
             # ctor var without it, and the #971 bidirectional fill needs the
             # expected type to adopt the declared type arguments.
             init_type = self._synth_expr(
-                expr.state.init_expr, expected=state_type)
+                expr.state.init_expr, expected=state_type,
+                from_sibling=False)
             if init_type and not isinstance(init_type, UnknownType):  # pragma: no mutate — equivalent: `_synth_expr` returns a type, never None, and an `UnknownType` init is a subtype of every state type, so `or` enters a branch that reports nothing; with `or` here every cell of the instrument passes
                 if (not is_subtype(init_type, state_type)
                         and not self._refuse_unfit_function_value(
@@ -2196,7 +2201,7 @@ class ControlFlowMixin:
                     # with-update Byte arm unreachable from check-green
                     # source).
                     upd_type = self._synth_expr(
-                        upd_expr, expected=state_type)
+                        upd_expr, expected=state_type, from_sibling=False)
                     if (upd_type and state_type
                             and not isinstance(upd_type, UnknownType)
                             and not is_subtype(upd_type, state_type)
