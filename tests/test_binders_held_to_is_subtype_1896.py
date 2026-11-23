@@ -480,3 +480,74 @@ def test_an_open_variable_met_twice_fits_at_the_narrower_type(
     position, where it is accepted at main."""
     source = _TWIN + _fn("main(@Unit -> @Int)", body, visibility="public")
     assert _codes(source) == [], source
+
+
+# =====================================================================
+# A clause parameter's refusal, read whole (#1908's mutation lane)
+# =====================================================================
+
+_CLAUSE_FN_TYPES = (
+    "type G = fn(Int -> Int) effects(pure);\n"
+    "type F = fn(Int -> Nat) effects(pure);\n"
+    "type IOF = fn(Int -> Int) effects(<IO>);\n\n")
+
+
+def _clause_over(op_ty: str, written: str) -> str:
+    """`go` throws a `G` closure under `Exn<op_ty>` and binds it at
+    `written` in the clause."""
+    return _CLAUSE_FN_TYPES + _fn(
+        "go(@Int -> @Int)",
+        f"let @{op_ty} = fn(@Int -> @Int) effects(pure) {{ @Int.0 }};\n"
+        f"  handle[Exn<{op_ty}>] {{\n    throw(@{written}) -> {{ 0 }}\n"
+        f"  }} in {{\n    throw(@{op_ty}.0)\n  }}", visibility="public")
+
+
+_E190_CLAUSE_DESCRIPTION = (
+    "A function value of type fn(Int -> Int) effects(pure) is used where the "
+    "parameter of the 'throw' clause gives it the type fn(Int -> Nat) "
+    "effects(pure): its result is declared `Int`, and that type promises "
+    "`Nat`, which a result declared `Int` does not guarantee.")
+#: The parameter is the one rewrite: the value is the operation's, at the
+#: handled effect's type, which no rewrite of a closure changes.
+_E190_CLAUSE_FIX = (
+    "Write the clause's parameter at a function type whose result is "
+    "`Int`.")
+
+
+def test_repro_a_clause_parameter_narrower_by_a_result_is_e190_read_whole(
+        ) -> None:
+    """`throw(@F)` under `Exn<G>`: `F` promises a `Nat` result `G` does not
+    guarantee.  E190 names the clause as what gave the position its type,
+    and its fix names the clause's parameter as the declaration to change;
+    written at `G`, the clause checks."""
+    source = _clause_over("G", "F")
+    (diagnostic,) = pipeline.check(source).errors
+    assert diagnostic.error_code == "E190"
+    assert diagnostic.description == _E190_CLAUSE_DESCRIPTION, (
+        diagnostic.description)
+    assert diagnostic.fix == _E190_CLAUSE_FIX, diagnostic.fix
+    assert _codes(_clause_over("G", "G")) == []
+
+
+def test_repro_a_function_typed_clause_parameter_s_e342_fix_is_prose(
+        ) -> None:
+    """`throw(@G)` under `Exn<IOF>`: the operation's value performs IO the
+    parameter's type does not declare, which is no narrowing, so E342.  A
+    slot names a function type through an alias, so the fix names the
+    operation's type in prose, never `@fn(...)`; written at the operation's
+    type, the clause checks."""
+    source = _clause_over("IOF", "G").replace(
+        "  effects(pure)\n{\n  let @IOF", "  effects(<IO>)\n{\n  let @IOF")
+    (diagnostic,) = pipeline.check(source).errors
+    assert diagnostic.error_code == "E342"
+    assert diagnostic.description == (
+        "Handler clause 'throw' binds its parameter at type fn(Int -> Int) "
+        "effects(pure), but the operation is performed with a value of type "
+        "fn(Int -> Int) effects(<IO>).")
+    assert diagnostic.fix == (
+        "Write the parameter at the type 'throw' takes, and bind the value "
+        "at another type with a `let` in the clause body where it fits "
+        "there."), diagnostic.fix
+    fixed = source.replace("throw(@G) ->", "throw(@IOF) ->")
+    assert fixed != source
+    assert _codes(fixed) == [], fixed

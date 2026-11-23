@@ -1084,6 +1084,12 @@ class TypeChecker(
                        f"narrowed value both renumber the body's slot "
                        f"references of those two types: rewrite each to the "
                        f"binding it read before.{wrap}  Or {other}.")
+        if isinstance(node, ast.TypeExpr):
+            # A clause parameter's type (#1896): the value is the one the
+            # operation is performed with, at the handled effect's type,
+            # which no rewrite of a closure changes; the parameter is what
+            # the program rewrites.
+            fix = f"{other[:1].upper()}{other[1:]}."
         self._error(
             node,
             (f"A function value of type {self._shown(found.value)}"

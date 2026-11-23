@@ -1992,11 +1992,14 @@ class ControlFlowMixin:
                              written: Type) -> None:
         """A handler clause's parameter written at a type the operation's
         value is not a subtype of (#1896): E190 where it fits only by a
-        narrowing inside a function type, else E342."""
+        narrowing inside a function type, else E342.  The reporter is
+        handed the parameter's type expression, which is no value: it
+        prints no rewrite of it and no wrapper around it, so *value_node*
+        is left at its default."""
         if self._refuse_unfit_function_value(
                 param_te, op_ty, written,
                 f"the parameter of the '{clause.op_name}' clause",
-                "write the clause's parameter at", value_node=False):
+                "write the clause's parameter at"):
             return
         # A slot names a function type through an alias, so its type is
         # given in prose.
