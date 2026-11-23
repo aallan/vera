@@ -68,6 +68,7 @@ from vera.types import (
     PrimitiveType,
     canonical_type_name,
     erases_to_unit,
+    holds_function,
     is_subtype,
     unfit_function_value,
     pretty_type,
@@ -936,6 +937,8 @@ class TypeChecker(
         gave: str,
         declare: str,
         call: tuple[FunctionInfo, int, Sequence[Type | None]] | None = None,
+        *,
+        value_node: bool = True,
     ) -> bool:
         """E190 at *node*, a function value of type *value_ty* that fits
         *position_ty* only by a narrowing (`unfit_function_value`): a
@@ -945,7 +948,15 @@ class TypeChecker(
         *declare* the declaration the second rewrite changes.  *call* is the
         called function, the argument's index and the arguments' types, for
         a generic instance chosen from another argument, whose fix names
-        that argument."""
+        that argument.  *value_node* is False where *node* is not the value
+        of type *value_ty* but a value holding it (a destructured one).
+
+        The fix prints code only in the shapes the read-back generators
+        paste: the pair at the value's root, met where *node* is that value
+        (a closure written in place, or a slot holding it), at a part that
+        holds no function type.  Everywhere else its rewrites are prose: a
+        header spliced around a part of the value, or a wrapper applying a
+        container, would not check pasted."""
         found = unfit_function_value(value_ty, position_ty)
         if found is None:
             return False
@@ -953,28 +964,40 @@ class TypeChecker(
         if i is None:
             value_part, position_part = (found.value.return_type,
                                          found.position.return_type)
-            where, written_at = "result", (
-                node.return_type if isinstance(node, ast.AnonFn) else None)
+            where = "result"
         else:
             value_part, position_part = (found.value.params[i],
                                          found.position.params[i])
-            where, written_at = f"parameter {i}", (
-                node.params[i] if isinstance(node, ast.AnonFn)
-                and len(node.params) == len(found.value.params) else None)
-        if base_type(value_ty) is not found.value:
-            written_at = None
+            where = f"parameter {i}"
+        nested = base_type(value_ty) is not found.value
+        root = value_node and not nested
+        function_part = (holds_function(value_part)
+                         or holds_function(position_part))
+        code = (root and not function_part
+                and isinstance(node, (ast.AnonFn, ast.SlotRef)))
+        written_at: ast.TypeExpr | None = None
+        if root and isinstance(node, ast.AnonFn):
+            if i is None:
+                written_at = node.return_type
+            elif len(node.params) == len(found.value.params):
+                written_at = node.params[i]
         vp = (ast.format_type(written_at) if written_at is not None
               else self._shown(value_part))
         pp = self._shown(position_part)
-        other = f"{declare} a function type whose {where} is `{vp}`"
-        if call is not None and i is not None:
+        other = (f"{declare} a type holding, where this one sits, a "
+                 f"function type whose {where} is `{vp}`" if nested
+                 else f"{declare} a function type whose {where} is `{vp}`")
+        if call is not None and i is not None and root:
+            # The instance a call's other argument fixed names the
+            # variable at the root pair's parameter i; below the root, i
+            # indexes a function type inside the argument's, and no
+            # argument fixes that part.
             gave, other = self._unfit_call_source(
                 call, found, i, vp, pp, gave, other)
         both_refined = (isinstance(value_part, RefinedType)
                         and isinstance(position_part, RefinedType))
-        header = self._unfit_header(node, written_at, pp)
-        wrapper = (self._eta_wrapper(node, found.position)
-                   if base_type(value_ty) is found.value else None)
+        header = self._unfit_header(node, written_at, pp) if code else None
+        wrapper = self._eta_wrapper(node, found.position) if code else None
         wrap = (f"  Or wrap the value in a closure of the position's type, "
                 f"where the narrowing is a value's: `{wrapper}`."
                 if wrapper is not None else "")
@@ -984,38 +1007,58 @@ class TypeChecker(
                     f"guarantee.")
             example = (f": `{header} {{ ... }}`" if header is not None
                        else "")
-            fix = (f"Declare the closure's result as `@{pp}`, the type the "
-                   f"position states{example}; the closure's own return is "
-                   f"then proved or checked, where the value is.{wrap}  Or "
-                   f"{other}.")
+            if function_part:
+                fix = (f"Declare the closure's result at `{pp}`, the type "
+                       f"the position states.  A function value is narrowed "
+                       f"nowhere: return a closure of that type, which "
+                       f"applies the one the closure has and narrows what "
+                       f"it returns, where there is a value to check.  Or "
+                       f"{other}.")
+            else:
+                fix = (f"Declare the closure's result as `@{pp}`, the type "
+                       f"the position states{example}; the closure's own "
+                       f"return is then proved or checked, where the value "
+                       f"is.{wrap}  Or {other}.")
         else:
             told = (f"its parameter {i} is declared `{vp}`, and that type "
                     f"hands it any `{pp}`, not only a `{vp}`.")
-            # The header the rewrite prints, and its parameters as written:
-            # the closure's own header with parameter i at the position's
-            # type, or, where the value is not a closure written in place,
-            # a closure of the position's type written out.  The narrowing
-            # reads parameter i by that header's slots.
-            written: list[ast.TypeExpr | Type] = list(found.position.params)
-            closure = node if header is not None else None
-            if isinstance(closure, ast.AnonFn):
-                written = [found.position.params[i] if j == i else te
-                           for j, te in enumerate(closure.params)]
-            else:
-                header = self._written_header(found.position)
-            slots = self._rewrite_slots(written)
             example = ""
-            if slots is not None and header is not None:
-                narrow = (f"let @{vp} = "
-                          f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
-                example = f": `{header} {{ {narrow} ... }}`"
-            fix = (f"Declare the closure's parameter {i} as `@{pp}`, the type "
-                   f"the position hands it, and narrow inside, where there "
-                   f"is a value to check{example}.{wrap}  Or {other}.")
+            if code:
+                # The header the rewrite prints, and its parameters as
+                # written: the closure's own header with parameter i at the
+                # position's type, or, where the value is held in a slot, a
+                # closure of the position's type written out.  The
+                # narrowing reads parameter i by that header's slots.
+                written: list[ast.TypeExpr | Type] = list(
+                    found.position.params)
+                if isinstance(node, ast.AnonFn) and header is not None:
+                    written = [found.position.params[i] if j == i else te
+                               for j, te in enumerate(node.params)]
+                else:
+                    header = self._written_header(found.position)
+                slots = self._rewrite_slots(written)
+                if slots is not None and header is not None:
+                    narrow = (f"let @{vp} = "
+                              f"@{slots[i]}.{slots[i + 1:].count(slots[i])};")
+                    example = f": `{header} {{ {narrow} ... }}`"
+            if function_part:
+                fix = (f"Declare the closure's parameter {i} at `{pp}`, the "
+                       f"type the position hands it.  A function value is "
+                       f"narrowed nowhere: where the closure needs more of "
+                       f"it than that type states, apply it inside and "
+                       f"narrow what it returns, where there is a value to "
+                       f"check.  Or {other}.")
+            else:
+                fix = (f"Declare the closure's parameter {i} as `@{pp}`, the "
+                       f"type the position hands it, and narrow inside, "
+                       f"where there is a value to check{example}.{wrap}  "
+                       f"Or {other}.")
         self._error(
             node,
-            (f"A function value of type {self._shown(found.value)} is used "
-             f"where {gave} gives it the type "
+            (f"A function value of type {self._shown(found.value)}"
+             + (f", inside a value of type {self._shown(value_ty)},"
+                if nested else "")
+             + f" is used where {gave} gives it the type "
              f"{self._shown(found.position)}: {told}"
              + (" Inside a function type two refinements of one base fit "
                 "only where they state the same predicate: whether one "

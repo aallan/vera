@@ -927,7 +927,7 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     # type by its base, so where a function type sits inside (an
     # `Array<fn(Pos -> Int)>` beside an `Array<fn(Big -> Int)>`) the pair
     # goes on to the rules below, which reach rule 9 (#1885).
-    if types_equal(sub, sup) and not _holds_function(sub):
+    if types_equal(sub, sup) and not holds_function(sub):
         return True
 
     # Never is bottom
@@ -962,13 +962,13 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     return False
 
 
-def _holds_function(ty: Type) -> bool:
+def holds_function(ty: Type) -> bool:
     """Whether a function type stands anywhere in *ty*."""
     ty = base_type(ty)
     if isinstance(ty, FunctionType):
         return True
     return isinstance(ty, AdtType) and any(
-        _holds_function(a) for a in ty.type_args)
+        holds_function(a) for a in ty.type_args)
 
 
 def is_formal_subtype(sub: Type, sup: Type) -> bool:

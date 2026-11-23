@@ -568,6 +568,7 @@ _NAMED = {
 
 _BUILT_AROUND = ("if-join", "match-join", "array-element", "tuple-element",
                  "option")
+_HELD_INSIDE = ("array-element", "tuple-element", "option")
 
 
 def test_every_flow_names_what_gave_the_position_its_type() -> None:
@@ -582,8 +583,18 @@ def test_every_flow_names_what_gave_the_position_its_type() -> None:
         # A closure written in place is named as written; a value built
         # around it (a join, an element) by its type, the predicate spelt.
         spelt = ("{ @Int | @Int.0 > 0 }" if flow in _BUILT_AROUND else "Pos")
-        assert (f"Or {declare} a function type whose parameter 0 is "
-                f"`{spelt}`." in fix), (flow, fix)
+        # Inside a value built around it (an element, a component), the
+        # declaration to change holds the function type there.
+        holding = ("a type holding, where this one sits, "
+                   if flow in _HELD_INSIDE else "")
+        assert (f"Or {declare} {holding}a function type whose parameter 0 "
+                f"is `{spelt}`." in fix), (flow, fix)
+        assert (", inside a value of type " in description) == (
+            flow in _HELD_INSIDE), (flow, description)
+        # A value that is not the closure itself (a join, a container) is
+        # given its rewrites in prose: no code is printed for it.
+        if flow in _BUILT_AROUND:
+            assert "`fn(" not in fix, (flow, fix)
         assert diagnostic["rationale"] == _RATIONALE, flow
 
 
@@ -927,14 +938,16 @@ _FORM_OWN_CODES = {"user-op-argument": {"E340"},
                    "user-op-clause-param": {"E340"},
                    "user-op-resume": {"E340"}}
 
-#: A handler clause's parameter is bound at the operation's type and its
-#: written type compared with nothing, at any type: its own mechanism, not
-#: the function-type rule's.
+#: A handler clause's parameter names its slot by the written type and
+#: binds it at the operation's, the two compared with nothing, at any type
+#: (#1896): a narrower function-typed binder is accepted at check, and the
+#: body reads the slot at the operation's type, so no wrong value comes out
+#: of the clause.  Its own mechanism, not the function-type rule's; the fix
+#: for #1896 refuses the binder (E190).
 _CLAUSE_PARAMETER = (
     "a handler clause's parameter is bound at the operation's type, its "
-    "written type compared with nothing, at any type: ISSUE_HANDLER_CLAUSE")
-_CLAUSE_FORMS = ("exn-clause-param", "state-clause-param",
-                 "user-op-clause-param")
+    "written type compared with nothing (#1896)")
+_CLAUSE_FORMS = ("exn-clause-param", "state-clause-param")
 
 
 #: A form that meets the value twice: `resume` hands the state's `get` the
@@ -1153,8 +1166,11 @@ def test_every_binding_form_meets_a_function_type(
     source = binding_form_program(form, kind, p, c, generic)
     refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
     own = _FORM_OWN_CODES.get(form, set())
+    # A user effect's handler is refused (E340) before its clause binder
+    # is reached by anything (#1896): the form's own code alone.
+    judged = refused and form != "user-op-clause-param"
     assert sorted(_codes(source)) == sorted(
-        ["E190"] * _E190_COUNT.get(form, 1) * refused + list(own)), source
+        ["E190"] * _E190_COUNT.get(form, 1) * judged + list(own)), source
     if not refused and not own:
         verified = pipeline.verify(source, reconcile=True)
         assert verified.ok, (verified.diagnostics, source)

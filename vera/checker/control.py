@@ -1630,7 +1630,7 @@ class ControlFlowMixin:
             if self._refuse_unfit_function_value(
                     stmt.value, component, binding,
                     f"binding {position} of the destructuring let",
-                    f"write binding {position} at"):
+                    f"write binding {position} at", value_node=False):
                 continue
             bind_text = self._writes_as(binding)
             wanted = (f"type {bind_text}" if bind_text is not None
