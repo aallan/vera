@@ -1026,9 +1026,9 @@ class ControlFlowMixin:
         * no expected type — a sub-pattern of a `Tuple` whose arity the
           expected type does not supply;
         * an unresolved scrutinee (`UnknownType`), or a `Never` one;
-        * a type variable — the deliberate boundary.  A `forall<T>` body
-          cannot decide `Some(@Int)` over `@T.0`, because `T` may be
-          instantiated at `Option<Int>`.  Only the HEAD has to be known:
+        * a type variable a call left open, which the context fixes (the
+          enclosing function's own is refused before this is asked,
+          `_check_pattern_scrutinee`, #1896).  Only the HEAD has to be known:
           `Map<T, U>` from `map_new()` still decides every pattern whose
           answer depends on the head alone;
         * a named type the checker does not know — #1315's own
@@ -1078,11 +1078,12 @@ class ControlFlowMixin:
 
         Returns True when a mismatch was reported.
         """
-        if (expected is not None
+        rigid = base_type(expected) if expected is not None else None
+        if (isinstance(rigid, TypeVar)
                 and not isinstance(pat, (ast.BindingPattern,
                                          ast.WildcardPattern))
-                and self._rigid_variable(base_type(expected)) is not None):
-            return self._rigid_head_mismatch(pat, base_type(expected))
+                and self._rigid_variable(rigid) is not None):
+            return self._rigid_head_mismatch(pat, rigid)
         scrut = self._scrutinee_for_pattern(expected)
         if scrut is None or isinstance(pat, ast.BindingPattern):
             return False
@@ -1166,7 +1167,7 @@ class ControlFlowMixin:
             owner += f"<{', '.join(ci.parent_type_params)}>"
         return _HeadMisfit(owner=owner)
 
-    def _rigid_head_mismatch(self, pat: ast.Pattern, scrut: Type) -> bool:
+    def _rigid_head_mismatch(self, pat: ast.Pattern, scrut: TypeVar) -> bool:
         """E314 at a constructor or literal pattern over a value whose type
         is the enclosing function's own type variable *scrut* (#1896)."""
         matches = "matches a value of another type"
@@ -1187,6 +1188,8 @@ class ControlFlowMixin:
             if literal is not None:
                 matches = f"has type {literal[0]}"
         name = pretty_type(scrut)
+        # The type parameter as the program writes it: its name (#1778).
+        written = scrut.name
         return self._pattern_mismatch(
             pat, subject, matches, scrut,
             rationale=(
@@ -1197,8 +1200,8 @@ class ControlFlowMixin:
                 f"fields at whatever type that instance gives them."),
             fix=(f"Take the value at the type the pattern matches: give the "
                  f"function a parameter of that type in place of "
-                 f"`@{name}`, or match the `{name}` value with a binding "
-                 f"pattern `@{name}` or a wildcard '_'."),
+                 f"`@{written}`, or match the `{written}` value with a "
+                 f"binding pattern `@{written}` or a wildcard '_'."),
         )
 
     def _pattern_mismatch(
@@ -1442,10 +1445,9 @@ class ControlFlowMixin:
         if holds_function(seen):
             # A slot names a function type through an alias, so the
             # scrutinee's type is given in prose.
-            fix = (f"Bind the value at the scrutinee's type, "
-                   f"{pretty_type(seen)}, named by a type alias, and declare "
-                   f"the effects its functions perform where they are "
-                   f"applied; or match it with a wildcard '_'.")
+            fix = ("Bind the value at the scrutinee's type, named by a type "
+                   "alias, and declare the effects its functions perform "
+                   "where they are applied; or match it with a wildcard '_'.")
         self._pattern_mismatch(
             pat, f"Binding pattern '@{pretty_type(bound)}'",
             f"binds a value of type {pretty_type(bound)}", seen,
