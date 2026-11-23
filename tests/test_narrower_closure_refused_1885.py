@@ -2080,11 +2080,13 @@ _ENDO_HELPERS = "".join(
 
 #: (the parameter `main` takes, the call, whether it is accepted).  An
 #: argument that writes `Pos` at every position its function type gives
-#: `T` fixes `T` at `Pos`, the type the program wrote: the polarity pin
-#: chooses between `Int` and `Nat` only where the positions differ
-#: (spec §4.2).  Two refinements, or a value at the base beside the
-#: closure, leave no instance the closure fits: refused, in either order
-#: (the base value's pair is #1891's, both orders pinned as they are).
+#: `T` pins nothing, so `T` is `Pos` where no other argument says
+#: otherwise: the polarity pin chooses between `Int` and `Nat` only where
+#: the positions differ (spec §4.2).  Two refinements leave no instance
+#: the closure fits: refused in either order.  A value at the base beside
+#: the closure makes the instance the value's, `Int`, which the closure
+#: does not fit: refused in either order, as today, though `Pos` would fit
+#: it and narrow the value; that choice is #1891's, recorded there.
 _ENDO_CELLS = {
     "one-refinement-closure-first": (
         "@Pos", "app(fn(@Pos -> @Pos) effects(pure) { @Pos.0 }, @Pos.0)",

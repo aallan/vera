@@ -170,11 +170,12 @@ class _Pins:
     met: dict[str, list[Type]] = field(default_factory=dict)
 
     def written_once(self) -> list[_Pin]:
-        """The pins that stand: a variable every position of the argument
-        gives one refinement (`fn(@Pos -> @Pos)`) takes that type, the one
-        the program wrote, and pins nothing; the pin chooses between `Int`
-        and `Nat` only where the positions differ, and never widens a type
-        all of them state to its base (spec §4.2)."""
+        """The pins that stand: an argument that gives a variable one
+        refinement at every position it holds there (`fn(@Pos -> @Pos)`)
+        pins nothing, so the variable is what unification and the other
+        arguments make it; the pin chooses between `Int` and `Nat` only
+        where the positions differ, and never widens a type all of them
+        state to its base (spec §4.2)."""
         def written(var: str) -> bool:
             types = self.met.get(var, [])
             return (bool(types) and base_type(types[0]) != types[0]
