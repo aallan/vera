@@ -1491,7 +1491,10 @@ def _assume_on_arguments(
                 return None
             pairs.append((var, term))
         elif bt == FLOAT64:
-            pairs.append((var, z3.FPVal(float(value), var.sort())))
+            pairs.append((var, z3.FPVal(
+                float(value),
+                var.sort(),  # pragma: no mutate — equivalent: a `Float64` parameter's sort is z3's default FP sort, FPSort(11, 53), the one FPVal takes without it
+            )))
         else:
             pairs.append((var, z3.IntVal(int(value))))
     answer = z3.simplify(z3.substitute(predicate, *pairs))

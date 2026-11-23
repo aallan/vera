@@ -93,7 +93,7 @@ def float_literal(value: float) -> ast.Expr:
         return ast.FnCall("nan", ())
     if math.isinf(value):
         inf = ast.FnCall("infinity", ())
-        return inf if value > 0 else ast.BinaryExpr(
+        return inf if value == math.inf else ast.BinaryExpr(
             ast.BinOp.SUB, ast.FloatLit(0.0), inf)
     return ast.FloatLit(value)
 
@@ -116,7 +116,7 @@ def z3_float(value: z3.ExprRef) -> float:
     """A Z3 floating-point model value as the Python float it is (#797):
     NaN and the infinities to theirs, a finite value through `fpToReal`
     (exact), the sign of zero kept."""
-    fp = value if isinstance(value, z3.FPNumRef) else z3.simplify(value)
+    fp = z3.simplify(value)
     assert isinstance(fp, z3.FPNumRef), fp  # noqa: S101 — a model value
     if fp.isNaN():
         return math.nan
@@ -151,7 +151,10 @@ def string_term(value: str) -> z3.SeqRef | None:
     no character of *value* is read as anything but itself."""
     if not holds_string(value):
         return None
-    return z3.StringVal(value.replace("\\", "\\u{5c}"))
+    return z3.StringVal(value.replace(
+        "\\",
+        "\\u{5c}",  # pragma: no mutate — equivalent: Z3 reads its hex digits in either case, `\\u{5C}` is one backslash too
+    ))
 
 
 def z3_string(value: z3.ExprRef) -> str:
@@ -243,10 +246,11 @@ def _array_node(
     elements = [_z3_node(e, arrays, budget) for e in shown]
     if any(e is None for e in elements):
         return None
-    more = length - len(elements)
-    if more <= 0 and all(isinstance(e, ast.Expr) for e in elements):
-        return ast.ArrayLit(tuple(e for e in elements if isinstance(e, ast.Expr)))
+    # Written as the formatter writes an `ArrayLit` (`[a, b]`), each element
+    # by the formatter, so a whole array and one written in part share one
+    # spelling.
     parts = [_as_text(e) for e in elements]
+    more = length - len(elements)
     if more > 0:
         parts.append(f"... and {more} more")
     return f"[{', '.join(parts)}]"

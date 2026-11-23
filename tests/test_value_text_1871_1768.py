@@ -760,3 +760,408 @@ public fn f(@VTree -> @Int)
 """
     assert _block(_description(source, "E500")) == [
         f"@VTree.0 = {vera_value}", "@Int.result = 0"]
+
+
+# -- Always run: the properties every pull request's sample must hold ------
+#
+# The matrices above are sampled on a pull request; the tests below are not
+# parametrised, so each runs every time, and each pins a property a mutant
+# of this module's code breaks (the Mutation (diff) lane's survivors).
+
+def _fake_array_reader(arrays: dict[int, tuple[int, list[z3.ExprRef]]]):
+    """A reader over z3 constants stood in for arrays: id -> (length,
+    first elements)."""
+    def read(value: z3.ExprRef):
+        return arrays.get(value.get_id())
+    return read
+
+
+def test_repro_literals_write_each_kind_whole() -> None:
+    from vera import literals
+    assert literals.text(literals.int_literal(-7)) == "-7"
+    assert literals.text(literals.bool_literal(False)) == "false"
+    assert literals.text(literals.float_literal(-math.inf)) == "0.0 - infinity()"
+    assert literals.text(literals.float_literal(math.inf)) == "infinity()"
+    assert literals.text(literals.float_literal(0.5)) == "0.5"
+    # A floating-point term that is not yet a numeral is simplified first.
+    three = z3.fpAdd(z3.RNE(), z3.FPVal(1.0, _F64), z3.FPVal(2.0, _F64))
+    assert literals.z3_float(three) == 3.0
+    assert literals.z3_text(three) == "3.0"
+    # The sort's alphabet and the surrogates, at each boundary.
+    assert literals.holds_string("\U0002FFFF") and not literals.holds_string("\U00030000")
+    assert not literals.holds_string("\ud800") and not literals.holds_string("\udfff")
+    assert literals.holds_string("퟿") and literals.holds_string("")
+    term = literals.string_term("\\u{41}")
+    assert term is not None and literals.z3_string(term) == "\\u{41}"
+    assert literals.z3_text(z3.IntVal(5)) == "5"
+    assert literals.z3_text(z3.BoolVal(True)) == "true"
+    # A term no literal writes (an uninterpreted constant) has none.
+    assert literals.z3_text(z3.Int("free")) is None
+    assert literals.z3_text(z3.Bool("free")) is None
+
+
+def test_repro_literals_write_an_array_whole_and_in_part() -> None:
+    from vera import literals
+    sort = z3.DeclareSort("ValueTextArr")
+    two, nine, empty, outer = (z3.Const(n, sort) for n in ("two", "nine", "empty", "outer"))
+    ints = [z3.IntVal(i) for i in range(9)]
+    reader = _fake_array_reader({
+        two.get_id(): (2, ints[:2]),
+        nine.get_id(): (9, ints[:8]),
+        empty.get_id(): (0, []),
+    })
+    assert literals.z3_text(two, reader) == "[0, 1]"
+    assert literals.z3_text(empty, reader) == "[]"
+    assert literals.z3_text(nine, reader) == "[0, 1, 2, 3, 4, 5, 6, 7, ... and 1 more]"
+    # An array of arrays reads its elements through the same reader.
+    nested = z3.DeclareSort("ValueTextArrArr")
+    outer = z3.Const("outer", nested)
+    reader2 = _fake_array_reader({outer.get_id(): (1, [two]), two.get_id(): (2, ints[:2])})
+    assert literals.z3_text(outer, reader2) == "[[0, 1]]"
+    # An element with no literal leaves the array with none.
+    odd = z3.Const("odd", sort)
+    assert literals.z3_text(odd, _fake_array_reader({odd.get_id(): (1, [z3.Int("x")])})) is None
+    # No reader: a carrier has no literal.
+    assert literals.z3_text(two) is None
+
+
+def test_repro_literals_bound_one_value_at_the_budget() -> None:
+    from vera import literals
+    assert literals.VALUE_BUDGET == 64
+    at = literals.z3_text(_chain(63))
+    over = literals.z3_text(_chain(64))
+    assert at == "Link(" * 63 + "End" + ")" * 63
+    assert over == "Link(" * 64 + "..." + ")" * 64 + " (elided past 64 parts)"
+    # The budget is per value: a second value starts afresh.
+    assert literals.z3_text(_chain(63)) == at
+
+
+def test_repro_render_args_writes_each_argument_and_none() -> None:
+    from vera.tester import render_args
+    assert render_args({}) == "no arguments"
+    assert render_args({"@Bool.0": True, "@String.0": 'q"\n', "@Float64.0": 0.1,
+                        "@Int.0": -7}) == (
+        '@Bool.0 = true, @String.0 = "q\\"\\n", @Float64.0 = 0.1, @Int.0 = -7')
+
+
+def _assumption(source: str, args: dict[str, object]) -> object:
+    from vera.tester import TrialResult, _assume_on_arguments
+    checked = pipeline.check(source)
+    assert checked.ok, checked.diagnostics
+    [decl] = [d.decl for d in checked.program.declarations
+              if getattr(d.decl, "name", None) == "f"]
+    assume = decl.body.statements[0].expr
+    trial = TrialResult(fn_name="f", args=args, status="fail", message="")  # type: ignore[arg-type]
+    return _assume_on_arguments(
+        decl, assume, trial, checked.artifacts.alias_env, typed=checked.typed)
+
+
+def _assume_program(params: str, predicate: str) -> str:
+    return f"""\
+public fn f({params} -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  assume({predicate});
+  0
+}}
+"""
+
+
+def test_repro_an_assume_is_read_on_the_trial_s_vera_values() -> None:
+    """E703 says whether a trial's arguments satisfy the `assume` a refuted
+    proof rests on, from the arguments as Vera values (#1768)."""
+    boolean = _assume_program("@Bool", "@Bool.0")
+    assert _assumption(boolean, {"@Bool.0": True}) is True
+    assert _assumption(boolean, {"@Bool.0": False}) is False
+    text = _assume_program("@String", '@String.0 == "\\\\u{41}"')
+    assert _assumption(text, {"@String.0": "\\u{41}"}) is True
+    assert _assumption(text, {"@String.0": "A"}) is False
+    # A string the solver's sort cannot hold: not told.
+    assert _assumption(text, {"@String.0": "\U00030000"}) is None
+    real = _assume_program("@Float64", "@Float64.0 > 1.5")
+    assert _assumption(real, {"@Float64.0": 2.0}) is True
+    assert _assumption(real, {"@Float64.0": 1.0}) is False
+
+
+def test_repro_the_e703_description_counts_its_proofs() -> None:
+    from vera.obligations.core import ProofObligation
+    from vera.tester import TrialResult, _refutation_description
+    first = ProofObligation(fn_name="f", kind="ensures", expr_text="@Int.result == 1",
+                            status="verified", line=3, column=3)
+    second = ProofObligation(fn_name="f", kind="ensures", expr_text="@Int.result > 0",
+                             status="verified", line=4, column=3)
+    one = TrialResult(fn_name="f", args={"@Bool.0": False}, status="refuted",
+                      message="Postcondition violation in f", refutes=[first])
+    two = TrialResult(fn_name="f", args={"@Bool.0": False}, status="refuted",
+                      message="Postcondition violation in f", refutes=[first, second])
+    assert _refutation_description("f", one, None) == (
+        "Tier 1 proof refuted in 'f': ensures(@Int.result == 1) was proved, "
+        "but the trial on @Bool.0 = false failed it at run time: "
+        "Postcondition violation in f")
+    assert _refutation_description("f", two, None) == (
+        "Tier 1 proof refuted in 'f': ensures(@Int.result == 1) and "
+        "ensures(@Int.result > 0) were each proved, but the trial on "
+        "@Bool.0 = false failed one of them at run time: "
+        "Postcondition violation in f")
+
+
+def test_repro_the_string_seeds_are_each_tried() -> None:
+    """With nothing to constrain it, a `String` parameter's inputs include
+    every boundary seed, each the seed itself."""
+    from vera.tester import _BOUNDARY_STRING, _generate_inputs, _get_param_types
+    checked = pipeline.check("""\
+public fn f(@String -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+""")
+    [decl] = [d.decl for d in checked.program.declarations
+              if getattr(d.decl, "name", None) == "f"]
+    env = checked.artifacts.alias_env
+    inputs = _generate_inputs(decl, _get_param_types(decl, env), 20, env,
+                              typed=checked.typed)
+    assert inputs is not None
+    generated = {args[0] for args in inputs}
+    assert set(_BOUNDARY_STRING) <= generated, generated
+
+
+def test_repro_a_bool_argument_reaches_the_function_as_its_value() -> None:
+    """The compiled function is called with 1 for `true`: `@Bool.0 == true`
+    holds in it, and every trial passes."""
+    fn = _trials_of("""\
+public fn f(@Bool -> @Int)
+  requires(@Bool.0)
+  ensures(string_length(int_to_string(@Int.result)) == 1)
+  effects(pure)
+{
+  if @Bool.0 == true then { 1 } else { 10 }
+}
+""")
+    assert fn.trials_run >= 1 and fn.trials_failed == 0, fn.failures
+
+
+def test_repro_each_emitter_writes_its_block_and_header() -> None:
+    """Every emitter, for a `Bool`, an `Int` and a `Nat` input: the whole
+    block, and the long header exactly where its body binds the input's
+    name again (`let @Int` before an `Int` input's line)."""
+    for emitter, (code, _, _, body, names_result) in _EMITTERS.items():
+        for ty in ("Bool", "Int", "Nat"):
+            param, _, line = _TYPES[ty]
+            expected = sorted(_inputs(emitter, ty)[2])
+            if names_result:
+                expected.append("@Int.result = 0")
+            description = _description(_program(emitter, ty), code)
+            assert _block(description) == expected, (emitter, ty, description)
+            renamed = f"let {param} =" in body
+            assert _header(description) == (
+                _RENAMED_HEADER if renamed else _HEADER), (emitter, ty, description)
+
+
+def _rebound(body: str, params: str, pin: str, ret: str = "@Int") -> str:
+    return _PRELUDE + f"""
+public fn f({params} -> {ret})
+  requires({pin})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+"""
+
+
+def test_repro_the_emitters_no_template_rebinds_for_say_whose_names() -> None:
+    """The emitters no template above rebinds an input for: a call's
+    precondition (E501), a payload's refinement (E505), an `assert` (E507)
+    and an index (E527), each after a `let` of the input's type, each the
+    long header and the parameter's value."""
+    call = _description(_rebound("let @Int = 0;\n  need(@Int.0)",
+                                 "@Int", "@Int.0 == 3"), "E501")
+    assert _header(call) == _RENAMED_HEADER and _block(call) == ["@Int.0 = 3"], call
+    payload = _description(_rebound(
+        "let @Option<Int> = @Option<Int>.0;\n  consume(@Option<Int>.0)",
+        "@Option<Int>", "@Option<Int>.0 == Some(0)"), "E505")
+    assert _header(payload) == _RENAMED_HEADER, payload
+    assert _block(payload) == ["@Option<Int>.0 = Some(0)"], payload
+    assert "the refinement `Option<{@Int | ...}>` writes on a component" in payload, payload
+    for code, body in (
+            ("E507", "let @Int = 0;\n  assert(@Int.0 == 1);\n  0"),
+            ("E527", "let @Int = 5;\n  [1, 2][@Int.0]")):
+        rebound = _description(_rebound(body, "@Int", "@Int.0 == 3"), code)
+        assert _header(rebound) == _RENAMED_HEADER, (code, rebound)
+        assert _block(rebound) == ["@Int.0 = 3"], (code, rebound)
+
+
+def test_repro_a_refinement_predicate_lists_its_binder() -> None:
+    """A predicate's own obligation lists its binder, by the base's slot
+    name, and the base's facts hold of it: `10 / (@Nat.0 + 1)` divides by
+    no zero."""
+    divides = _PRELUDE + """
+type Tenth = { @Int | 10 / @Int.0 > 0 };
+type NatTenth = { @Nat | 10 / (@Nat.0 + 1) > 0 };
+
+public fn f(@Tenth, @NatTenth -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+"""
+    verified = pipeline.verify(divides)
+    found = [d for d in verified.diagnostics if d.error_code == "E526"]
+    assert len(found) == 1, verified.diagnostics
+    assert _header(found[0].description) == _HEADER, found[0].description
+    assert _block(found[0].description) == ["@Int.0 = 0"], found[0].description
+
+
+def test_repro_a_generic_refined_return_lists_its_inputs() -> None:
+    """A generic function's refined return, decided before its clones: the
+    `Int` input as its literal, the type variable's with the note."""
+    source = _PRELUDE + """
+private forall<T> fn bad(@T, @Int -> @PosInt)
+  requires(@Int.0 == -1)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+    verified = pipeline.verify(source)
+    found = [d for d in verified.diagnostics if d.error_code == "E505"]
+    assert len(found) == 1, verified.diagnostics
+    assert _block(found[0].description) == [
+        "@Int.0 = -1", "@T.0: its value has no literal form"], found[0].description
+
+
+def test_repro_an_ensures_lists_each_type_s_input_and_the_body_s_result() -> None:
+    """One emitter over every input type of the matrix, and the result the
+    body gives (1, not the declared constant's 0)."""
+    for ty, (param, pin, line) in _TYPES.items():
+        source = _PRELUDE + f"""
+public fn f({param} -> @Int)
+  requires({pin})
+  ensures(@Int.result == 0)
+  effects(pure)
+{{
+  1
+}}
+"""
+        expected = ([] if line is None else [line]) + ["@Int.result = 1"]
+        assert _block(_description(source, "E500")) == expected, ty
+
+
+def test_repro_an_array_no_query_reads_is_empty() -> None:
+    """An `Array` input whose length no query reads is unconstrained: the
+    model holds it at length 0, `[]`."""
+    source = _PRELUDE + """
+public fn f(@Array<Int> -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  1
+}
+"""
+    assert _block(_description(source, "E500")) == [
+        "@Array<Int>.0 = []", "@Int.result = 1"]
+
+
+def test_repro_a_predicate_binds_its_binder_under_its_own_key() -> None:
+    """A predicate's binder is listed by its base's slot name, the one a
+    parameter of that type is named by (`@Option<Int>.0` for `@Option<Cnt>`),
+    not by the first reference the traversal meets (the arm's `@Int`, which
+    listed it as `@Int.0 = Some(0)`), and it is read
+    under its references' key; the facts of a refined base hold of the
+    binder (`PosTenth` divides by no zero)."""
+    source = _PRELUDE + """
+type Cnt = Int;
+type Payload = { @Option<Cnt> | match @Option<Cnt>.0 { Some(@Int) -> 10 / @Int.0 > 0, None -> true } };
+type PosTenth = { @PosInt | 10 / @PosInt.0 > 0 };
+
+public fn f(@Payload, @PosTenth -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+"""
+    verified = pipeline.verify(source)
+    found = [d for d in verified.diagnostics if d.error_code == "E526"]
+    assert len(found) == 1, verified.diagnostics
+    assert _block(found[0].description) == ["@Option<Int>.0 = Some(0)"], found[0].description
+
+
+def test_repro_a_generic_function_s_inputs_are_one_constant_each() -> None:
+    """The generic fast path declares each input under its own name: two
+    `Int` inputs pinned to different values are two values, and the refined
+    return is refuted at them."""
+    source = _PRELUDE + """
+private forall<T> fn bad(@T, @Int, @Int -> @PosInt)
+  requires(@Int.1 == 1 && @Int.0 == -1)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+    verified = pipeline.verify(source)
+    found = [d for d in verified.diagnostics if d.error_code == "E505"]
+    assert len(found) == 1, verified.diagnostics
+    assert _block(found[0].description) == [
+        "@Int.0 = -1", "@Int.1 = 1", "@T.0: its value has no literal form"]
+
+
+def test_repro_a_reset_context_lists_no_earlier_input() -> None:
+    """A warm context reused for the next function forgets the last one's
+    inputs."""
+    from vera.smt import SmtContext
+    from vera.types import INT
+    ctx = SmtContext()
+    ctx.declare_input("@Int.0", ctx.declare_int("@Int.0"), INT)
+    assert ctx.check_valid(z3.BoolVal(False), []).counterexample.shown == (
+        ("@Int.0", "0"),)
+    ctx.reset()
+    assert ctx.check_valid(z3.BoolVal(False), []).counterexample.shown == ()
+
+
+def test_repro_the_trial_report_shows_three_failures(tmp_path: Path) -> None:
+    """The text report shows a function's first three failing trials."""
+    path = tmp_path / "t.vera"
+    path.write_text("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(string_length(int_to_string(@Int.result)) == 99)
+  effects(pure)
+{
+  @Int.0
+}
+""", encoding="utf-8")
+    ran = pipeline.cli("test", "--trials", "10", path)
+    lines = [line for line in ran.stdout.splitlines() if line.startswith("    @Int.0 = ")]
+    assert len(lines) == 3, ran.stdout
+
+
+def test_repro_a_refutation_decided_on_a_literal_lists_nothing() -> None:
+    """A narrowing decided on a literal (#1251) has no model and no
+    counterexample: the description says what the value is, and no header
+    stands over nothing."""
+    source = """\
+type Small = { @Byte | byte_to_int(@Byte.0) < 10 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Small = 200;
+  @Int.0
+}
+"""
+    description = _description(source, "E505")
+    assert _header(description) is None and "200" in description, description

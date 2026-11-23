@@ -5127,7 +5127,7 @@ class SmtContext:
             length = model.evaluate(length_fn(value), model_completion=True)
             if not z3.is_int_value(length):
                 return None
-            count = max(0, length.as_long())
+            count = length.as_long()
             if index_fn is None:
                 index_fn = z3.Function(
                     f"index_{sort}", sort, z3.IntSort(), element_sort)

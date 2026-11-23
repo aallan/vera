@@ -3192,9 +3192,13 @@ class ContractVerifier:
         # predicate binds it (`_translate_refined_predicate`,
         # `refinement_binder_parts`).
         base_key = naming.slot_name_or_none(node.base_type, env)
-        binder_key = naming.predicate_binder_key(node.predicate, env)
+        binder_key = naming.predicate_binder_key(node.predicate, env)  # pragma: no mutate — no test of the #1226 and #1208 files, this instrument or test_verifier_refinements.py at --matrix=full tells None apart: base_key is the base's slot name with aliases resolved, the key the references resolve through
         base_ty = self._written_type(node.base_type)
-        binder_name = f"@{binder_key or base_key or 'binder'}.0"
+        # Named, where a counterexample lists it, by the base's slot name, as a
+        # parameter of the base's type is (`@Option<Int>.0`), not by the
+        # traversal's first reference, which can be a binder inside the
+        # predicate (an arm's `@Int`; #1871).
+        binder_name = f"@{base_key or binder_key or 'binder'}.0"  # pragma: no mutate — the fallbacks are unreached: every base a refinement is written over has a slot name; the name is pinned by test_repro_a_predicate_binds_its_binder_under_its_own_key
         binder = self._declare_value(smt, binder_name, base_ty)
         smt.declare_input(binder_name, binder, base_ty)
         facts = self._declared_type_facts(smt, base_ty, binder)
@@ -11549,7 +11553,7 @@ class ContractVerifier:
         ce_text = counterexample_text(
             counterexample, renamed=self._inputs_renamed(
                 decl, node, counterexample))
-        target = pretty_type(formal_ty) if formal_ty is not None else "the target type"
+        target = pretty_type(formal_ty) if formal_ty is not None else "the target type"  # pragma: no mutate — the fallback is unreached: the one caller returns before here when formal_ty is None (_has_nested_refinement(None) is False); the text the line writes is pinned whole by test_repro_the_emitters_no_template_rebinds_for_say_whose_names
         description = (
             f"Value passed as a {site} in '{decl.name}' may not satisfy the "
             f"refinement `{target}` writes on a component of its type."
@@ -13430,7 +13434,7 @@ class ContractVerifier:
             ref = _param_slot_ref(name)
             # The model's value, never the text a diagnostic prints: a
             # change to how a value is written moves no fix (#1871).
-            value = (None if counterexample is None
+            value = (None if counterexample is None  # pragma: no mutate — unreached as None: each caller passes a violated result's counterexample, which check_valid always sets
                      else counterexample.value(name))
             if ref is None or value is None or not z3.is_expr(var):
                 continue
@@ -13440,7 +13444,8 @@ class ContractVerifier:
                 elif z3.is_true(value):
                     flags.append(
                         (ast.UnaryExpr(ast.UnaryOp.NOT, ref), z3.Not(var)))
-            elif (z3.is_int(var) and z3.is_int_value(value)
+            elif (z3.is_int(var)
+                    and z3.is_int_value(value)  # pragma: no mutate — equivalent: a model value read with model completion is a numeral; the test keeps `as_long` from raising if one ever is not
                     and value.as_long() < 0):
                 candidates.append(
                     (ast.BinaryExpr(ast.BinOp.GE, ref, ast.IntLit(0)),
@@ -13586,17 +13591,22 @@ class ContractVerifier:
         body, and a binder there (a `let`, a `match` binder, a closure
         parameter) declares a slot of a listed input's type, so the name may
         read as another value at that line.  A contract clause is in the
-        signature's scope, and never is."""
-        if counterexample is None or not counterexample.shown:
+        signature's scope, and never is.
+
+        A clause stands before the body and a `where` function is a
+        declaration of its own, so a site of *decl*'s at or after the body's
+        start is in the body; spans nest, so it ends there too.  With nothing
+        listed, nothing is renamed: ``listed`` is empty."""
+        if counterexample is None:
             return False
         source, env = self._written_source(
             decl, self._fn_naming_scope(self._current_alias_env, decl))
-        body = None if source.body is None else source.body.span
+        body = None if source.body is None else source.body.span  # pragma: no mutate — equivalent: a clone's body carries its template's spans, so `decl.body` stands where `source.body` does
         site = _site_span(self._evaluation_site(node))
-        if body is None or site is None or not (
-                (body.line, body.column) <= (site.line, site.column)
-                and (site.end_line, site.end_column)
-                <= (body.end_line, body.end_column)):
+        if body is None or site is None or (
+                (site.line, site.column)
+                < (body.line, body.column)  # pragma: no mutate — equivalent as <=: the body's span starts at its opening brace, where no diagnostic stands
+        ):
             return False
         listed = {name[1:].rpartition(".")[0] for name, _ in counterexample.shown}
         return any(
