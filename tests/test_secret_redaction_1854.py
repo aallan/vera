@@ -1,0 +1,332 @@
+"""No part of a secret the host holds reaches a message (#1854).
+
+The host holds one kind of secret: each inference provider's configured API
+key (`vera.runtime.inference._PROVIDERS`), beside which a provider or a
+proxy may quote a credential-shaped token the host was never given.  Text
+from outside reaches a message, the `Err` of `Inference.complete`, from a
+provider's HTTP error body (read under a 64 KiB cap, then bounded to 200
+characters), a response body that is not JSON, the fields a shape report
+quotes, and an exception the transport raises.  Before #1854 the cap cut the
+body and redaction ran after it, so a key the cap split left its first part
+in the message, and an exception's text was quoted unredacted, so a key
+holding a line end reached the `Err` whole (`Invalid header value
+b'<key>\\r\\n'`).
+
+The matrix: every provider, by each secret (the configured key, and a
+credential-shaped token it did not configure), by each place, by the
+secret's position against the cut (wholly before the cap, ending at it,
+across it at every split, wholly after it).  The assertion is on the
+message: no run of the secret longer than three characters appears in it.
+"""
+from __future__ import annotations
+
+import dataclasses
+import email.message
+import io
+import json
+import random
+import urllib.error
+from collections.abc import Iterator
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from tests import pipeline
+from tests.codegen_helpers import _compile_ok
+from vera.runtime import inference
+from vera.runtime.inference import _ERROR_BODY_CAP, InferenceError
+
+pytestmark = pytest.mark.matrix(decides=["vera/runtime/inference.py"])
+
+_RNG = random.Random(1854)
+_ALNUM = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+#: The configured key: no recognisable prefix (Mistral's form), so only the
+#: configured-key rule can redact it.
+KEY = "".join(_RNG.choice(_ALNUM) for _ in range(40))
+#: A credential-shaped token the host did not configure: only the pattern
+#: rule can redact it.
+TOKEN = "sk-" + "".join(_RNG.choice(_ALNUM) for _ in range(37))
+
+SECRETS = {"configured": (KEY, KEY), "unconfigured": (TOKEN, "Cfg" + KEY[3:])}
+
+
+def assert_no_part_of(secret: str, text: str) -> None:
+    """No run of *secret* longer than three characters is in *text*."""
+    runs = [secret[i:i + 4] for i in range(len(secret) - 3)]
+    found = [r for r in runs if r in text]
+    assert not found, (found, text)
+
+
+def _http_error(body: bytes) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://example.invalid", code=401, msg="Unauthorized",
+        hdrs=email.message.Message(), fp=io.BytesIO(body))
+
+
+def _message(provider: str, key: str, *, raises: BaseException | None = None,
+             body: bytes | None = None) -> str:
+    """The message `_call_inference_provider` gives for one exchange."""
+    if raises is not None:
+        transport = MagicMock(side_effect=raises)
+    else:
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        transport = MagicMock(return_value=resp)
+    with patch("urllib.request.urlopen", transport):
+        try:
+            return inference._call_inference_provider(provider, "hi", "", key)
+        except InferenceError as exc:
+            return str(exc)
+
+
+# --- An HTTP error body, by the secret's position against the cap -----------
+
+def _positions(secret: str) -> Iterator[tuple[str, int]]:
+    """(name, index of the secret's first character in the body)."""
+    n = len(secret)
+    yield "wholly-before", _ERROR_BODY_CAP - n - 1
+    yield "ending-at-the-cap", _ERROR_BODY_CAP - n
+    for k in range(1, n):
+        yield f"across-{k}-before", _ERROR_BODY_CAP - k
+    yield "wholly-after", _ERROR_BODY_CAP
+
+
+CAP_CELLS = [
+    pytest.param(provider, which, name, start,
+                 id=f"{provider}-{which}-{name}")
+    for provider in inference._PROVIDERS
+    for which, (secret, _) in SECRETS.items()
+    for name, start in _positions(secret)
+]
+
+
+@pytest.mark.parametrize(("provider", "which", "name", "start"), CAP_CELLS)
+def test_a_secret_at_every_position_against_the_cap(
+    provider: str, which: str, name: str, start: int,
+) -> None:
+    """Spaces up to the secret, so the 200-character window that follows
+    the cut reaches it wherever it sits."""
+    secret, key = SECRETS[which]
+    body = b" " * start + secret.encode() + b" tail" * 8
+    assert len(body) > _ERROR_BODY_CAP
+    message = _message(provider, key, raises=_http_error(body))
+    assert message.endswith("... (truncated)"), message
+    assert_no_part_of(secret, message)
+
+
+# --- A body under the cap, every place its text reaches a message ------------
+
+def _under_cap_bodies(secret: str) -> dict[str, bytes]:
+    text = " " * 150 + secret + " tail"
+    return {
+        "error-message": json.dumps({"error": {"message": text}}).encode(),
+        "error-string": json.dumps({"error": text}).encode(),
+        "message": json.dumps({"message": text}).encode(),
+        "raw-text": text.encode(),
+        # across the 200-character bound of the quoted text
+        "across-the-bound": (" " * 0 + "x" * 180 + secret + " tail").encode(),
+    }
+
+
+UNDER_CAP_CELLS = [
+    pytest.param(provider, which, form, id=f"{provider}-{which}-{form}")
+    for provider in inference._PROVIDERS
+    for which in SECRETS
+    for form in _under_cap_bodies(KEY)
+]
+
+
+@pytest.mark.parametrize(("provider", "which", "form"), UNDER_CAP_CELLS)
+def test_a_secret_in_an_error_body_under_the_cap(
+    provider: str, which: str, form: str,
+) -> None:
+    secret, key = SECRETS[which]
+    body = _under_cap_bodies(secret)[form]
+    assert_no_part_of(secret, _message(provider, key, raises=_http_error(body)))
+
+
+# --- A successful exchange's text: a body that is not JSON, a shape report --
+
+def _ok_bodies(secret: str, style: str) -> dict[str, bytes]:
+    if style == "anthropic":
+        shaped = {
+            "stop-reason": {"content": [], "stop_reason": secret},
+            "keys": {"content": [{"type": "text", secret: 1}]},
+            "types": {"content": [{"type": secret}]},
+        }
+    else:
+        shaped = {
+            "finish-reason": {"choices": [{"message": {"content": ""},
+                                           "finish_reason": secret}]},
+            "refusal": {"choices": [{"message": {"content": "",
+                                                 "refusal": secret}}]},
+            "keys": {"choices": [{secret: 1}]},
+        }
+    bodies = {name: json.dumps(v).encode() for name, v in shaped.items()}
+    bodies["not-json"] = ("<html>" + secret + "</html>").encode()
+    return bodies
+
+
+OK_CELLS = [
+    pytest.param(provider, which, form, id=f"{provider}-{which}-{form}")
+    for provider, cfg in inference._PROVIDERS.items()
+    for which in SECRETS
+    for form in _ok_bodies(KEY, cfg.response_style)
+]
+
+
+@pytest.mark.parametrize(("provider", "which", "form"), OK_CELLS)
+def test_a_secret_in_a_response_the_message_quotes(
+    provider: str, which: str, form: str,
+) -> None:
+    secret, key = SECRETS[which]
+    style = inference._PROVIDERS[provider].response_style
+    message = _message(provider, key, body=_ok_bodies(secret, style)[form])
+    assert_no_part_of(secret, message)
+
+
+# --- An exception's text, at the host boundary ------------------------------
+
+_SOURCE = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Inference, IO>)
+{
+  let @Result<String, String> = Inference.complete("hi");
+  match @Result<String, String>.0 {
+    Ok(@String) -> {
+      IO.print(@String.0);
+      0
+    },
+    Err(@String) -> {
+      IO.print(@String.0);
+      1
+    }
+  }
+}
+"""
+
+
+def _boundary(provider: str, key: str, exc: BaseException,
+              *, debug: bool = False) -> str:
+    """The `Err` the host gives when the exchange raises *exc*."""
+    env = {inference._PROVIDERS[provider].env_key: key,
+           "VERA_INFERENCE_PROVIDER": provider}
+    with patch("urllib.request.urlopen", MagicMock(side_effect=exc)), \
+            patch.dict("os.environ",
+                       {"VERA_DEBUG_HOST_ERRORS": "1"} if debug else {}):
+        ran = pipeline.run(_compile_ok(_SOURCE), env_vars=env,
+                           capture_stderr=False)
+    assert ran.ok, ran.trap
+    return ran.stdout
+
+
+def _exceptions(secret: str) -> dict[str, BaseException]:
+    return {
+        "quotes-it": RuntimeError(f"connection reset talking with {secret}"),
+        "quotes-its-repr": ValueError(f"Invalid header value {secret!r}"),
+        "quotes-its-bytes": ValueError(
+            f"Invalid header value {secret.encode()!r}"),
+    }
+
+
+BOUNDARY_CELLS = [
+    pytest.param(provider, which, form, debug,
+                 id=f"{provider}-{which}-{form}{'-debug' if debug else ''}")
+    for provider in inference._PROVIDERS
+    for which in SECRETS
+    for form in _exceptions(KEY)
+    for debug in (False, True)
+]
+
+
+@pytest.mark.parametrize(("provider", "which", "form", "debug"),
+                         BOUNDARY_CELLS)
+def test_a_secret_an_exception_quotes(
+    provider: str, which: str, form: str, debug: bool,
+) -> None:
+    """`VERA_DEBUG_HOST_ERRORS=1` changes nothing here: the binding turns
+    every exception into the `Err` before any re-raise could see it."""
+    secret, key = SECRETS[which]
+    stdout = _boundary(provider, key, _exceptions(secret)[form], debug=debug)
+    assert stdout.startswith(f"Inference provider '{provider}'"), stdout
+    assert_no_part_of(secret, stdout)
+
+
+# --- A key an HTTP header cannot carry ---------------------------------------
+
+@pytest.fixture
+def local_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every provider's endpoint on a local port nothing listens on, so a
+    request the transport did build goes nowhere."""
+    for name, cfg in list(inference._PROVIDERS.items()):
+        monkeypatch.setitem(inference._PROVIDERS, name,
+                            dataclasses.replace(cfg, url="http://127.0.0.1:9/"))
+
+
+LINE_END_CELLS = [
+    pytest.param(provider, end, id=f"{provider}-{name}")
+    for provider in inference._PROVIDERS
+    for name, end in (("crlf", "\r\n"), ("lf", "\n"), ("cr", "\r"),
+                      ("tab", "\t"), ("non-ascii", "’"))
+]
+
+
+@pytest.mark.parametrize(("provider", "end"), LINE_END_CELLS)
+def test_a_key_holding_a_line_end_is_refused_by_its_variable(
+    provider: str, end: str, local_endpoints: None,
+) -> None:
+    """The refusal names the variable that holds the key and holds no part
+    of it, for both authorisation styles (`x-api-key` and `Bearer`)."""
+    key = KEY + end
+    env_key = inference._PROVIDERS[provider].env_key
+    for debug in (False, True):
+        env = {env_key: key, "VERA_INFERENCE_PROVIDER": provider}
+        with patch.dict("os.environ",
+                        {"VERA_DEBUG_HOST_ERRORS": "1"} if debug else {}):
+            ran = pipeline.run(_compile_ok(_SOURCE), env_vars=env,
+                               capture_stderr=False)
+        assert ran.ok, ran.trap
+        assert env_key in ran.stdout, ran.stdout
+        assert "cannot carry" in ran.stdout, ran.stdout
+        assert_no_part_of(KEY, ran.stdout)
+
+
+def test_repro_1854_a_key_across_the_cap_leaves_nothing() -> None:
+    """The issue's case: 20 of 40 characters before the cap."""
+    key = "K" * 40
+    body = b" " * (_ERROR_BODY_CAP - 20) + b"K" * 40 + b"tail"
+    detail = inference._read_error_body(_http_error(body), key)
+    assert "K" not in detail.replace("... (truncated)", ""), detail
+
+
+def test_repro_1854_a_key_with_a_line_end_never_reaches_the_err(
+    local_endpoints: None,
+) -> None:
+    for provider in ("anthropic", "openai"):
+        message = _message(provider, KEY + "\r\n")
+        assert_no_part_of(KEY, message)
+
+
+def test_a_cut_text_with_no_secret_at_its_end_keeps_its_end() -> None:
+    """Negative space: the end is redacted only where it could begin the
+    key or a credential-shaped token."""
+    body = b" " * (_ERROR_BODY_CAP - 9) + b"plain end" + b" tail"
+    detail = inference._read_error_body(_http_error(body), KEY)
+    assert detail == "plain end... (truncated)", detail
+
+
+def test_a_key_of_printable_ascii_is_sent() -> None:
+    """Negative space: a key the header can carry reaches the transport."""
+    seen: list[object] = []
+
+    def capture(req: object, timeout: float) -> None:
+        seen.append(req)
+        raise urllib.error.URLError("stop")
+
+    with patch("urllib.request.urlopen", side_effect=capture):
+        with pytest.raises(urllib.error.URLError):
+            inference._call_inference_provider("anthropic", "hi", "", KEY)
+    assert len(seen) == 1

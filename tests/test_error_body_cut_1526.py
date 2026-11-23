@@ -231,11 +231,12 @@ def test_the_cut_keeps_what_base_keeps_less_one_incomplete_character() -> None:
                 char, before)
 
 
-def test_find_a_key_straddling_the_cap_leaves_its_first_half() -> None:
-    """A FIND, not a fix: at base a configured key whose first half sits
-    before the cap and whose second half is past it is cut in two, and the
-    first half is quoted.  Exact-key redaction cannot match half a key."""
+def test_a_key_straddling_the_cap_leaves_nothing() -> None:
+    """A configured key whose first half sits before the cap and whose
+    second half is past it is cut in two, and the first half, which exact
+    redaction cannot match, is redacted at the cut (#1854;
+    tests/test_secret_redaction_1854.py holds every split)."""
     key = "K" * 40
     body = _at_cap(b"K" * 20, b"K" * 20 + b"tail")
     detail = _read_error_body(_error(body), key)
-    assert "K" * 20 in detail, detail
+    assert "K" not in detail.replace(MARKER, ""), detail

@@ -185,7 +185,40 @@ def _redact(text: str, api_key: str) -> str:
     """
     if api_key and api_key in text:
         text = text.replace(api_key, "[redacted]")
+    # #1854: the key as Python's `repr` escapes it, which is how an
+    # exception quotes a value (`Invalid header value b'...\r\n'`): a key
+    # holding a character `repr` escapes does not match itself there.
+    escaped = repr(api_key)[1:-1]
+    if api_key and escaped != api_key and escaped in text:
+        text = text.replace(escaped, "[redacted]")
     return _CREDENTIAL_RE.sub("[redacted]", text)
+
+
+#: A credential-shaped token's start, at the end of a text: the cut that made
+#: the end may have taken the rest, so its length says nothing (#1854).
+_CREDENTIAL_TAIL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]*\Z")
+
+
+def _redact_cut(text: str, api_key: str) -> str:
+    """*text*, which a cut ended, redacted so the cut leaves no part of a
+    secret (#1854).
+
+    Redaction after a cut matches only what the cut left whole: a
+    configured key the cut split is present as its first part, which
+    matches nothing, and a credential-shaped token cut before its eighth
+    character after the prefix is too short for the pattern.  So beside
+    `_redact`'s two rules, the end of the text is read as the start of a
+    secret the cut may have split: a proper prefix of the configured key,
+    or a credential-shaped prefix of any length, is redacted there.  The
+    text is marked as truncated by its caller either way, so what this
+    drops is at most part of a word the cut had already split.
+    """
+    text = _redact(text, api_key)
+    if api_key:
+        for n in range(min(len(api_key) - 1, len(text)), 0, -1):
+            if text.endswith(api_key[:n]):
+                return text[:-n] + "[redacted]"
+    return _CREDENTIAL_TAIL_RE.sub("[redacted]", text)
 
 
 def _or_blank(rendered: str) -> str:
@@ -524,14 +557,39 @@ def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
         return "(unreadable response body)"
     if len(raw) > _ERROR_BODY_CAP:
         cut = _character_cut(raw, _ERROR_BODY_CAP)
-        head =raw[:cut].decode("utf-8", errors="replace").strip()  # pragma: no mutate — equivalent: utf-8 is the default codec, and codec names are case-insensitive
-        # Marked unconditionally, because the marker states a fact about
-        # the READ — we stopped at the cap — and not about the length of
-        # whatever survived stripping.  `_truncate` marks on length alone,
-        # so a short envelope padded past the cap with whitespace strips
-        # back under the bound and would be reported as if complete.
-        return _redact(head, api_key)[:_ERROR_BODY_CHARS] + "... (truncated)"
+        head =raw[:cut].decode("utf-8", errors="replace")  # pragma: no mutate — equivalent: utf-8 is the default codec, and codec names are case-insensitive
+        # #1854: redacted at the cut, before it is stripped, so a secret the
+        # cap split is read where it was split.  Marked unconditionally,
+        # because the marker states a fact about the READ — we stopped at
+        # the cap — and not about the length of whatever survived
+        # stripping.  `_truncate` marks on length alone, so a short envelope
+        # padded past the cap with whitespace strips back under the bound
+        # and would be reported as if complete.
+        redacted = _redact_cut(head, api_key).strip()
+        return redacted[:_ERROR_BODY_CHARS] + "... (truncated)"
     return _error_body_detail(raw, api_key)
+
+
+def _refuse_unsendable_key(
+    provider: str, model: str, cfg: _ProviderConfig, api_key: str,
+) -> None:
+    """Refuse a key an HTTP header cannot carry, by the variable that holds
+    it (#1854).
+
+    A line end (as a key read from a file written with CRLF line ends
+    holds), another control character, or a character outside ASCII.  Sent
+    on, `http.client` refused the header with an exception whose message
+    quotes the whole header value, key and all, and that message reached
+    the `Err`.  The refusal names the variable and quotes nothing of the
+    key.
+    """
+    if any(not 0x20 <= ord(ch) < 0x7F for ch in api_key):
+        raise InferenceError(
+            f"Inference provider '{provider}' ({model}): {cfg.env_key} "
+            f"holds a character an HTTP header cannot carry (a line end, "
+            f"another control character, or one outside ASCII). Set it to "
+            f"the key alone.",
+        )
 
 
 def _call_inference_provider(
@@ -559,6 +617,8 @@ def _call_inference_provider(
         )
 
     chosen_model = model or cfg.default_model
+
+    _refuse_unsendable_key(provider, chosen_model, cfg, api_key)
 
     if cfg.auth_style == "anthropic":
         headers = {
@@ -879,10 +939,15 @@ def register_inference(
                 # of ours and carries a message written for a user.
                 if isinstance(exc, InferenceError):
                     return _alloc_result_err_string(caller, str(exc))
+                # #1854: an exception's text is text from outside, as a
+                # provider's is: the transport's own messages quote what
+                # they were handed (a header value, a URL), so it is
+                # redacted and bounded like any other.
                 return _alloc_result_err_string(
                     caller,
                     f"Inference provider '{provider}' ({resolved_model}) "
-                    f"failed: {type(exc).__name__}: {exc}",
+                    f"failed: "
+                    f"{_safe(f'{type(exc).__name__}: {exc}', api_key)}",
                 )
 
         linker.define_func(

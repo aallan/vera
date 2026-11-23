@@ -1681,8 +1681,10 @@ class TestCredentialRedaction1333:
     #: author to decide whether it needs a route row above.  Measured by
     #: the AST walk below: 23 at 157ae167 and 24 here, the difference
     #: being this round's `_reason_clause` call inside
-    #: `_empty_completion_error`.
-    _API_KEY_RENDER_SITES = 24
+    #: `_empty_completion_error`; 25 with #1854's `_safe` over an exception's
+    #: text at the host boundary, whose route the exception cells of
+    #: tests/test_secret_redaction_1854.py hold (it is no body shape).
+    _API_KEY_RENDER_SITES = 25
 
     #: Rows in the route table, pinned separately from the site count: the
     #: two answer different questions, and a deleted row is invisible to
