@@ -661,3 +661,102 @@ def test_a_binder_of_another_type_keeps_the_plain_header() -> None:
     description = _description(_named("let @Bool = true;\n  @Int.0"), "E503")
     assert _header(description) == _HEADER, description
     assert _block(description) == ["@Int.0 = -1"], description
+
+
+# -- One value's literal is bounded --------------------------------------
+
+def _chain(links: int) -> z3.ExprRef:
+    """`Link(Link(... End))`, *links* deep: ``links + 1`` parts."""
+    chain = z3.Datatype("ValueTextChain")
+    chain.declare("End")
+    chain.declare("Link", ("Link_0", chain))
+    sort = chain.create()
+    value = sort.End
+    for _ in range(links):
+        value = sort.Link(value)
+    return value
+
+
+def _tree(depth: int, *, shared: bool) -> z3.ExprRef:
+    """A complete binary tree of *depth* levels of `Node`, ``2^(depth+1) - 1``
+    parts.  Shared: each `Node` holds the one subtree below it twice (one
+    term).  Unshared: each leaf holds its own `Int`, so no two subtrees are
+    one term."""
+    tree = z3.Datatype("ValueTextTree")
+    tree.declare("Leaf", ("Leaf_0", z3.IntSort()))
+    tree.declare("Node", ("Node_0", tree), ("Node_1", tree))
+    sort = tree.create()
+    if shared:
+        value = sort.Leaf(z3.IntVal(0))
+        for _ in range(depth):
+            value = sort.Node(value, value)
+        return value
+    level = [sort.Leaf(z3.IntVal(i)) for i in range(2 ** depth)]
+    while len(level) > 1:
+        level = [sort.Node(level[i], level[i + 1]) for i in range(0, len(level), 2)]
+    return level[0]
+
+
+@pytest.mark.parametrize("links", [62, 63, 64], ids=["under", "at", "over"])
+def test_one_value_is_written_whole_up_to_the_budget(links: int) -> None:
+    """A value of `VALUE_BUDGET` parts is written whole; one part more is
+    written in part, with `...` and the note, so no reader takes it for
+    the value."""
+    from vera import literals
+    written = literals.z3_text(_chain(links))
+    assert written is not None
+    whole = links + 1 <= literals.VALUE_BUDGET
+    assert ("..." in written) is not whole, written
+    assert written.endswith(
+        f" (elided past {literals.VALUE_BUDGET} parts)") is not whole, written
+    if whole:
+        assert written == "Link(" * links + "End" + ")" * links
+
+
+@pytest.mark.parametrize("shared", [True, False], ids=["shared", "unshared"])
+def test_a_large_value_costs_the_budget_not_its_size(shared: bool) -> None:
+    """2^15 - 1 parts, shared or not, write the same bounded text: the budget
+    counts each place a shared subterm stands, and stops there."""
+    from vera import literals
+    written = literals.z3_text(_tree(14, shared=shared))
+    assert written is not None and written.endswith(
+        f" (elided past {literals.VALUE_BUDGET} parts)"), written
+    assert len(written) < 2000, len(written)
+
+
+def test_repro_1871_a_value_shared_26_deep_is_written_at_once() -> None:
+    """2^27 - 1 parts by sharing, the review's example, written in bounded
+    time and text (it took 39 s and 12 MB of text at 20 levels)."""
+    import time
+
+    from vera import literals
+    value = _tree(26, shared=True)
+    start = time.perf_counter()
+    written = literals.z3_text(value)
+    assert time.perf_counter() - start < 5.0
+    assert written is not None and len(written) < 2000, written
+
+
+def test_a_value_under_the_budget_reads_back_as_itself() -> None:
+    """Below the budget the literal is the value: pinned by it, a refuted
+    contract's counterexample writes the same text."""
+    from vera import literals
+    value = literals.z3_text(_tree(2, shared=False))
+    assert value is not None and "..." not in value
+    vera_value = value.replace("Leaf(", "VLeaf(").replace("Node(", "VNode(")
+    source = f"""\
+private data VTree {{
+  VLeaf(Int),
+  VNode(VTree, VTree)
+}}
+
+public fn f(@VTree -> @Int)
+  requires(@VTree.0 == {vera_value})
+  ensures(@Int.result == 1)
+  effects(pure)
+{{
+  0
+}}
+"""
+    assert _block(_description(source, "E500")) == [
+        f"@VTree.0 = {vera_value}", "@Int.result = 0"]

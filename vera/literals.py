@@ -25,6 +25,8 @@ rule for each type is stated once:
 - An array: `[a, b]`; past :data:`ARRAY_CAP` elements its first ones and
   how many more there are (`[0, 1, ..., ... and 2 more]` is no expression,
   so it cannot be pasted as the whole value).
+- Any value past :data:`VALUE_BUDGET` parts: its first parts, each later
+  one written ``...``, and ` (elided past 64 parts)` after it.
 
 A value of a type with no literal (a `Map`, a `Set`, a function, a type
 variable's) is not written: :data:`NO_LITERAL` says so where it is listed.
@@ -43,6 +45,20 @@ from vera.formatter import format_expr_canonical
 #: The elements of an array a diagnostic writes whole; a longer array shows
 #: this many and the count of the rest.
 ARRAY_CAP = 8
+
+#: The parts (a constructor, a scalar, an array) one value's literal in a
+#: diagnostic writes before the rest is written ``...``: a model value is a
+#: term with shared subterms, and its literal repeats a subterm at each place
+#: it stands, so a value built from n inputs, each a constructor over the
+#: next twice, is 2^n parts long.  Sixty-four parts is a few lines of text,
+#: past which a counterexample is no longer an instruction a reader can act
+#: on; the value a `vera test` trial is called with is never cut, only the
+#: text of a value in a diagnostic.
+VALUE_BUDGET = 64
+
+#: What a part past :data:`VALUE_BUDGET` is written as: no expression, so the
+#: text cannot be taken for the whole value.
+ELIDED = "..."
 
 #: What a listed input with no literal form shows after its name.
 NO_LITERAL = "its value has no literal form"
@@ -154,9 +170,34 @@ def z3_string(value: z3.ExprRef) -> str:
     return "".join(chr(c.as_long()) for c in codes)
 
 
-def _z3_node(value: z3.ExprRef, arrays: ArrayReader | None) -> ast.Expr | str | None:
-    """*value*'s literal node; text where it is an array written in part;
-    ``None`` where it has no literal."""
+class _Budget:
+    """The parts one value's literal may still write (:data:`VALUE_BUDGET`),
+    and whether a part was left out."""
+
+    def __init__(self) -> None:
+        self.left = VALUE_BUDGET
+        self.elided = False
+
+    def take(self) -> bool:
+        """Spend one part; ``False``, and the value marked elided, where
+        none is left."""
+        if self.left <= 0:
+            self.elided = True
+            return False
+        self.left -= 1
+        return True
+
+
+def _z3_node(
+    value: z3.ExprRef, arrays: ArrayReader | None, budget: _Budget,
+) -> ast.Expr | str | None:
+    """*value*'s literal node; text where it is written in part (an array
+    past :data:`ARRAY_CAP`, a value past :data:`VALUE_BUDGET`); ``None``
+    where it has no literal.  Each part spends one of *budget*'s, and a part
+    past it is written ``...``, so a value of any size, a shared subterm
+    counted at each place it stands, costs at most the budget's parts."""
+    if not budget.take():
+        return ELIDED
     sort = value.sort()
     if sort == z3.BoolSort():
         if z3.is_true(value) or z3.is_false(value):
@@ -174,7 +215,8 @@ def _z3_node(value: z3.ExprRef, arrays: ArrayReader | None) -> ast.Expr | str | 
             return None
         if value.num_args() == 0:
             return ast.NullaryConstructor(decl.name())
-        fields = [_z3_node(value.arg(i), arrays) for i in range(value.num_args())]
+        fields = [_z3_node(value.arg(i), arrays, budget)
+                  for i in range(value.num_args())]
         if any(f is None for f in fields):
             return None
         if all(isinstance(f, ast.Expr) for f in fields):
@@ -184,7 +226,7 @@ def _z3_node(value: z3.ExprRef, arrays: ArrayReader | None) -> ast.Expr | str | 
     if arrays is not None:
         read = arrays(value)
         if read is not None:
-            return _array_node(read, arrays)
+            return _array_node(read, arrays, budget)
     return None
 
 
@@ -195,9 +237,10 @@ def _as_text(node: ast.Expr | str | None) -> str:
 
 def _array_node(
     read: tuple[int, Sequence[z3.ExprRef]], arrays: ArrayReader | None,
+    budget: _Budget,
 ) -> ast.Expr | str | None:
     length, shown = read
-    elements = [_z3_node(e, arrays) for e in shown]
+    elements = [_z3_node(e, arrays, budget) for e in shown]
     if any(e is None for e in elements):
         return None
     more = length - len(elements)
@@ -211,6 +254,14 @@ def _array_node(
 
 def z3_text(value: z3.ExprRef, arrays: ArrayReader | None = None) -> str | None:
     """The literal of a solver model value, by its sort; ``None`` where the
-    value has no literal (an uninterpreted carrier *arrays* cannot read)."""
-    node = _z3_node(value, arrays)
-    return None if node is None else _as_text(node)
+    value has no literal (an uninterpreted carrier *arrays* cannot read).
+    Past :data:`VALUE_BUDGET` parts the rest is ``...`` and the text says
+    the value is elided."""
+    budget = _Budget()
+    node = _z3_node(value, arrays, budget)
+    if node is None:
+        return None
+    written = _as_text(node)
+    if budget.elided:
+        written += f" (elided past {VALUE_BUDGET} parts)"
+    return written
