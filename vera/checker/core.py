@@ -70,6 +70,7 @@ from vera.types import (
     erases_to_unit,
     holds_function,
     is_subtype,
+    read_open_as_unknown,
     unfit_function_value,
     pretty_type,
     pretty_inferred_type,
@@ -929,9 +930,20 @@ class TypeChecker(
         is in no program as written, and the fix then names no type."""
         return written_type(ty, self.env.type_params)
 
+    def _holds_at(self, value_ty: Type, written: Type) -> bool:
+        """Whether a value of *value_ty* may be bound or passed where
+        *written* is the type: `is_subtype` in the direction the value
+        flows, each type variable a call left open read as unknown and the
+        enclosing function's own kept rigid (#1896): the `let`'s judgement,
+        which a handler clause's parameter, a `match` binder and a fit the
+        join gives are held to as well."""
+        rigid = self.env.type_params
+        return is_subtype(read_open_as_unknown(value_ty, rigid),
+                          read_open_as_unknown(written, rigid))
+
     def _refuse_unfit_function_value(
         self,
-        node: ast.Expr | ast.Pattern,
+        node: ast.Expr | ast.Pattern | ast.TypeExpr,
         value_ty: Type,
         position_ty: Type,
         gave: str,
@@ -999,8 +1011,12 @@ class TypeChecker(
                 call, found, i, vp, pp, gave, other)
         both_refined = (isinstance(value_part, RefinedType)
                         and isinstance(position_part, RefinedType))
-        header = self._unfit_header(node, written_at, pp) if code else None
-        wrapper = self._eta_wrapper(node, found.position) if code else None
+        # A clause parameter's type (#1896) is no value: `code` is False.
+        value = node if isinstance(node, (ast.AnonFn, ast.SlotRef)) else None
+        header = (self._unfit_header(value, written_at, pp)
+                  if code and value is not None else None)
+        wrapper = (self._eta_wrapper(value, found.position)
+                   if code and value is not None else None)
         wrap = (f"  Or wrap the value in a closure of the position's type, "
                 f"where the narrowing is a value's: `{wrapper}`."
                 if wrapper is not None else "")

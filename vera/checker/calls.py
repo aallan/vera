@@ -343,6 +343,8 @@ class JoinOutcome(typing.NamedTuple):
     conflict: bool
     builtin: bool
     failure: JoinFailure | None = None
+    #: The type each side's open variables were bound to, by name (#1896).
+    bound: tuple[dict[str, Type], dict[str, Type]] = ({}, {})
 
 
 def _lost_builtin_var(name: str) -> bool:
@@ -650,31 +652,47 @@ class CallsMixin:
         type its call gave it, never one no instantiation gives.  Where the
         join fails only at a
         built-in's variable a failed substitution lost (#1688), the join
-        neither fills nor refuses it, and the fit keeps the verdict it gave
-        before, each variable a wildcard one position at a time
-        (`_compatible_modulo_typevars`)."""
+        neither fills nor refuses it, and the variable is read as unknown.
+
+        The join says what the open variables are; whether the value fits
+        is `is_subtype`'s, in the direction the value flows (#1896): the
+        pair with the join's bindings substituted, and each variable still
+        open read as unknown, the enclosing function's own kept rigid
+        (`_holds_at`).  The join compares each part by itself, a leaf by
+        `is_subtype` either way and an effect row inside a parameter's
+        function type the same way round as at the root, so a pair it
+        joins need not be a subtype: a `fn(P, T -> Int)` closure, `P` pure,
+        joins a `fn(I, T -> Int)` position whose `I` performs IO."""
         if is_subtype(ty, target):
             return True
         if not (contains_typevar(ty) or contains_typevar(target)):
             return False
         outcome = self._join_parts(ty, target)
         if outcome.joined is not None:
-            # `_Join` compares a leaf by `is_subtype` either way, a `Nat`
-            # beside an `Int` and a refinement beside its base, inside a
-            # function type too, where rule 9 compares under the formal
-            # relation (#1885, #1819): a fit the join gives is held to rule
-            # 9.  A type variable inside a function type is never open
-            # (`_Join` keeps it), so the join fills nothing there, and the
-            # pair is read as it stands.
-            return unfit_function_value(ty, target) is None
-        # `_compatible_modulo_typevars` compares a leaf by `is_subtype`
-        # either way too, so the verdict it keeps where a built-in's
-        # variable was lost is held to rule 9 as the join's is: a
-        # `Tuple<B, fn(Nat -> Int)>` beside a `Tuple<Int, fn(Int -> Int)>`.
+            value_bound, target_bound = outcome.bound
+            return self._holds_at(substitute(ty, value_bound),
+                                  substitute(target, target_bound))
+        return outcome.builtin and self._holds_at(ty, target)
+
+    def _branches_agree(self, ty: Type, other: Type) -> bool:
+        """Whether two branches of an `if` or two arms of a `match`, one of
+        which the join leaves alone at a built-in's type variable a failed
+        substitution lost (#1688), may be given the other's type: a
+        symmetric question, of two values side by side, not of a value
+        flowing to a type, so it keeps the reading it had, each variable a
+        wildcard one position at a time (`_compatible_modulo_typevars`),
+        with no function value fitting only by a narrowing (#1885)."""
+        if is_subtype(ty, other):
+            return True
+        if not (contains_typevar(ty) or contains_typevar(other)):
+            return False
+        outcome = self._join_parts(ty, other)
+        if outcome.joined is not None:
+            return unfit_function_value(ty, other) is None
         return (outcome.builtin
                 and _compatible_modulo_typevars(
-                    ty, target, frozenset(self.env.type_params))
-                and unfit_function_value(ty, target) is None)
+                    ty, other, frozenset(self.env.type_params))
+                and unfit_function_value(ty, other) is None)
 
     def _rigid_variable(self, ty: Type) -> str | None:
         """The name of the enclosing function's own type parameter *ty* is,
@@ -808,7 +826,8 @@ class CallsMixin:
         builtin = (joined is None and walk.builtin and not walk.conflict
                    and not (walk.behaviour[0] or walk.behaviour[1]))
         return JoinOutcome(joined, walk.conflict, builtin,
-                           walk.failure if joined is None else None)
+                           walk.failure if joined is None else None,
+                           walk.bound)
 
     # -----------------------------------------------------------------
     # Function calls

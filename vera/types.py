@@ -1250,6 +1250,31 @@ def contains_typevar(ty: Type) -> bool:
     return False
 
 
+def read_open_as_unknown(ty: Type, rigid: Collection[str]) -> Type:
+    """*ty* with every type variable that is not one of *rigid* (the
+    enclosing function's own, by name) read as unknown: one a call left
+    open (`T$3`), a built-in's, or a callee's leaked raw.  What a value of
+    *ty* is once nothing more is known of those variables, so `is_subtype`
+    can judge it where it binds or flows (#1896): the context that fixes an
+    open variable gives it a type of its own, and the enclosing function's
+    variables stand for every type, so they match only themselves."""
+    if isinstance(ty, TypeVar):
+        if "$" not in ty.name and ty.name in rigid:
+            return ty
+        return UnknownType()
+    if isinstance(ty, AdtType):
+        return ty.with_args(tuple(read_open_as_unknown(a, rigid)
+                                  for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return FunctionType(tuple(read_open_as_unknown(p, rigid)
+                                  for p in ty.params),
+                            read_open_as_unknown(ty.return_type, rigid),
+                            ty.effect)
+    if isinstance(ty, RefinedType):
+        return RefinedType(read_open_as_unknown(ty.base, rigid), ty.predicate)
+    return ty
+
+
 def is_unknown_like(ty: Type | None) -> bool:
     """Whether *ty* is a type no judgement holds a value to: the `Unknown`
     error recovery leaves, or the placeholder of a name nothing declares
