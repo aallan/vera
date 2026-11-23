@@ -29,6 +29,7 @@ from vera.types import (
     TypeVar,
     UnknownType,
     base_type,
+    fresh_typevar_origin,
     strip_builtin_typevar_marker,
     substitute,
 )
@@ -911,7 +912,8 @@ def _mentions(te: object, variables: frozenset[str]) -> bool:
 
 
 def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
-              resolved_return: Type | None = None) -> str:
+              result: Type | None = None,
+              record: Instantiation | None = None) -> str:
     """The root call's fix: instantiate its generic at Int, which every
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
@@ -920,11 +922,14 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
     gives its result a type (a `match` scrutinee, an operand; the type a
     result is expected at fixes such a variable, #1684), so its fix is that
     type, where the result's type holds the variable, or a parameter that
-    carries one.  The binding is offered only where the result's type as
-    the check resolved it (*resolved_return*) is to hand and holds every
-    variable: an alias can drop a variable its written form names
-    (`type Erased<T> = Int;`), and a binding of that type fixes none, so
-    the written form is never read for it."""
+    carries one.  The binding is offered only where the type the check
+    gave the call (*result*, with *record*, the instantiation it
+    recorded there) holds each variable the call left open, as the
+    variable the check minted for it (`T$2` for `T`): an alias can drop a
+    variable its written form names (`type Erased<T> = Int;`), and a
+    binding of that type fixes none, so the written form is never read
+    for it.  The call's own type serves the entry's generic, a module's
+    and a `where` helper's alike."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -949,13 +954,11 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
             param = (f"give '{generic}' a parameter for each of "
                      f"{', '.join(names)} ({carried}) and pass each a value "
                      f"at a type that {needs}, Int for example.")
-        held = (set(_variables_in(resolved_return))
-                if resolved_return is not None else set())
-        if not all(v in held for v in names):
-            # A variable the result's type, as the check resolved it, does
-            # not hold (one only a `where` constraint names, one an alias
-            # drops), or a result whose resolved type is not to hand: no
-            # binding of the result is known to fix it.
+        if not _result_holds_open(result, record, names):
+            # A variable the call's type does not hold (one only a `where`
+            # constraint names, one an alias drops), or a call the check
+            # recorded no type for: no binding of the result is known to
+            # fix it.
             return f"{head}: {param}"
         # The binding written out, each variable at Int, where the call is
         # (inside a branch too: a sibling's type gives it none, #1866).
@@ -984,17 +987,21 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
     return f"{advice}: replace '{text}' with '{fixed}'."
 
 
-def _resolved_return(template: Template, env: TypeEnv) -> Type | None:
-    """The return type the check resolved for the entry's generic
-    *template*, its variables as the declaration names them; None for one
-    the entry's environment does not hold (a module's, a `where`
-    helper's), for which the fix offers no binding."""
-    if template.origin is not None:
-        return None
-    info = env.lookup_function(template.decl.name)
-    if info is None or info.forall_vars != template.decl.forall_vars:
-        return None
-    return info.return_type
+def _result_holds_open(result: Type | None, record: Instantiation | None,
+                       names: Sequence[str]) -> bool:
+    """Whether *result*, the type the check gave a generic call, holds
+    each of *names* the call left open, by the variable the check minted
+    for it: the callee's result type with each variable the call fixed
+    at its type in *record* and each it left open at a variable of its
+    own, `T$2` for `T` (read by `fresh_typevar_origin`).  A variable in a
+    type the call fixed one at is no variable the call minted.  False
+    where the check recorded no type or no instantiation."""
+    if result is None or record is None:
+        return False
+    fixed = {v for ty in record.mapping.values() for v in _variables_in(ty)}
+    minted = {fresh_typevar_origin(TypeVar(v))
+              for v in _variables_in(result) if v not in fixed}
+    return all(n in minted for n in names if n not in record.mapping)
 
 
 def _offset(text: str, base: ast.Span, span: ast.Span | None, *,
@@ -1017,7 +1024,9 @@ def _offset(text: str, base: ast.Span, span: ast.Span | None, *,
 
 def judge(derivation: Derivation, types: Mapping[int, Type],
           cells: Mapping[int, HandlerCell], env: TypeEnv,
-          entry_file: str | None, entry_source: str) -> list[Diagnostic]:
+          entry_file: str | None, entry_source: str,
+          recorded: Mapping[int, Instantiation] | None = None,
+          ) -> list[Diagnostic]:
     """Every judgment the program's instantiations decide (#1679), as the
     diagnostics the check reports: each failing instance at each root call
     that reaches it, and each Map or Set operation over an Array or
@@ -1089,9 +1098,10 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
         for node in _scope(decl):
             if not isinstance(node, (ast.FnCall, ast.ModuleCall)):
                 continue
-            root = (derivation.seed_targets.get(node.node_id)
-                    if node.node_id is not None else None)
-            if root is None:
+            nid = node.node_id
+            root = (derivation.seed_targets.get(nid)
+                    if nid is not None else None)
+            if root is None or nid is None:
                 continue
             call_text = _source_text(source, node.span) or _bare(root.key)
             paths: dict[int, list[Instance]] = {id(root): [root]}
@@ -1103,8 +1113,8 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
                            else _call_fix(
                                node, source, templates[root.key],
                                refusal.needs,
-                               resolved_return=_resolved_return(
-                                   templates[root.key], env)))
+                               result=types.get(nid),
+                               record=(recorded or {}).get(nid)))
                     found.append(_diagnostic(
                         refusal.code, file, source, node,
                         f"The call '{call_text}' instantiates "

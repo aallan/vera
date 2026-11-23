@@ -182,7 +182,7 @@ def _check(checker: TypeChecker, program: ast.Program,
         prelude_source, tables.instantiations)
     checker.errors.extend(judge(
         checker.derivation, tables.semantic, tables.cells, checker.env,
-        checker.file, checker.source))
+        checker.file, checker.source, tables.instantiations))
 
 
 def check_prelude_bodies(checker: TypeChecker) -> list[Diagnostic]:

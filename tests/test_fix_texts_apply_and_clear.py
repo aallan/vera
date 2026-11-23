@@ -1996,19 +1996,19 @@ def _tree_codes(root: Path, files: dict[str, str]):  # type: ignore[no-untyped-d
 @pytest.mark.parametrize("place", ["entry", "module", "where"])
 def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
         place: str, result: str, tmp_path: Path) -> None:
-    """The fix offers the binding it writes out only where the result's
-    type, as the check resolved it, is to hand and holds the variable: the
-    entry's own generic with a plain result.  Pasted where the call is, it
-    clears E613.  Through `Erased<T>`, which resolves to `Int`, and for a
-    module's generic or a `where` helper, whose resolved type the fix does
-    not have, it offers the parameter alone, never a binding read off the
-    written type; applied, that clears E613 in every cell."""
+    """The fix offers the binding it writes out only where the type the
+    check gave the call holds the variable the call left open: a plain
+    result, for the entry's generic, a module's and a `where` helper's
+    alike.  Pasted where the call is, it clears E613.  Through
+    `Erased<T>`, which resolves to `Int`, it offers the parameter alone,
+    never a binding read off the written type; applied, that clears E613
+    in every cell."""
     files = _e613_one(place, result)
     checked = _tree_codes(tmp_path / "given", files)
     (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
     offered = re.findall(r"`(let @[^`]+ = one_ord\(\(\)\);)`, then "
                          r"`(@[^`]+\.0)` in its place", found.fix)
-    assert bool(offered) == (place == "entry" and result == "plain"), found.fix
+    assert bool(offered) == (result == "plain"), found.fix
     for let, slot in offered:
         bound = {name: text.replace("  match one_ord(()) {",
                                     f"  {let}\n  match {slot} {{")
@@ -2021,3 +2021,50 @@ def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
                for name, text in files.items()}
     after = _tree_codes(tmp_path / "carried", carried)
     assert after.ok, [d.format() for d in after.errors]
+
+
+#: Two generics whose variables' names could mislead a reading by name:
+#: `T` that no argument fixes and the result does not hold beside a `U` an
+#: argument fixes, and a result that holds one of two variables left open.
+_E613_NAMES = {
+    "absent_variable": ("""\
+private forall<T, U where Ord<T>> fn f(@U -> @Tuple<U, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@U.0, 1)
+}
+""", "f(5)"),
+    "one_of_two": ("""\
+private forall<A, B where Ord<A>, Ord<B>> fn g(@Unit -> @Option<A>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+""", "g(())"),
+}
+
+
+@pytest.mark.parametrize("case", list(_E613_NAMES))
+def test_e613_offers_no_binding_where_the_call_s_type_misses_a_variable(
+        case: str) -> None:
+    """`f(5)` builds `Tuple<Int, Int>`, which holds no variable for `T`;
+    `g(())` builds `Option<A$n>`, which holds `A` and not `B`.  Neither fix
+    offers a binding of the result."""
+    decl, call = _E613_NAMES[case]
+    source = decl + f"""
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match {call} {{
+    _ -> 0
+  }}
+}}
+"""
+    fix = _the("E613", "check", source).fix
+    assert "bind its result" not in fix, fix
