@@ -822,6 +822,41 @@ def test_each_sentence_listing_the_json_commands_is_the_table(
                       sorted(t for t in takers if t not in registries)), listed
 
 
+def test_the_commands_whose_success_carries_no_ok_are_the_spec_s(
+        tmp_path: Path) -> None:
+    """Spec §0.5.8 makes `ok` the exit signal and names the commands whose
+    `--json` output on success is a listing with no `ok` (the registries'
+    `schema` and `items`, the AST).  Each command taking `--json` is run to
+    success on a program, and the ones whose output has no `ok` are the ones
+    the sentence names; each of them, refused, is the envelope with `ok`
+    false and exit 1."""
+    from vera.command_line import COMMANDS
+
+    f = _files(tmp_path)
+    no_ok: list[str] = []
+    for name, command in COMMANDS.items():
+        if command.option("--json") is None:
+            continue
+        argv = [name, "--json"] + ([f["good"]] if command.reads_file else [])
+        run = pipeline.cli(*argv)
+        assert run.returncode == 0, (name, run)
+        out = json.loads(run.stdout)
+        if "ok" in out:
+            assert out["ok"] is True, (name, out)
+            continue
+        no_ok.append(name)
+        if not command.reads_file:
+            assert sorted(out) == ["items", "schema"], (name, sorted(out))
+        refused = pipeline.cli(name, "--json", "--bogus")
+        envelope = json.loads(refused.stdout)
+        assert refused.returncode == 1 and envelope["ok"] is False, (name, envelope)
+    text = (ROOT / "spec/00-introduction.md").read_text(encoding="utf-8")
+    anchor = "The exception is a command whose output on success is a listing"
+    start = text.index(anchor)
+    named = sorted(set(re.findall(r"`vera (\w+)`", text[start:text.index("\n", start)])))
+    assert named == sorted(no_ok), (named, no_ok)
+
+
 def test_the_sentence_naming_the_commands_that_refuse_json_is_the_table() -> None:
     """TOOLCHAIN.md names the commands that refuse `--json`: every command
     the table gives no `--json`, and no other."""

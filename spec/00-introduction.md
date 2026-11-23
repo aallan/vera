@@ -149,7 +149,7 @@ The compiler emits structured JSON diagnostics via the `--json` flag, supported 
 - **Fields MAY be added** in any release. Consumers MUST tolerate unknown fields.
 - **Fields MUST NOT be removed or renamed** without a major version bump.
 - **Field semantics MUST NOT change** without a major version bump. The numeric value of `summary.failed` means the same thing in every minor release.
-- **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field.
+- **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field. The exception is a command whose output on success is a listing, not a verdict: `vera builtins`, `vera effects` and `vera errors` read no program, and print `schema` and `items`, and `vera ast` prints the program's tree, so none of the four carries `ok` when it succeeds. For these the exit code is the signal, and a failure (a refused command line, or for `vera ast` a source that does not parse) is the envelope, with `ok` false.
 
 The field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite; a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
 
