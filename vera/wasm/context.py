@@ -1166,7 +1166,7 @@ class WasmContext(
         if self._holds_nothing(expr) != "never":
             return instructions
         stop = "unreachable"
-        last = instructions[-1].split(None, 1) if instructions else []  # pragma: no mutate — equivalent: only `last[0]`, the instruction's name, is read, and every split bound gives the same first word
+        last = instructions[-1].split() if instructions else []
         if last and last[0] in (
                 "throw",
                 "return_call",  # pragma: no mutate — equivalent today: a `Never` expression ending in one is a self tail call of a function declared to return `Never`, which code generation drops (#1909); dropped from the set, it would gain an `unreachable` never reached

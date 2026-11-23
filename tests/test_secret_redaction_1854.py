@@ -818,13 +818,16 @@ def test_every_redaction_takes_the_one_held_set() -> None:
 # 1.97 s, and every other body is within a millisecond of its head
 # reading.  A bound 30 times above the slowest linear reading (0.29 s) is
 # not 10 times below the quadratic one (0.19 s).
-# A required check on a Windows runner read 1.48 s for a 64 KiB body that
-# takes 28 ms here.  So the bound below holds every rule to well under a
-# second, 50 times the slowest reading here, and decides nothing about the
-# tail's order: the tail's own test counts what the scan reads
-# (`test_the_credential_tail_reads_only_the_run_that_ends_the_text`).
+# A required check on a Windows runner read 1.48 s, on a cold call, for a
+# 64 KiB body that takes 28 ms here.
+#
+# So the count is the pin and the clock is the smoke.  The tail's order is
+# held by what its scan reads
+# (`test_the_credential_tail_reads_only_the_run_that_ends_the_text`); the
+# bound below catches only a hang or a catastrophic backtrack, and is far
+# above any reading a runner has given.
 
-COST_BOUND_S = 0.5
+COST_BOUND_S = 10.0
 
 
 def _cost(call: Callable[[], object]) -> float:
