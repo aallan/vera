@@ -1149,6 +1149,46 @@ def test_a_written_base_is_checked_or_disclosed_at_every_site(
                 in str(ran.trap)), ran.trap
 
 
+_LET_BOUND_TUPLE = """\
+type R = { @Int | @Int.0 > 0 };
+type F = fn(Tuple<R, Int> -> Int) effects(pure);
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F = fn(@Tuple<Int, Int> -> @Int) effects(pure) { 0 };
+  let @Tuple<Int, Int> = Tuple(float_to_int(@Float64.0), 0);
+  apply_fn(@F.0, @Tuple<Int, Int>.0)
+}
+"""
+
+
+def test_repro_a_let_bound_tuple_at_a_closure_argument_is_checked_at_the_call(
+) -> None:
+    """A tuple `let`-bound from a construction at an unrefined type and
+    applied to a function value whose parameter refines a component: the
+    call checks the component (at main nothing did, and -3 reached the
+    wider closure)."""
+    assert pipeline.run(_LET_BOUND_TUPLE, fn="go", args=[5.0]).value == 0
+    ran = pipeline.run(_LET_BOUND_TUPLE, fn="go", args=[-3.0])
+    assert ran.trap is not None, ran.value
+    assert ("Refinement violation in closure argument (tuple component)\n"
+            in str(ran.trap)), ran.trap
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "issue 1542's line: a value let-bound from a construction at an "
+    "unrefined type counts as built at the site (`_all_leaves_construct`), "
+    "so the verifier records nothing for the check the call holds (W004)"))
+def test_repro_a_let_bound_tuple_at_a_closure_argument_has_its_record_1542(
+) -> None:
+    verified = pipeline.verify(_LET_BOUND_TUPLE, reconcile=True)
+    assert verified.ran, verified.checked.errors
+    assert "W004" not in {d.error_code for d in verified.warnings}
+
+
 _MODULE_LIB = """\
 type R = { @Int | above(@Int.0) };
 
