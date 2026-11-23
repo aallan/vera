@@ -1111,6 +1111,7 @@ def test_e527_without_a_counterexample_says_the_access_alone() -> None:
     verifier = SimpleNamespace(
         _as_written=lambda node: node,
         _written=vast.format_expr,
+        _inputs_renamed=lambda *_: False,
         _error=lambda node, description, **kw: reported.append(
             (description, kw["fix"])))
     access = vast.IndexExpr(
@@ -1166,11 +1167,13 @@ def _reporting_verifier(reported: list[tuple[str, str]], **reads: object):
     from types import SimpleNamespace
     return SimpleNamespace(
         _as_written=lambda node: node, _written=vast.format_expr,
+        _inputs_renamed=lambda *_: False,
         _error=lambda node, description, **kw: reported.append(
             (description, kw["fix"])), **reads)
 
 
 def test_e527_leaves_the_result_out_of_its_counterexample() -> None:
+    from vera.smt import Counterexample
     from vera.verifier import ContractVerifier
     reported: list[tuple[str, str]] = []
     access = vast.IndexExpr(
@@ -1178,7 +1181,7 @@ def test_e527_leaves_the_result_out_of_its_counterexample() -> None:
         index=_A)
     ContractVerifier._report_index_oob(
         _reporting_verifier(reported), _named("f"), access,
-        {"@result": "1", "@Int.2": "-1"})  # type: ignore[arg-type]
+        Counterexample(values={}, shown=(("@Int.2", "-1"),), result="1"))
     assert reported[0][0] == (
         "Array index in 'f' is out of bounds.\n  Counterexample:\n"
         "      @Int.2 = -1")
@@ -1192,12 +1195,13 @@ def _named(name: str) -> object:
 def test_e505_names_the_predicate_it_cannot_render() -> None:
     """A refined type whose chain the verifier cannot read: the report says
     "the predicate" in both places, and leaves the result out."""
+    from vera.smt import Counterexample
     from vera.verifier import ContractVerifier
     reported: list[tuple[str, str]] = []
     ContractVerifier._report_refined_binding(
         _reporting_verifier(reported, _refined_chain=lambda ty: None),
         _named("f"), _A, None, "return type",
-        {"@result": "1", "@Int.2": "0"})  # type: ignore[arg-type]
+        Counterexample(values={}, shown=(("@Int.2", "0"),), result="1"))
     description, fix = reported[0]
     assert description == (
         "Value narrowing into a refined return type in 'f' may violate the "

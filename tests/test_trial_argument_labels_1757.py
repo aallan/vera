@@ -118,16 +118,14 @@ private fn mo(@Int -> @Nat)
 """
 
 
-def _shown(value: int | bool | str) -> int | str:
-    """A value as the text and `--json` reports show it: a `Bool` is the 1
-    or 0 the compiled function receives (`_extract_values`)."""
-    return value if isinstance(value, str) else int(value)
-
-
 def _rendered(value: int | bool | str) -> str:
-    """A value as the E703 description writes it (`_render_args`), a string
-    quoted."""
-    return json.dumps(value) if isinstance(value, str) else str(_shown(value))
+    """A value as the text report and the E703 description write it, the
+    literal the program would write (#1768): a `Bool` is `true` or
+    `false`, a string quoted.  The `--json` report gives the value itself, a
+    `Bool` as a JSON boolean."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return json.dumps(value) if isinstance(value, str) else str(value)
 
 
 def _pin(name: str, value: int | bool | str) -> str:
@@ -189,13 +187,13 @@ def _reported(tmp_path: Path, report: str,
             tmp_path, _source(_FAILING, shape)))
         assert ran.returncode != 0, ran.stdout
         return _text_trials(ran.stdout), [
-            (name, str(_shown(value))) for _, name, value in shape]
+            (name, _rendered(value)) for _, name, value in shape]
     if report == "json":
         ran = pipeline.cli("test", "--json", "--trials", "3", _write(
             tmp_path, _source(_FAILING, shape)))
         [function] = ran.json()["functions"]
         return [json.dumps(list(t["args"].items())) for t in function["failures"]], (
-            json.dumps([(name, _shown(value)) for _, name, value in shape]))
+            json.dumps([(name, value) for _, name, value in shape]))
     ran = pipeline.cli("test", "--json", "--distrust", "--trials", "3", _write(
         tmp_path, _source(_REFUTED, shape)))
     return _refuted_trials(ran.json()), ", ".join(
