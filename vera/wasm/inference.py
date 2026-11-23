@@ -15,6 +15,7 @@ from vera.slots import (
 )
 from vera.types import (
     NAT,
+    NEVER,
     AdtType,
     FunctionType,
     RefinedType,
@@ -165,6 +166,27 @@ class InferenceMixin:
         could not type left a value on the stack of a result-less block
         (#1276, and #1525's line from the program generator)."""
         return self._width_of(self._type_of(expr))
+
+    def _holds_nothing(self, expr: ast.Expr) -> str | None:
+        """What an operand with no WebAssembly value is (#1870): ``"unit"``
+        for a value of a type that erases (`Unit`, a `Future` of one, a
+        refinement of one), which exists and has one value; ``"never"`` for
+        a `Never`, which does not exist, since the operand does not
+        complete; ``None`` for an operand that has a value, and for a node
+        the check did not type.
+
+        A lowering over an operand reads this before it reads a width: the
+        operand's instructions push nothing, so the lowering evaluates
+        them, for their effects, and then gives the result the operand's
+        one value decides (`unit`), or none at all (`never`)."""
+        ty = self._type_of(expr)
+        if ty is None or self._expr_width(expr) is not None:
+            return None
+        if erases_to_unit(ty):
+            return "unit"
+        if base_type(ty) == NEVER:
+            return "never"
+        return None
 
     def _declared_width(self, node: ast.Node) -> str | None:
         """The WAT value a value declared at *node*, a type expression or a

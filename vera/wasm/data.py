@@ -729,6 +729,30 @@ class DataMixin:
             return None
 
         scr_wasm_type = self._expr_width(expr.scrutinee)
+        nothing = self._holds_nothing(expr.scrutinee)
+        if nothing == "never":
+            # #1870: a scrutinee that does not complete (a `throw`): no arm
+            # is reached, and `unreachable` says so to the validator.
+            return scr_instrs + ["unreachable"]
+        if nothing == "unit":
+            # #1870: a scrutinee with no WebAssembly value (`Unit`, a
+            # `Future` of one, a refinement of one) is evaluated for its
+            # effects and stored nowhere.  Every pattern over such a value
+            # is irrefutable (a wildcard or a binder, whose read is E182;
+            # `()` is not a pattern), so the first arm is the match, and no
+            # arm binds a local.
+            if not expr.arms:
+                raise CodegenSkip(expr, "match expression has no arms")
+            first = expr.arms[0]
+            if not isinstance(first.pattern, (ast.WildcardPattern,
+                                              ast.BindingPattern)):
+                raise CodegenInvariantError(
+                    "a refutable pattern over a value with no WebAssembly "
+                    "value reached code generation", first.pattern)
+            body = self.translate_expr(first.body, env)
+            if body is None:
+                return None
+            return scr_instrs + self._guard_nat_return_leaf(first.body, body)
         if scr_wasm_type is None:
             raise CodegenSkip(
                 expr.scrutinee,

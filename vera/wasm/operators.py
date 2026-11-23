@@ -194,6 +194,27 @@ class OperatorsMixin:
         # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
             rtype = self._expr_width(expr.right)
+            # #1870: two values of a type with no WebAssembly value (`Unit`,
+            # a `Future` of one, a refinement of one) are equal, since the
+            # type has one value (spec §9.8.1 lists `Unit` as `Eq`).  Both
+            # operands are evaluated, in order, for their effects; they push
+            # nothing, and the comparison is the constant.  The checker
+            # refuses ordering on them (E143), so only `==` and `!=` reach
+            # here.
+            lnothing = self._holds_nothing(expr.left)
+            rnothing = self._holds_nothing(expr.right)
+            if "never" in (lnothing, rnothing):
+                # An operand that does not complete (`Never`, a `throw`):
+                # the comparison is never reached, and `unreachable` says
+                # so to the validator, whatever the other operand pushed.
+                return left + right + ["unreachable"]
+            if lnothing == "unit" and rnothing == "unit":
+                if op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
+                    raise CodegenInvariantError(
+                        "an ordering of two values of a type with no "
+                        "WebAssembly value reached code generation", expr)
+                const = 1 if op == ast.BinOp.EQ else 0
+                return left + right + [f"i32.const {const}"]
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison
@@ -255,6 +276,16 @@ class OperatorsMixin:
                 # Bool operands — use i32 comparison (signed)
                 i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                 return left + right + [i32_op]
+            # #1870: the i64 table takes two i64 operands and nothing else.
+            # It was the default for any width the cases above do not name,
+            # which gave two `Unit` operands an `i64.eq` over an empty stack
+            # and a module that does not load.  Any other pair is a lowering
+            # this dispatch has no rule for, and fails here rather than in
+            # the engine.
+            if ltype != "i64" or rtype != "i64":
+                raise CodegenInvariantError(
+                    f"a comparison of a {ltype or 'width-less'} operand with "
+                    f"a {rtype or 'width-less'} one has no lowering", expr)
             return left + right + [self._CMP_OPS[op]]
 
         # Boolean: short-circuit (§4.6).  The right operand is evaluated only

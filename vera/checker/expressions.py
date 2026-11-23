@@ -470,6 +470,27 @@ class ExpressionsMixin:
         fn = self._fn_scope_stack[-1]
         ret_key = naming.slot_name(fn.return_type, self._naming_env())
         if key == ret_key or self._return_type_refused(fn.return_type, ret):
+            # #1870: a result of a zero-size type is read as a slot of that
+            # type is (§2.2.2), so it is refused as one is (E182): there is
+            # no value to read, and the read lowered to a local that does
+            # not exist (E699).
+            if key == ret_key and erases_to_unit(ret):
+                self._error(
+                    ref,
+                    f"Cannot read @{key}.result: type "
+                    f"'{pretty_type(ret)}' is zero-size and carries no "
+                    f"runtime value.",
+                    rationale="A zero-size type (`Unit`, or a `Future` "
+                              "wrapping one) compiles to no WASM value, so "
+                              "a reference to a result of it resolves to "
+                              "no runtime location.",
+                    fix="Write the unit literal `()` where a Unit value is "
+                        "needed; a zero-size result has one value, so a "
+                        "postcondition about it says nothing and can be "
+                        "written `ensures(true)`.",
+                    spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
+                    error_code="E182",
+                )
             return ret
         # The message spells each type as the program does (`_as_written`): a
         # key writes a refinement's predicate in canonical form and resolves
