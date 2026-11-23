@@ -11,14 +11,15 @@ obligation the verifier did not prove — a Tier-3 guard — firing on an input
 the contract admits is a program finding, reported as a failing trial exactly
 as for a Tier-3 function.
 
-The red-first case is an open soundness bug whose repro refutes today:
-the function-type coercion on #1695's line (a closure returning `@Int`
-passed at a `fn(Int -> Nat)` formal is obligated nowhere and walked by no
-guard, so the `@Nat` the call returns holds a negative, and `mo(7) >= 0` is
-proved true and runs false), which the fixtures hold as their false proof.
-It replaced the composite coercion of an `Option<Int>` into an
-`@Option<Nat>` when that was guarded (#1542), which had replaced #1555's
-address comparison when the typed program fixed that (#1525).  Default mode is pinned
+The fixtures' false proof is injected at the check
+(`tests/injected_false_proof.py`), since the language has none on purpose:
+a closure returning `@Int` is admitted at a `fn(Int -> Nat)` formal, so the
+`@Nat` the call returns holds a negative, and `mo(7) >= 0` is proved true
+and runs false.  Everything after the check is the pipeline's own.  The
+fixtures once held open soundness bugs as their false proof, each in turn
+until its fix: #1555's address comparison, the composite coercion of an
+`Option<Int>` into an `@Option<Nat>`, and the function-type relaxation
+that E190 now refuses.  Default mode is pinned
 byte-for-byte on a fixed program (`TestDefaultModeUnchanged`); the corpus-wide
 default-versus-distrust differential lives in `tests/test_distrust_corpus.py`.
 """
@@ -49,6 +50,9 @@ from vera.tester import FunctionTestResult, TestResult, TrialResult, _TrapIndex
 from vera.trap_registry import KNOWN_TRAP_DEFECTS, TRAP_EMITTERS, EmittedCheck
 from vera.transform import transform
 from tests import pipeline
+
+# The fixtures' false proof is injected at the check (`_MO` below).
+pytestmark = pytest.mark.usefixtures("injected_false_proof")
 
 ROOT = Path(__file__).resolve().parent.parent
 _FILE = "<distrust>"
@@ -141,10 +145,10 @@ def _main(
 # Fixtures
 # =====================================================================
 
-# The function-type coercion on #1695's line as a false proof a fixture can
-# hold: a closure returning -7 is passed at `apply_nat`'s `fn(Int -> Nat)`
-# formal with no obligation and no guard (no walk can read a function's
-# result where it is passed), so `mo`'s `@Nat` result is -7.
+# The false proof a fixture holds, injected at the check (the file's
+# `injected_false_proof` mark): a closure returning -7 is admitted at
+# `apply_nat`'s `fn(Int -> Nat)` formal, which E190 refuses with nothing
+# injected, so `mo`'s `@Nat` result is -7.
 # The verifier reads that result at its type and proves `mo(7) >= 0`, and the
 # compiled comparison runs false.  `mo` raises no obligation of its own, so
 # the false proof brings no proved check with it.  A fixture appends `_MO`
@@ -1514,7 +1518,7 @@ public fn f(@Int -> @Int)
 #
 # A trap is read against the records the reconciliation join relates its
 # check to (`vera/reconcile.py`), never against the records that merely
-# share its span.  Each fixture below holds a false proof (the composite coercion's
+# share its span.  Each fixture below holds a false proof (the injected one's
 # comparison) whose check stands at one node and whose record at another,
 # one per location class the join reads: read by span, every one of these
 # traps was unattributed.
@@ -2474,7 +2478,7 @@ _SOUNDNESS = (
     "runs")
 
 # Two `where` helpers of one name: `f1`'s rests on an `assume`, `f2`'s
-# carries the composite coercion's false proof and no `assume`.
+# carries the injected false proof and no `assume`.
 SRC_SAME_NAMED_HELPERS = """\
 public fn f1(@Int -> @Int)
   requires(true)
@@ -2522,7 +2526,7 @@ _ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
         ">", "assume(@Int.0 > 0);\n  @Int.0",
         "; the proof rests on `assume(@Int.0 > 0)` at line 6, which these "
         "arguments violate"),
-    # At the head, and it holds: the false proof is the verifier's (#1695).
+    # At the head, and it holds: the false proof is the injected one.
     "head_satisfied": (
         "<", "assume(@Int.0 == @Int.0);\n  "
         "if mo(7) >= 0 then { 0 - 1 } else { 1 }",

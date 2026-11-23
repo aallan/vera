@@ -708,6 +708,7 @@ MARKED_FILES = (
     "test_lsp_positions_1788.py",
     "test_match_unknown_scrutinee_1671.py",
     "test_named_traps_1479.py",
+    "test_narrower_closure_refused_1885.py",
     "test_nat_i64.py",
     "test_negation_overflow_1875.py",
     "test_nested_container_guards.py",
