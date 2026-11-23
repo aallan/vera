@@ -361,6 +361,54 @@ def test_trial_e703(ty: str) -> None:
     assert expected in e703[0].description, e703[0].description
 
 
+def _received(literal: str) -> str:
+    """A function whose `requires` admits the one string *literal* names,
+    and whose Tier 3 `ensures` holds exactly where the function received that
+    string: it returns 1 then (`"1"`, one byte) and 10 otherwise."""
+    return f"""\
+public fn f(@String -> @Int)
+  requires(@String.0 == {literal})
+  ensures(string_length(int_to_string(@Int.result)) == 1)
+  effects(pure)
+{{
+  if @String.0 == {literal} then {{ 1 }} else {{ 10 }}
+}}
+"""
+
+
+def _trials_of(source: str) -> object:
+    tested = pipeline.contract_test(source, trials=3)
+    functions = [f for f in tested.result.functions if f.fn_name == "f"]
+    assert len(functions) == 1, tested.result
+    return functions[0]
+
+
+def test_repro_1768_a_trial_is_called_with_the_string_generated() -> None:
+    """A trial satisfies its own `requires`: the generated string is the one
+    the model holds, U+200B, not Z3's text of it (`\\u{200b}`, six
+    characters), which the function's own entry check refused."""
+    fn = _trials_of(_received('"\\u{200B}"'))
+    assert fn.trials_run >= 1 and fn.trials_failed == 0, fn.failures
+
+
+#: The strings a trial is called with, each the model's: a character outside
+#: ASCII, a quote, a newline, one outside the Basic Multilingual Plane (which
+#: Z3's text spells as an escape), and the empty string.
+_RECEIVED = {
+    "non_ascii": '"café"',
+    "quote": '"q\\"x"',
+    "newline": '"a\\nb"',
+    "astral": '"\\u{1F600}"',
+    "empty": '""',
+}
+
+
+@pytest.mark.parametrize("name", list(_RECEIVED))
+def test_trial_is_called_with_the_model_s_string(name: str) -> None:
+    fn = _trials_of(_received(_RECEIVED[name]))
+    assert fn.trials_run >= 1 and fn.trials_failed == 0, fn.failures
+
+
 def test_repro_1768_reported_program(tmp_path: Path) -> None:
     path = tmp_path / "t.vera"
     path.write_text("""\

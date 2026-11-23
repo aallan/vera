@@ -33,7 +33,6 @@ variable's) is not written: :data:`NO_LITERAL` says so where it is listed.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable, Sequence
 
 import z3
@@ -111,14 +110,20 @@ def z3_float(value: z3.ExprRef) -> float:
     return -0.0 if (f == 0.0 and fp.isNegative()) else f
 
 
-_Z3_ESCAPE = re.compile(r"\\u\{([0-9a-fA-F]{1,6})\}")
-
-
 def z3_string(value: z3.ExprRef) -> str:
-    """A Z3 string model value as the Python string it holds: Z3 writes a
-    character outside printable ASCII as `\\u{...}`, which is decoded."""
-    raw = z3.simplify(value).as_string()
-    return _Z3_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), raw)
+    """A Z3 string model value as the Python string it holds, read one code
+    point at a time (#1871, #1768).  Not Z3's text of it: ``as_string``
+    writes an invisible character (U+200B) and one outside the Basic
+    Multilingual Plane as the escape `\\u{...}`, and a backslash where it
+    would read as one, so the text is a spelling of the
+    string, not the string.  The one reader of a string model value: what a
+    diagnostic shows and what a `vera test` trial is called with."""
+    length = z3.simplify(z3.Length(value))
+    assert z3.is_int_value(length), value  # noqa: S101 — a model value
+    codes = [z3.simplify(z3.StrToCode(z3.SubString(value, i, 1)))
+             for i in range(length.as_long())]
+    assert all(z3.is_int_value(c) for c in codes), value  # noqa: S101
+    return "".join(chr(c.as_long()) for c in codes)
 
 
 def _z3_node(value: z3.ExprRef, arrays: ArrayReader | None) -> ast.Expr | str | None:

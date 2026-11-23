@@ -2304,7 +2304,7 @@ def _extract_values(
             # Convert to 0/1 for WASM
             values.append(1 if z3.is_true(val) else 0)
         elif bt == STRING:
-            values.append(z3.simplify(val).as_string())
+            values.append(literals.z3_string(val))
         elif bt == FLOAT64:
             values.append(literals.z3_float(val))
         else:
