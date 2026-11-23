@@ -340,7 +340,7 @@ def test_e503s_fix_clears_the_reported_program_repro() -> None:
     [error] = verified.errors
     assert error.error_code == "E503", error.format()
     assert "Add a precondition ruling out the bad inputs" in (error.fix or "")
-    assert "@Bool.0 = True" in error.description, error.description
+    assert "@Bool.0 = true" in error.description, error.description
     fixed = sentinel.replace("  requires(true)\n", "  requires(!@Bool.0)\n", 1)
     after = pipeline.verify(fixed, file=LABEL)
     assert after.ok, [d.format() for d in after.errors]
