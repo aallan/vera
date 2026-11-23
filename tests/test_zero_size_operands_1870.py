@@ -733,9 +733,11 @@ def test_repro_the_verifier_reads_both_operands_types() -> None:
 # `Byte`, `Float64`, `Bool`, `String`, a data type, an array) is crossed
 # with a `Never` operand (a call of a function that does not return, and a
 # `throw`) or a `Unit` one, on either side, under each operator class.  A
-# cell the checker accepts is validated by wasmtime and run; a dispatch
-# that returned before the zero-size rule (the `Byte` one, #1905's second
-# review) wrote a module that did not load.
+# cell the checker accepts is validated by wasmtime and run.  The rule
+# stood after these dispatches (the `@Byte` one among them) and now comes
+# first.  No program reached them with a `Never` operand: a `throw` ends
+# in an instruction that does not return, and a function declared to
+# return `Never` is dropped by code generation (#1909).
 
 BINARY_PROLOGUE = """\
 private fn stop(@Unit -> @Never)
@@ -863,8 +865,8 @@ def test_every_binary_dispatch_beside_an_operand_with_no_value(
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "a function declared to return Never is dropped by code generation "
-    "(E601), another mechanism"))
+    "#1909: a function declared to return Never is dropped by code "
+    "generation (E601), another mechanism"))
 def test_a_call_of_a_function_that_returns_never() -> None:
     source = (BINARY_PROLOGUE
               + "public fn main(@Unit -> @Unit)\n  requires(true)\n"
@@ -928,3 +930,81 @@ def test_repro_a_short_circuit_never_reaches_a_right_operand_it_skips() -> None:
               '    throw(@String) -> "caught"\n'
               f"  }} in {{\n    if {expr} then {{ \"T\" }} else {{ \"F\" }}\n"
               "  })", out)
+
+
+# --- What a reference reads: by its type, at any depth ----------------------
+#
+# A reference reads a generic's type variable when its type erases at a
+# zero-size instance of it: the variable itself, a `Future` of it at any
+# depth, or an alias of one.  Named in any other argument (`Option<T>`) it
+# stands inside a value with a local of its own.  A slot reference and a
+# result reference are decided alike.
+
+REFERENCE_TYPES: dict[str, tuple[str, str, bool]] = {
+    # kind: (the reference's type, a value of it from `{v}`, erases at Unit)
+    "head": ("T", "{v}", True),
+    "argument": ("Option<T>", "Some({v})", False),
+    "future": ("Future<T>", "async({v})", True),
+    "nested-future": ("Future<Future<T>>", "async(async({v}))", True),
+    "nested-argument": ("Option<Future<T>>", "Some(async({v}))", False),
+    "alias-of-future": ("FU<T>", "async({v})", True),
+}
+
+REFERENCE_PROLOGUE = """\
+type FU<A> = Future<A>;
+
+type Gen<A> = fn(Unit -> A) effects(<Async>);
+
+"""
+
+
+def _reference_program(kind: str, by: str, at: str) -> str:
+    ty, ctor, _ = REFERENCE_TYPES[kind]
+    v = "()" if at == "Unit" else "1"
+    arg = ctor.format(v=v)
+    inst = ty.replace("T", at)
+    if by == "slot":
+        gen = (f"private forall<T> fn g(@{ty}, @Int -> @Int)\n"
+               "  requires(true)\n  ensures(true)\n  effects(<Async>)\n{\n"
+               f"  let @{ty} = @{ty}.0;\n  @Int.0\n}}\n\n")
+        call = f"  let @Int = g({arg}, 1);\n"
+    else:
+        gen = (f"private forall<T> fn g(@Gen<{ty}> -> @{ty})\n"
+               f"  requires(true)\n  ensures(@{ty}.result == @{ty}.result)\n"
+               f"  effects(<Async>)\n{{\n  apply_fn(@Gen<{ty}>.0, ())\n}}\n\n")
+        call = f"  g(fn(@Unit -> @{inst}) effects(<Async>) {{ {arg} }});\n"
+    return program(call + '  IO.print("x")', before=REFERENCE_PROLOGUE + gen)
+
+
+REFERENCE_CELLS = [
+    pytest.param(kind, by, at, id=f"{kind}-{by}-{at}")
+    for kind in REFERENCE_TYPES for by in ("slot", "result")
+    for at in ("Unit", "Int")
+]
+
+
+@pytest.mark.parametrize(("kind", "by", "at"), REFERENCE_CELLS)
+def test_a_reference_reads_the_variables_its_type_erases_at(
+    kind: str, by: str, at: str,
+) -> None:
+    erases = REFERENCE_TYPES[kind][2] and at == "Unit"
+    assert_cell(_reference_program(kind, by, at),
+                Expect(code="E206") if erases else Expect(stdout="x"))
+
+
+def test_repro_a_future_result_reference_reads_its_argument() -> None:
+    """`@Future<T>.result` reads `T`: at `Unit` it was an internal error
+    (E699) behind a green check."""
+    source = _reference_program("future", "result", "Unit")
+    assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+def test_repro_an_option_reference_is_not_a_read_of_its_argument() -> None:
+    """`@Option<T>.0` at `Unit` is a value with a local, and runs."""
+    assert_cell(_reference_program("argument", "slot", "Unit"),
+                Expect(stdout="x"))
+
+
+def test_repro_an_alias_of_a_future_is_read_through() -> None:
+    source = _reference_program("alias-of-future", "slot", "Unit")
+    assert "E206" in {d.error_code for d in pipeline.check(source).errors}
