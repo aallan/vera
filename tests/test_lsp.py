@@ -256,31 +256,32 @@ class TestSpanConversion:
 
 
 class TestLocationConversion:
-    def test_location_column_is_zero_based(self) -> None:
-        # SourceLocation col is 0-based (unlike Span) — col 4 on ASCII
-        # maps straight to LSP char 4.
+    def test_location_column_is_one_based(self) -> None:
+        # SourceLocation col is 1-based, as Span's is and the CLI's caret
+        # reads it (#1637) — col 4 on ASCII is the 4th character, LSP
+        # char 3.
         index = LineIndex("abcdefgh")
         loc = SourceLocation(file=None, line=1, column=4)
         pos = location_to_position(loc, index)
-        assert (pos.line, pos.character) == (0, 4)
+        assert (pos.line, pos.character) == (0, 3)
 
     def test_location_range_widens_over_slot_token(self) -> None:
         # Point at the @ of "@Int.0" widens across the slot token.
         index = LineIndex("  @Int.0 + 1")
-        loc = SourceLocation(file=None, line=1, column=2)
+        loc = SourceLocation(file=None, line=1, column=3)
         r = location_to_range(loc, index)
         assert r.start.character == 2
         assert r.end.character == 8  # past "@Int.0"
 
     def test_location_range_on_non_token_is_one_char(self) -> None:
         index = LineIndex("a (b)")
-        loc = SourceLocation(file=None, line=1, column=2)  # the "("
+        loc = SourceLocation(file=None, line=1, column=3)  # the "("
         r = location_to_range(loc, index)
         assert (r.start.character, r.end.character) == (2, 3)
 
     def test_location_range_at_eol_is_empty_not_crashing(self) -> None:
         index = LineIndex("ab")
-        loc = SourceLocation(file=None, line=1, column=2)
+        loc = SourceLocation(file=None, line=1, column=3)
         r = location_to_range(loc, index)
         assert r.start.character == 2
         assert r.end.character == 2
@@ -2026,28 +2027,30 @@ class TestProofPreservationAcrossTheStatusVocabulary:
         assert response["applied"] is True
 
     def test_a_newly_introduced_timeout_is_not_a_regression(self) -> None:
-        """A boundary the rule draws deliberately.
+        """A boundary the regression list draws deliberately.
 
         An obligation the edit CREATES, which then times out, took no
-        proof away -- there was nothing there before.  It is reported
-        (`timed_out` carries it, with `status_before: None`) but it does
-        not need `force`.  Pinned because it is the case adjacent to the
-        bug, and the obvious over-correction is to refuse it too.
+        proof away -- there was nothing there before -- so it is not in
+        `proof_regressions`.  It is reported (`timed_out` carries it,
+        with `status_before: None`), and the gate refuses it as it
+        refuses an introduced `tier3`: a check the solver did not finish
+        is not a proof (#1610).
         """
         session = _StubSession([_ob("timeout")])
         should, response = propose_edit(
             session, [], URI, "-- text",  # type: ignore[arg-type]
         )
-        assert should is True
+        assert should is False
+        assert response["proof_delta"]["proof_regressions"] == []
         assert response["proof_delta"]["timed_out"]
         assert response["proof_delta"]["timed_out"][0]["status_before"] is None
 
     @pytest.mark.parametrize(
         ("status", "applies"),
         [
-            # Unknown, not false: falls back to a runtime check, and
-            # took no proof away.  Allowed, as before.
-            ("timeout", True),
+            # Unknown, not false: falls back to a runtime check, as a
+            # `tier3` does, and is refused as one is (#1610).
+            ("timeout", False),
             # Z3 produced a counterexample.  A definite falsehood the
             # edit INTRODUCED — refused, as before.
             ("violated", False),
@@ -2070,10 +2073,10 @@ class TestProofPreservationAcrossTheStatusVocabulary:
         and dropping `newly_undischarged` stays green while a newly
         introduced `violated` silently starts applying.
 
-        The asymmetry is the point.  `violated` is a counterexample, an
-        error; `timeout` is the solver saying it does not know, a
-        warning with a runtime check behind it.  Introducing an unknown
-        is not the same act as introducing a falsehood.
+        `violated` is a counterexample, an error; `timeout` is the solver
+        saying it does not know, a warning with a runtime check behind
+        it, which is what `tier3` is too.  Neither is a proof, so an edit
+        that introduces one needs `force` (#1610).
         """
         session = _StubSession([_ob(status)])
         should, _ = propose_edit(
@@ -2364,13 +2367,11 @@ class TestARelocatedObligationIsStillTheSameObligation:
             # with no `before`.
             ("violated", False),
             ("tier3", False),
-            # And the one that is NOT closed, pinned so it is a stated
-            # boundary and not a surprise: a replacement that merely
-            # times out is a new, unproved obligation, and the policy
-            # for those is the same one
-            # `test_a_newly_introduced_timeout_is_not_a_regression`
-            # already pins -- it took no proof away, so it applies.
-            ("timeout", True),
+            # And a replacement that merely times out: a new, unproved
+            # obligation, refused as any introduced one is, by the same
+            # rule `test_a_newly_introduced_timeout_is_not_a_regression`
+            # pins (#1610).  Not a regression either way.
+            ("timeout", False),
         ],
     )
     def test_a_deletion_followed_by_a_weaker_contract(
@@ -2459,7 +2460,11 @@ class TestARelocatedObligationIsStillTheSameObligation:
             URI, "-- moved\n",
         )
         assert response["proof_delta"]["proof_regressions"] == []
-        assert should is True
+        # Unpaired: `g`'s obligation is an introduction, with no
+        # `before`, and refused as one (#1610), not as a regression.
+        (introduced,) = response["proof_delta"]["timed_out"]
+        assert introduced["status_before"] is None
+        assert should is False
 
 
 #: Text the user types while an edit is pending -- a clean program,
@@ -5455,7 +5460,7 @@ class TestDiagnosticInstructionContract:
             location=SourceLocation(file=URI, line=1, column=0),
         )
         a = Analysis(
-            uri=URI, text="x\n", index=LineIndex("x\n"),
+            uri=URI, text="x\n", index=LineIndex("x\n"), path=URI,
             diagnostics=[bare],
         )
         msgs = [d.message for d in to_lsp_diagnostics(a)]
