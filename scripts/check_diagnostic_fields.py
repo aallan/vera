@@ -971,11 +971,6 @@ def hand_built_diagnostic_violations(paths: Iterable[Path]) -> list[Violation]:
 # shrinks.
 
 PLACEMENT_EXCEPTIONS: dict[tuple[str, str], str] = {
-    ("vera/tester.py", "_TestEngine.run"): (
-        "the trial report's diagnostics pass `source_line=` from "
-        "`_get_source_line` and `_refuted_location`, which build it with "
-        "`locate_at`; the report's own lines change with issue #1768's fix, "
-        "which places them through `locate` and deletes this entry"),
     ("vera/lsp/convert.py", "LineIndex.__init__"): (
         "the language server's position index, which turns a location into "
         "an LSP range: it reads lines to count columns, and quotes nothing"),

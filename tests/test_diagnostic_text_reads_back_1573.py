@@ -879,16 +879,6 @@ def test_the_resolver_quotes_the_counted_line(line: int, tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("line", sorted(_LINES))
-def test_the_tester_quotes_the_counted_line(line: int) -> None:
-    from types import SimpleNamespace
-
-    from vera.tester import _get_source_line
-    decl = SimpleNamespace(span=_span(line, column=3))
-    assert _get_source_line(_TEXT, decl) == _LINES[line]  # type: ignore[arg-type]
-    assert _get_source_line(_TEXT, SimpleNamespace(span=None)) == ""  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("line", sorted(_LINES))
 @pytest.mark.parametrize("same_file", [True, False])
 def test_an_e703_quotes_the_counted_line(line: int, same_file: bool) -> None:
     """The refuted clause's line when it lies in the file under test and
@@ -900,8 +890,9 @@ def test_an_e703_quotes_the_counted_line(line: int, same_file: bool) -> None:
     trial = SimpleNamespace(refutes=[SimpleNamespace(
         file="f.vera" if same_file else "g.vera", line=line, column=4)])
     decl = SimpleNamespace(span=_span(3, column=2))
-    loc, quoted = _TestEngine._refuted_location(
+    placed = _TestEngine._refuted_location(
         engine, trial, decl)  # type: ignore[arg-type]
+    loc, quoted = placed["location"], placed["source_line"]
     if same_file and 1 <= line <= 3:
         assert (loc.line, loc.column, quoted) == (line, 4, _LINES[line])
     else:
