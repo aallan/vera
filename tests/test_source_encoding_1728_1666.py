@@ -449,9 +449,9 @@ def test_repro_the_language_server_reports_a_module_that_is_not_utf8(
 ) -> None:
     """The language server reads a document's imports through the resolver:
     a Latin-1 module was E013 at 506d2161, and is the module's E024,
-    published with its file and message.  Where it is published is not
-    asserted: the server places a module's diagnostic at the module's line
-    in the open document (#1788)."""
+    published with its file and message, on the import that names the
+    module, with its location in the module ahead of the message (#1788;
+    `tests/test_lsp_positions_1788.py` holds where)."""
     from vera.lsp.features import analyze, to_lsp_diagnostics
     from vera.obligations.session import VerificationSession
 
@@ -464,7 +464,8 @@ def test_repro_the_language_server_reports_a_module_that_is_not_utf8(
     assert found.location.file is not None
     assert Path(found.location.file).resolve() == case.holder.resolve()
     published = [d for d in to_lsp_diagnostics(analysis) if d.code == "E024"]
-    assert published and published[0].message.startswith(found.description)
+    assert published and published[0].message.startswith(
+        f"In imported module {found.location}: {found.description}")
 
 
 def test_repro_reconcile_file_reports_a_source_that_is_not_utf8(

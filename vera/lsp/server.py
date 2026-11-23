@@ -198,7 +198,9 @@ class VeraLanguageServer(LanguageServer):
                 # Inside the `try`: an analysis is kept only once what is
                 # published for it has been built, so a conversion that
                 # raises is reported like any other failure on this text.
-                diagnostics = to_lsp_diagnostics(analysis)
+                diagnostics = to_lsp_diagnostics(
+                    analysis, related_information=self.takes_related_information(),
+                )
             except Exception as exc:
                 # Any exception is a compiler bug on this text; it goes to
                 # the log with its traceback and to the client as E699.
@@ -210,6 +212,19 @@ class VeraLanguageServer(LanguageServer):
         self.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics),
         )
+
+    def takes_related_information(self) -> bool:
+        """Whether the client advertised
+        ``textDocument.publishDiagnostics.relatedInformation`` (pygls
+        hands over the client's capabilities from ``initialize``; before
+        it, there are none, and none is sent)."""
+        try:
+            capabilities = self.client_capabilities
+        except AttributeError:
+            return False
+        text_document = getattr(capabilities, "text_document", None)
+        publish = getattr(text_document, "publish_diagnostics", None)
+        return getattr(publish, "related_information", None) is True
 
     def current_analysis(self, uri: str) -> Analysis | None:
         """The analysis of *uri*'s open text, or ``None``: the one reader

@@ -652,7 +652,18 @@ def _validated_budget(value: int | str, source: str) -> int:
             f"{source}: expected a positive integer number of "
             f"milliseconds, got {parsed}"
         )
+    # Z3 takes the budget as a C unsigned int, so a larger value would wrap
+    # silently (2**32 + 1 is a budget of 1 ms) rather than be refused (#1872).
+    if parsed > Z3_MAX_TIMEOUT_MS:
+        raise Z3BudgetError(
+            f"{source}: expected at most {Z3_MAX_TIMEOUT_MS} milliseconds "
+            f"(the solver's limit), got {parsed}"
+        )
     return parsed
+
+
+#: The largest budget Z3's unsigned 32-bit `timeout` parameter holds.
+Z3_MAX_TIMEOUT_MS = 2**32 - 1
 
 
 class SmtContext:
