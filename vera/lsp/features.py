@@ -56,7 +56,7 @@ from vera.obligations.session import (
     resolve_document_imports,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
-from vera.parser import normalize_line_ends
+from vera.parser import source_text
 from vera.resolver import ResolvedModule, own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
@@ -110,10 +110,11 @@ def analyze(
     single diagnostic those exceptions carry — matching the CLI, where
     a parse error precludes everything downstream.
 
-    The compiler is handed *text* after the file reader's line-end rule
-    (:func:`vera.parser.normalize_line_ends`), so it numbers the lines
-    the protocol does, a lone ``\\r`` included, and reads the program the
-    CLI reads from the same bytes (#1788).  ``Analysis.text`` stays the
+    The compiler is handed *text* as the file reader reads one
+    (:func:`vera.parser.source_text`: a leading byte-order mark dropped,
+    every line end a ``\\n``), so it numbers the lines the protocol does, a
+    lone ``\\r`` included, and reads the program the CLI reads from the
+    same bytes (#1788).  ``Analysis.text`` stays the
     client's text: the currency check compares it with the buffer, and the
     edit methods splice it, keeping the client's own line ends.
     """
@@ -122,7 +123,7 @@ def analyze(
     from vera.transform import transform
 
     index = LineIndex(text)
-    source = normalize_line_ends(text)
+    source = source_text(text)
     # The pipeline is driven with the PATH, never the URI (#1246): the
     # module resolver reads imports from `Path(file).parent`, and a
     # `file://` URI makes that the directory `file:`, so a document with

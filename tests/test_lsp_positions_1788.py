@@ -19,7 +19,10 @@ or range, by:
   document with a lone CR inside a string literal (the grammar lets a
   string span lines);
 * whether a character outside the Basic Multilingual Plane stands before
-  the column on its line.
+  the column on its line;
+* whether the buffer begins with a byte-order mark, which the reader drops
+  and the buffer counts, with the positions on later lines or, with the
+  whole program written on line 0, on the line the mark shifts.
 
 The oracle is independent of the converter: the expected position is
 computed here from `vera check --json`'s location for the same file on
@@ -130,13 +133,18 @@ def widened(text: str, line1: int, col1: int) -> tuple[int, int, int, int]:
     converter's."""
     lines = lsp_lines(text)
     line = lines[line1 - 1]
+    lead = 0
+    if line1 == 1 and text.startswith("\ufeff"):
+        # The compiler reads the text without the mark; the buffer counts it.
+        line, lead = line[1:], 1
     start = max(0, col1 - 1)
     m = re.compile(r"[A-Za-z0-9_@.À-￿]*").match(line, start)
     assert m is not None
     end = m.end()
     if end == start and start < len(line):
         end = start + 1
-    return (line1 - 1, utf16(line[:start]), line1 - 1, utf16(line[:end]))
+    return (line1 - 1, lead + utf16(line[:start]),
+            line1 - 1, lead + utf16(line[:end]))
 
 
 def rng(r: lsp.Range) -> tuple[int, int, int, int]:
@@ -208,17 +216,43 @@ SURFACES = (
 )
 
 
+BOM = "\ufeff"
+
+#: Whether the buffer begins with a byte-order mark, and where the position
+#: under test sits: `none` and `bom` keep each program's layout (the
+#: position on a later line, the import and the signature on line 0);
+#: `bom_line0` writes the whole program on line 0, so every position is on
+#: the line the mark shifts.
+MARKS = ("none", "bom", "bom_line0")
+
+
+def shape(text: str, style: str, mark: str) -> str:
+    """*text* (written with ``\\n``) laid out for *mark* with *style*'s
+    line ends."""
+    if mark == "bom_line0":
+        text = " ".join(text.rstrip("\n").split("\n")) + "\n"
+    text = with_ends(text, style)
+    return BOM + text if mark != "none" else text
+
+
+def mark_units(text: str, line0: int) -> int:
+    """The UTF-16 units the buffer holds ahead of the compiler's *line0*."""
+    return 1 if line0 == 0 and text.startswith(BOM) else 0
+
+
+@pytest.mark.parametrize("mark", MARKS)
 @pytest.mark.parametrize("astral", [False, True], ids=["bmp", "astral"])
 @pytest.mark.parametrize("style", STYLES)
 @pytest.mark.parametrize("surface", SURFACES)
 def test_published_position(
-    surface: str, style: str, astral: bool, tmp_path: pathlib.Path,
+    surface: str, style: str, astral: bool, mark: str,
+    tmp_path: pathlib.Path,
 ) -> None:
     pfx = prefix(astral, style)
     if surface in ("diag_document", "diag_transform"):
-        src = with_ends(
+        src = shape(
             (doc_program if surface == "diag_document"
-             else transform_program)(pfx), style)
+             else transform_program)(pfx), style, mark)
         path = tmp_path / "t.vera"
         a = analysed(path, src)
         (want,) = cli(path)
@@ -240,9 +274,9 @@ def test_published_position(
             write(tmp_path / "lib.vera", lib)
         if surface == "diag_transitive":
             write(tmp_path / "mid.vera", with_ends(MID, style))
-            main, head = with_ends(MAIN_T, style), "import mid(w2);"
+            main, head = shape(MAIN_T, style, mark), "import mid(w2);"
         else:
-            main, head = with_ends(MAIN, style), "import lib(word);"
+            main, head = shape(MAIN, style, mark), "import lib(word);"
         code = "E024" if surface == "diag_unread" else "E200"
         path = tmp_path / "main.vera"
         a = analysed(path, main)
@@ -251,7 +285,8 @@ def test_published_position(
         assert pathlib.Path(loc["file"]).name == "lib.vera"
         (pub,) = [d for d in to_lsp_diagnostics(a) if d.code == code]
         # Published on the import that brings the module in, whole.
-        assert rng(pub.range) == (0, 0, 0, utf16(head)), pub
+        m = mark_units(main, 0)
+        assert rng(pub.range) == (0, m, 0, m + utf16(head)), pub
         # Named the way `vera check` names it.
         assert pub.message.startswith(
             f"In imported module {loc['file']}, line {loc['line']}, "
@@ -259,9 +294,9 @@ def test_published_position(
         return
 
     if surface in ("hint", "hover", "definition", "completion"):
-        src = with_ends(
+        src = shape(
             (hole_program if surface == "completion" else ok_program)(pfx),
-            style)
+            style, mark)
         path = tmp_path / "g.vera"
         a = analysed(path, src)
         if surface == "hint":
@@ -280,15 +315,18 @@ def test_published_position(
             off = src.rindex("@Int.0")
             line, ch = offset_to_pos(src, off)
             df = definition_at(a, lsp.Position(line=line, character=ch))
-            # The control: the same program with LF ends, whose line 0 the
-            # line-end style cannot move.
+            # The control: the same program with LF ends and no mark, whose
+            # line 0 the line-end style cannot move; the mark moves it one
+            # unit right.
             control = analysed(tmp_path / "control.vera", ok_program(pfx))
             off0 = ok_program(pfx).rindex("@Int.0")
             line0, ch0 = offset_to_pos(ok_program(pfx), off0)
             want = definition_at(
                 control, lsp.Position(line=line0, character=ch0))
             assert want is not None and df is not None
-            assert rng(df.range) == rng(want.range)
+            m = mark_units(src, 0)
+            w = rng(want.range)
+            assert rng(df.range) == (w[0], w[1] + m, w[2], w[3] + m)
             assert df.uri == path.as_uri()
         else:
             off = src.rindex("?") + 1
@@ -298,7 +336,7 @@ def test_published_position(
             assert [i.label for i in c.items] == ["@Int.0"]
         return
 
-    src = with_ends(ok_program(pfx), style)
+    src = shape(ok_program(pfx), style, mark)
     if surface == "full_document_range":
         r = full_document_range(Document(uri="file:///x.vera", text=src))
         lines = lsp_lines(src)
@@ -417,6 +455,72 @@ def test_a_lone_cr_diagnostic_quotes_the_text_the_cli_quotes(
                            f"\n\nFix: {want['fix']}")
     loc = want["location"]
     assert rng(got.range) == widened(src, loc["line"], loc["column"])
+
+
+ONE_LINE_OK = ("public fn g(@Int, @Int -> @Int) requires(@Int.0 > 0) "
+               "ensures(true) effects(pure) { @Int.1 + @Int.0 }\n")
+
+
+def test_repro_a_buffer_that_begins_with_a_byte_order_mark(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The find of this change's first report: a buffer beginning with
+    U+FEFF was handed to the parser whole and drew `E006` at its start,
+    where `vera check` on the same bytes, which drops the mark, is clean."""
+    src = BOM + ok_program("")
+    path = tmp_path / "g.vera"
+    a = analysed(path, src)
+    assert cli(path) == []
+    codes = [d.code for d in to_lsp_diagnostics(a)]
+    assert codes == ["tier"], codes
+
+
+def test_a_marked_buffers_line_0_diagnostic_is_one_unit_right(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Compiler to client: `E200` at the compiler's line 1, column C is at
+    the buffer's character C, one past the compiler's C - 1, because the
+    buffer holds the mark."""
+    src = BOM + ("public fn f(@Int -> @Int) requires(true) ensures(true) "
+                 "effects(pure) { missing(@Int.0) }\n")
+    path = tmp_path / "f.vera"
+    a = analysed(path, src)
+    (want,) = cli(path)
+    col = want["location"]["column"]
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (0, col, 0, col + len("missing"))
+
+
+def test_a_marked_buffers_line_0_hover_reads_one_unit_left(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Client to compiler: the cursor on the buffer's `@` of the last
+    `@Int.0` finds the slot, and its range is the buffer's."""
+    src = BOM + ONE_LINE_OK
+    a = analysed(tmp_path / "g.vera", src)
+    ch = src.rindex("@Int.0")
+    h = hover_at(a, lsp.Position(line=0, character=ch))
+    assert h is not None
+    assert rng(h.range) == (0, ch, 0, ch + 6)
+    # One unit left of the slot is the space before it: no slot there.
+    d = definition_at(a, lsp.Position(line=0, character=ch - 1))
+    assert d is None
+
+
+def test_a_marked_buffers_line_0_splice_keeps_the_mark(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An edit's span on line 0 is one further on in the buffer."""
+    src = BOM + ONE_LINE_OK
+    a = analysed(tmp_path / "g.vera", src)
+    assert a.program is not None
+    cand = splice_contract(a.program, a.text, "g", "requires", "@Int.0 > 1")
+    assert cand == src.replace("requires(@Int.0 > 0)", "requires(@Int.0 > 1)")
+
+
+def test_a_marked_one_line_buffers_whole_range_counts_the_mark() -> None:
+    r = full_document_range(Document(uri="file:///x.vera", text=BOM + "ab"))
+    assert rng(r) == (0, 0, 0, 3)
 
 
 def test_a_module_three_imports_deep(tmp_path: pathlib.Path) -> None:
@@ -542,7 +646,7 @@ def test_the_cli_reads_line_ends_as_it_did(tmp_path: pathlib.Path) -> None:
     inside a string literal.  The expected texts are written out here, not
     computed by the helper, so a change to the helper's rule is red.
     Unparametrised, so every pull request runs it."""
-    from vera.parser import normalize_line_ends, read_source
+    from vera.parser import read_source, source_text
 
     cases = [
         (b"a\nb\n", "a\nb\n"),
@@ -550,12 +654,17 @@ def test_the_cli_reads_line_ends_as_it_did(tmp_path: pathlib.Path) -> None:
         (b"a\rb\r", "a\nb\n"),
         (b"a\nb\r\nc\rd\r\r\ne\n\r", "a\nb\nc\nd\n\ne\n\n"),
         (b'x "s\rt"\r\n', 'x "s\nt"\n'),
+        # The mark at the start is dropped; a second one is a character,
+        # and so is one anywhere else.
+        (b"\xef\xbb\xbfa\r\nb", "a\nb"),
+        (b"\xef\xbb\xbf\xef\xbb\xbfa", "﻿a"),
+        (b"a\xef\xbb\xbf\rb", "a﻿\nb"),
     ]
     for i, (raw, read) in enumerate(cases):
         path = tmp_path / f"t{i}.vera"
         path.write_bytes(raw)
         assert read_source(path) == read, raw
-        assert normalize_line_ends(raw.decode("utf-8")) == read, raw
+        assert source_text(raw.decode("utf-8")) == read, raw
 
 
 def test_a_document_error_and_a_module_error_at_one_position(

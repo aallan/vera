@@ -16,9 +16,13 @@ must convert through this module — nobody hand-rolls the arithmetic:
 
 Lines are counted as the protocol counts them, at ``\\n``, ``\\r\\n`` and
 a lone ``\\r`` (LSP 3.17, "Text Documents"): the server hands the
-compiler a document's text through :func:`vera.parser.normalize_line_ends`
-(the file reader's rule), so the compiler's line *n* is the protocol's
-line *n - 1* (#1788).
+compiler a document's text through :func:`vera.parser.source_text` (the
+file reader's rule), so the compiler's line *n* is the protocol's line
+*n - 1* (#1788).  That rule also drops a leading byte-order mark, which
+the client's buffer holds and counts as its first character: a column on
+line 0 is one UTF-16 unit further right in the buffer than in the
+compiler's text, and every other line is unchanged.  :class:`LineIndex`
+adds it in both directions.
 
 The UTF-16 wrinkle: Python string indices count code points, LSP
 columns count UTF-16 code units, so any astral-plane character (emoji,
@@ -37,7 +41,7 @@ from lsprotocol import types as lsp
 
 from vera.ast import Span
 from vera.errors import SourceLocation, source_lines
-from vera.parser import normalize_line_ends
+from vera.parser import source_text, strip_byte_order_mark
 
 
 def uri_to_path(uri: str) -> str:
@@ -126,7 +130,14 @@ class LineIndex:
     """
 
     def __init__(self, text: str) -> None:
-        self._lines = source_lines(normalize_line_ends(text))
+        # The compiler's lines, and how many UTF-16 units the buffer holds
+        # ahead of the compiler's line 0: its byte-order mark, if any.
+        self._lines = source_lines(source_text(text))
+        self._mark = len(text) - len(strip_byte_order_mark(text))
+
+    def _shift(self, line0: int) -> int:
+        """UTF-16 units the buffer's *line0* holds before the compiler's."""
+        return self._mark if line0 == 0 else 0
 
     def _line_text(self, line0: int) -> str:
         if 0 <= line0 < len(self._lines):
@@ -134,21 +145,24 @@ class LineIndex:
         return ""
 
     def cp_to_utf16(self, line0: int, cp_col: int) -> int:
-        """Code-point column → UTF-16 column on 0-based line *line0*."""
+        """The compiler's code-point column → the buffer's UTF-16 column on
+        0-based line *line0*."""
         text = self._line_text(line0)
         clamped = max(0, min(cp_col, len(text)))
-        return sum(
+        return self._shift(line0) + sum(
             2 if ord(ch) > 0xFFFF else 1 for ch in text[:clamped]
         )
 
     def utf16_to_cp(self, line0: int, utf16_col: int) -> int:
-        """UTF-16 column → code-point column on 0-based line *line0*.
+        """The buffer's UTF-16 column → the compiler's code-point column on
+        0-based line *line0*.
 
         A UTF-16 offset landing *inside* a surrogate pair snaps back to
         the character's start, per the LSP spec's guidance for invalid
-        positions.
+        positions, and one on the buffer's byte-order mark to column 0.
         """
         text = self._line_text(line0)
+        utf16_col = max(0, utf16_col - self._shift(line0))
         units = 0
         for i, ch in enumerate(text):
             width = 2 if ord(ch) > 0xFFFF else 1

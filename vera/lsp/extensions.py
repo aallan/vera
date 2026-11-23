@@ -56,7 +56,7 @@ from vera.errors import ParseError, TransformError
 from vera.lsp.convert import uri_to_path
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
-from vera.parser import normalize_line_ends
+from vera.parser import source_text
 
 
 def _item(
@@ -259,11 +259,12 @@ def speculative_edit(
         # document, at the process CWD.  Speculating on an edit has to
         # see the same module namespace the document's own analysis did,
         # or the delta compares two different programs.
-        # And with the text after the reader's line-end rule, as `analyze`
-        # hands it over (#1788): the delta's baseline numbered its lines
-        # that way, so a lone-CR buffer must be numbered that way too.
+        # And with the text the file reader would give, as `analyze` hands
+        # it over (#1788): the delta's baseline numbered its lines and
+        # columns that way, so a lone-CR buffer, or one that begins with a
+        # byte-order mark, must be numbered that way too.
         result = session.verify_source(
-            normalize_line_ends(text), file=uri_to_path(uri))
+            source_text(text), file=uri_to_path(uri))
     except (ParseError, TransformError):
         return {
             "ok": False,

@@ -2945,9 +2945,12 @@ included) and publishes:
   and a code generation refusal) is the command's alone.  A diagnostic
   starts on the character `vera check`'s caret is under and covers the
   name or slot reference there (one character elsewhere).  The buffer is
-  read with the line-end rule the commands read a file with, so `\n`,
-  `\r\n` and a lone `\r` each end a line, as the protocol counts them,
-  and the program is the one `vera check` reads from the same bytes.  A
+  read by the rule the commands read a file by, so `\n`, `\r\n` and a
+  lone `\r` each end a line, as the protocol counts them, a byte-order
+  mark at its start is dropped, and the program is the one `vera check`
+  reads from the same bytes.  The buffer still holds the mark, so a
+  position on its first line counts it: one UTF-16 unit to the right of
+  the column the compiler names.  A
   diagnostic located in an imported module is published on the `import`
   that brings that module in (for a module reached only through another,
   the import of the module that reaches it), its message starting with

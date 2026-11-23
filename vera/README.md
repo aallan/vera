@@ -84,7 +84,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | Module | Stage | Purpose | Key API |
 |--------|-------|---------|---------|
 | `grammar.lark` | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | Parse | Lark frontend, error diagnosis; the one reader of a source's bytes (E024) | `parse()`, `parse_file()`, `read_source()`, `decode_source()` |
+| `parser.py` | Parse | Lark frontend, error diagnosis; the one reader of a source's bytes (E024) and of its characters (`source_text`: the leading mark dropped, line ends normalised, for a file and the language server's buffer alike) | `parse()`, `parse_file()`, `read_source()`, `decode_source()`, `source_text()` |
 | `lexical.py` | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
 | `transform.py` | Transform | Lark tree → AST transformer; a pipe is built as the call it stands for, and a non-call right operand is refused (E040) | `transform()` |
 | `ast.py` | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
@@ -152,7 +152,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  cache.py` | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations; `called_name` is the one rule for which calls name a program function, a call by the program's own path included | |
 | `  session.py` | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint | |
 | `lsp/` | Serve | Language Server Protocol over stdio | `create_server()`, `vera lsp` |
-| `  convert.py` | | Span/SourceLocation/LSP coordinate conversions (both compiler columns 1-based), UTF-16 transcoding, lines cut at the protocol's line ends | |
+| `  convert.py` | | Span/SourceLocation/LSP coordinate conversions (both compiler columns 1-based), UTF-16 transcoding, lines cut at the protocol's line ends, a buffer's leading byte-order mark counted on line 0 | |
 | `  documents.py` | | URI-keyed document store, full-text sync | |
 | `  features.py` | | Diagnostics (an imported module's on the import that brings it in) + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
 | `  extensions.py` | | vera/speculativeEdit proof-delta | |

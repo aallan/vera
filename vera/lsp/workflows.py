@@ -193,7 +193,7 @@ from vera.obligations.cache import (
 )
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
-from vera.parser import normalize_line_ends
+from vera.parser import source_text, strip_byte_order_mark
 
 #: A line end as the protocol counts one (LSP 3.17, "Text Documents").
 _LINE_END = re.compile(r"\r\n|\r|\n")
@@ -288,7 +288,8 @@ def full_document_range(doc: Document) -> lsp.Range:
     index).  Lines are the protocol's, so a lone ``\\r`` ends one (#1788):
     a range that counted ``\\n`` alone ended on line 0 of a lone-CR
     buffer, and a client applying it replaced the first line only."""
-    lines = normalize_line_ends(doc.text)
+    # The compiler's text: the index adds the buffer's mark back on line 0.
+    lines = source_text(doc.text)
     end_line0 = lines.count("\n")
     last_segment = lines.rsplit("\n", 1)[-1]
     return lsp.Range(
@@ -607,9 +608,11 @@ def span_offsets(text: str, span: ast.Span) -> tuple[int, int]:
     from this very text after the reader's line-end rule, which changes
     no column, so a line starts after each ``\\n``, ``\\r\\n`` or lone
     ``\\r`` of *text* (#1788) and the splice keeps the text's own line
-    ends.
+    ends.  The reader also drops a leading byte-order mark, which *text*
+    still holds, so a column on the first line is one further on in it.
     """
-    line_starts = [0]
+    mark = len(text) - len(strip_byte_order_mark(text))
+    line_starts = [mark]
     for match in _LINE_END.finditer(text):
         line_starts.append(match.end())
     start = line_starts[span.line - 1] + (span.column - 1)
