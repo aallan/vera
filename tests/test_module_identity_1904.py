@@ -30,6 +30,7 @@ files (or both paths), whichever was resolved first.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import pathlib
@@ -214,6 +215,132 @@ def test_repro_1904_one_file_two_paths_is_refused(tmp_path: pathlib.Path) -> Non
     assert d["description"] == (
         "'a/lib.vera' is imported by two paths: as 'lib' in 'a/mid.vera', "
         "and as 'a.lib' in 'main.vera'.")
+
+
+def test_repro_1904_two_conflicts_are_refused_in_every_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """One program holding both relations over one file: `x/b1.vera`
+    imports `lib` (finding `x/lib.vera`), `y/b2.vera` imports `lib` (finding
+    `y/lib.vera`) and `b3.vera` imports `y.lib` (finding `y/lib.vera`).  In
+    each of the six orders the document can import them, the program is
+    refused, and each diagnostic is E014 at an importer of `lib`, E015 at an
+    importer of `y/lib.vera`, or a consequence of a refused import (E200 for
+    the name it would have supplied).  Which of the two codes are reported
+    follows the order (a refused import binds nothing and is not read), so
+    the codes are not compared across orders."""
+    branches = {"x.b1": ("x/b1.vera", "lib", "f1"),
+                "y.b2": ("y/b2.vera", "lib", "f2"),
+                "b3": ("b3.vera", "y.lib", "f3")}
+    importers = {"E014": {"b1.vera", "b2.vera"}, "E015": {"b2.vera", "b3.vera"}}
+    for n, order in enumerate(itertools.permutations(branches)):
+        root = tmp_path / str(n)
+        write(root, "x/lib.vera", fn("word", "1"))
+        write(root, "y/lib.vera", fn("word", "2"))
+        for rel, imp, name in branches.values():
+            write(root, rel, f"import {imp}(word);\n\n" + fn(name, "word(())"))
+        lines = [f"import {m}({branches[m][2]});" for m in order]
+        entry = write(root, "main.vera", "\n".join(lines) + "\n\n"
+                      + main_fn([f"{branches[m][2]}(())" for m in order]))
+        diags = check_json(entry)
+        refusals = [d for d in diags if d["error_code"] in importers]
+        assert refusals, (order, diags)
+        for d in diags:
+            name = pathlib.Path(d["location"]["file"]).name
+            assert d["error_code"] in ("E014", "E015", "E200"), (order, d)
+            if d["error_code"] in importers:
+                assert name in importers[d["error_code"]], (order, d)
+        result = pipeline.cli("run", entry)
+        assert result.returncode != 0, (order, result)
+
+
+def test_repro_1904_an_import_that_breaks_both_halves_is_e014(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`main.vera` binds `lib` to `lib.vera` and `a.lib` to `a/lib.vera`;
+    `a/mid.vera`'s `lib` finds `a/lib.vera`, which breaks both halves at one
+    import: its path names another file, and its file has another path.  The
+    path is tested first, so the import is one E014, and no E015."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("wa", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(wa);\n\n" + fn("w2", "wa(())"))
+    entry = write(tmp_path, "main.vera",
+                  "import lib(word);\nimport a.lib(wa);\nimport a.mid(w2);\n\n"
+                  + main_fn(["word(())", "wa(())", "w2(())"]))
+    got = [(d["error_code"], pathlib.Path(d["location"]["file"]).parts[-2:])
+           for d in check_json(entry) if d["error_code"].startswith("E01")]
+    assert got == [("E014", ("a", "mid.vera"))], got
+
+
+def test_an_import_refused_by_e015_does_not_read_its_file_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`a/lib.vera` does not parse: `main.vera`'s `a.lib` reads it (E013),
+    and `a/mid.vera`'s `lib`, the same file by another path, is E015 and
+    stops there, so the file is not read, and its E013 not reported, a
+    second time."""
+    write(tmp_path, "a/lib.vera", "public fn word(@Unit -> @Int\n")
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "1"))
+    entry = write(tmp_path, "main.vera", "import a.lib(word);\nimport a.mid(w2);\n\n"
+                  + main_fn(["w2(())"]))
+    got = [(d["error_code"], pathlib.Path(d["location"]["file"]).name)
+           for d in check_json(entry)]
+    assert got == [("E013", "main.vera"), ("E015", "mid.vera")], got
+
+
+def test_a_refusal_names_the_import_that_bound_the_path_first(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A module that does not parse is not cached, so a second import of it
+    by the same path reads it again; the binding keeps the first importer,
+    and a later conflict names that one."""
+    one = tmp_path / "e014"
+    write(one, "lib.vera", "public fn word(@Unit -> @Int\n")
+    write(one, "m.vera", "import lib(word);\n\n" + fn("wm", "1"))
+    write(one, "a/lib.vera", fn("word", "2"))
+    write(one, "a/q.vera", "import lib(word);\n\n" + fn("wq", "word(())"))
+    entry = write(one, "main.vera", "import lib(word);\nimport m(wm);\nimport a.q(wq);\n\n"
+                  + main_fn(["wm(())", "wq(())"]))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E014"]
+    assert d["description"].endswith(
+        "and 'main.vera' imports it as 'lib.vera'."), d["description"]
+    two = tmp_path / "e015"
+    write(two, "a/lib.vera", "public fn word(@Unit -> @Int\n")
+    write(two, "m.vera", "import a.lib(word);\n\n" + fn("wm", "1"))
+    write(two, "a/q.vera", "import lib(word);\n\n" + fn("wq", "1"))
+    entry = write(two, "main.vera", "import a.lib(word);\nimport m(wm);\nimport a.q(wq);\n\n"
+                  + main_fn(["wm(())", "wq(())"]))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
+    assert d["description"].endswith(
+        "and as 'a.lib' in 'main.vera'."), d["description"]
+
+
+def test_two_files_on_two_devices_with_one_file_number_are_two_files(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file's identity is its device and its file number: two files on
+    two volumes may share a file number.  A machine whose temporary
+    directory is one volume cannot make that pair, so `os.stat` is made to
+    report `other.vera` with `lib.vera`'s file number on another device; the
+    two are two modules, and the program checks."""
+    lib = write(tmp_path, "lib.vera", fn("word", "1"))
+    other = write(tmp_path, "other.vera", fn("wo", "2"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\nimport other(wo);\n\n"
+                  + main_fn(["word(())", "wo(())"]))
+    real_stat = os.stat
+    lib_st = real_stat(lib)
+    other_name = other.resolve()
+
+    def fake_stat(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if pathlib.Path(path) == other_name:
+            fields = list(st)
+            fields[1], fields[2] = lib_st.st_ino, lib_st.st_dev + 1
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    assert check_json(entry) == []
 
 
 def test_repro_1904_an_unreadable_module_is_reported_once(
