@@ -2412,8 +2412,8 @@ def test_repro_a_hand_down_value_record_is_never_verified() -> None:
     is left to its check, `tier3` at its site, and never proved: no position
     states the refinement for the solver, and `-5` is a value either
     program admits (R112 on PR #1843: a mutant that recorded these
-    `verified` passed every matrix).  The `Set` element's record keeps base's
-    E541, the claim with no check that answers it."""
+    `verified` passed every matrix).  The `Set` element's check answers its
+    record (#1861: `set_add`'s element takes the store guard), so no E541."""
     v = _verified(_HAND_DOWN_MAP_ARG)
     at = next(i for i, line in enumerate(_HAND_DOWN_MAP_ARG.splitlines(), 1)
               if "map_insert" in line)
@@ -2423,7 +2423,7 @@ def test_repro_a_hand_down_value_record_is_never_verified() -> None:
     v = _verified(_HAND_DOWN_SET_LET)
     recs = [o.status for o in v.result.obligations if o.kind == "refine_bind"]
     assert recs == ["tier3"], recs
-    assert "E541" in _codes(v)
+    assert "E541" not in _codes(v)
 
 
 _SUBPATTERN_AFTER_A_WILDCARD = """\

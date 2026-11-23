@@ -306,11 +306,12 @@ def _programs() -> Iterator[tuple[str, str, str]]:
 #: callee's entry or epilogue checks for every caller.  An opaque value
 #: coerced there defers to that guard rather than doubling it, so it traps
 #: with the boundary's message and gains no check and no W004 (the negative
-#: space of the deference).
+#: space of the deference).  An `apply_fn` argument is not one: the closure
+#: that runs can be wider than the function type, so the argument is
+#: checked at the call (#1861), and the closure's entry check is its own.
 _BOUNDARY = frozenset(
     (site, "Tuple")
-    for site in ("call argument", "apply_fn argument", "return",
-                 "closure return")
+    for site in ("call argument", "return", "closure return")
 )
 
 _PROGRAMS = list(_programs())

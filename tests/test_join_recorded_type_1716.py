@@ -1869,18 +1869,14 @@ public fn f(@Bool, @Int -> @Int)
 """
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#1861: apply_fn of a non-slot function value loses the checks of a "
-    "refined parameter's arithmetic (E541)"))
 @pytest.mark.parametrize("swap", [False, True], ids=["small first", "int first"])
 def test_repro_1716_a_refined_parameter_join_reconciles_clean(
         swap: bool) -> None:
     """A join of a `Small`-taking and an `Int`-taking closure, applied to
     an argument the `requires` puts in range, verifies with a clean
-    reconciliation (no E541), once issue #1861 is fixed: `apply_fn` of the
-    join itself loses the checks of `Small`'s arithmetic, as it does where
-    both arms are `Small`-taking; bound by a `let` first, the join
-    reconciles."""
+    reconciliation (no E541): `apply_fn` of the join itself checks the
+    argument at the call, `Small`'s arithmetic included, as a `let` of the
+    join does (issue #1861)."""
     source = _OVERFLOW_PREDICATE
     if swap:
         source = source.replace(
@@ -2202,9 +2198,6 @@ public fn f(@Bool, @Int -> @Int)
 """
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#1861: apply_fn of a non-slot function value loses the run-time check "
-    "of an argument obligation that is neither proved nor refuted (E541)"))
 @pytest.mark.parametrize("swap", [False, True], ids=["nonempty first",
                                                      "array first"])
 def test_repro_1716_a_tier3_argument_into_a_join_reconciles_clean(
@@ -2212,10 +2205,9 @@ def test_repro_1716_a_tier3_argument_into_a_join_reconciles_clean(
     """`fn(NonEmpty -> Int)` beside `fn(Array<Int> -> Int)`, applied to
     `[@Int.0]`: the join's parameter is `NonEmpty` in either order, so the
     argument is obligated; the solver neither proves nor refutes it
-    (`tier3`, E506), and the run-time check it rests on is the one issue
-    #1861 loses where the function operand is not a slot reference, so
-    `vera verify` reports E541.  Bound by a `let` first, the join
-    reconciles.  Once #1861 is fixed this verifies with no E541."""
+    (`tier3`, E506), and the run-time check it rests on stands at the
+    call, whatever the function operand (issue #1861), so it verifies with
+    no E541."""
     first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
     verified = pipeline.verify(
         _NON_EMPTY_JOIN.format(first=first, second=second), file=FILE,
