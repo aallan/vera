@@ -939,18 +939,6 @@ _FORM_OWN_CODES = {"user-op-argument": {"E340"},
                    "user-op-clause-param": {"E340"},
                    "user-op-resume": {"E340"}}
 
-#: A handler clause's parameter names its slot by the written type and
-#: binds it at the operation's, the two compared with nothing, at any type
-#: (#1896): a narrower function-typed binder is accepted at check, and the
-#: body reads the slot at the operation's type, so no wrong value comes out
-#: of the clause.  Its own mechanism, not the function-type rule's; the fix
-#: for #1896 refuses the binder (E190).
-_CLAUSE_PARAMETER = (
-    "a handler clause's parameter is bound at the operation's type, its "
-    "written type compared with nothing (#1896)")
-_CLAUSE_FORMS = ("exn-clause-param", "state-clause-param")
-
-
 #: A form that meets the value twice: `resume` hands the state's `get` the
 #: value the handler's state is initialised with.
 _E190_COUNT = {"state-resume": 2}
@@ -1117,12 +1105,7 @@ def binding_form_program(form: str, kind: str, p: str, c: str,
 
 def _binding_cell(form: str, generic: bool, kind: str, p: str,
                   c: str) -> object:
-    refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
     cell_id = "-".join((form, "generic" if generic else "plain", kind, p, c))
-    if refused and form in _CLAUSE_FORMS:
-        return pytest.param(form, generic, kind, p, c, id=cell_id,
-                            marks=pytest.mark.xfail(
-                                strict=True, reason=_CLAUSE_PARAMETER))
     return pytest.param(form, generic, kind, p, c, id=cell_id)
 
 
@@ -1167,11 +1150,10 @@ def test_every_binding_form_meets_a_function_type(
     source = binding_form_program(form, kind, p, c, generic)
     refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
     own = _FORM_OWN_CODES.get(form, set())
-    # A user effect's handler is refused (E340) before its clause binder
-    # is reached by anything (#1896): the form's own code alone.
-    judged = refused and form != "user-op-clause-param"
+    # A clause parameter is held to the operation's type (#1896), a user
+    # effect's beside its handler's E340.
     assert sorted(_codes(source)) == sorted(
-        ["E190"] * _E190_COUNT.get(form, 1) * judged + list(own)), source
+        ["E190"] * _E190_COUNT.get(form, 1) * refused + list(own)), source
     if not refused and not own:
         verified = pipeline.verify(source, reconcile=True)
         assert verified.ok, (verified.diagnostics, source)
@@ -1404,6 +1386,15 @@ def test_every_rewrite_e190_prints_checks_and_runs_pasted(
         # prints neither the narrowing's header nor a wrapper.
         assert "let @" not in fix and "apply_fn(@G.0" not in fix, fix
         return
+    if (kind == "parameter" and form == "in-place"
+            and any(_ALPHABET[p][1] == "Int" and _ALPHABET[p][3]
+                    for j, p in enumerate(plist) if j != narrowed)):
+        # Written in place, the closure's body (kept for the header's
+        # `...`) reads another `@Int`, which the new `@Int` parameter would
+        # renumber: the fix prints no header, and says so.
+        assert "let @" not in fix, fix
+        assert _RENUMBERS in fix, fix
+        return
     if kind == "parameter":
         assert narrowed is not None
         # The narrowing binds the closure's own parameter type: by its alias
@@ -1468,9 +1459,17 @@ def _refused_cells() -> list[object]:
             for form in FORMS:
                 for p, c in PAIRS:
                     if expected_refused(flow, kind, form, p, c):
+                        # The order cells (#1891) are accepted: no E190.
+                        order = ((flow, kind) == ("generic", "parameter")
+                                 and form in ("in-place", "slot",
+                                              "type-argument")
+                                 and {p, c} == {"Pos", "Big"})
                         cells.append(pytest.param(
                             "flows", (flow, kind, form, p, c), c,
-                            id="-".join(("flows", flow, kind, form, p, c))))
+                            id="-".join(("flows", flow, kind, form, p, c)),
+                            marks=[pytest.mark.xfail(
+                                strict=True, reason=_ORDER_DECIDES)]
+                            if order else []))
     for flow in GENERIC_FLOWS:
         for p, c, r, cr in GENERIC_RELATIONS:
             if not (_le(p, c) and _le(cr, r)):
@@ -1537,6 +1536,9 @@ def test_every_rewrite_a_refused_cell_prints_checks_pasted(
            else set())
     refused = [d for d in pipeline.check(source).errors
                if d.error_code == "E190"]
+    # Every refused cell is E190 before anything is replayed, a clause
+    # parameter's among them (#1896).
+    assert refused, (matrix, cell)
     for diagnostic in refused:
         rewrites = re.findall(r"`(fn\([^`]*\})`", diagnostic.fix)
         if not rewrites:
@@ -1781,3 +1783,159 @@ def test_a_module_s_function_meets_a_closure(
         "main(@Int -> @Int)", call, visibility="public"), encoding="utf-8")
     codes = [d.error_code for d in pipeline.check(main).errors]
     assert codes == (["E190"] if refused else []), codes
+
+
+# =====================================================================
+# The rest of the pair: E190 only where the narrowing is the one misfit
+# =====================================================================
+
+_OTHER_COMPONENT_TAKE = (
+    "type F = fn(Int -> Int) effects(pure);\n\n"
+    + _fn("take(@Tuple<Bool, F> -> @Int)", "0")
+    + _fn("main(@Int -> @Int)",
+          "take(Tuple(FIRST, fn(@Nat -> @Int) effects(pure) "
+          "{ nat_to_int(@Nat.0) }))", visibility="public"))
+
+_OTHER_COMPONENT_LET = (
+    "type F = fn(Int -> Int) effects(pure);\n\n"
+    + _fn("main(@Int -> @Int)",
+          "let @Tuple<Bool, F> = Tuple(FIRST, fn(@Nat -> @Int) "
+          "effects(pure) { nat_to_int(@Nat.0) });\n  0",
+          visibility="public"))
+
+
+def test_repro_another_component_keeps_the_flow_s_own_code_1885() -> None:
+    """A `String` beside a narrower closure where a `Tuple<Bool, F>` is
+    expected: the pair does not fit with the narrowing set aside, so the
+    flow's own mismatch is reported (E202 at a call's argument, E170 at a
+    `let`), as at main.  With the `String` mended, the narrowing is the
+    one misfit, and E190."""
+    for template, own in ((_OTHER_COMPONENT_TAKE, "E202"),
+                          (_OTHER_COMPONENT_LET, "E170")):
+        assert _codes(template.replace("FIRST", '"s"')) == [own], own
+        assert _codes(template.replace("FIRST", "true")) == ["E190"], own
+
+
+def test_repro_a_binder_beside_another_misfit_is_its_own_e314_1885(
+        ) -> None:
+    """A `match` binder holds its value to `is_subtype` (#1896), so a
+    `Tuple<IOF, G>` scrutinee at `@Tuple<W, F>`, whose first component
+    misfits by its effect row, is the binder's own E314, as a `let` of it
+    is its own E170: E190 stands where the narrowing is the one misfit."""
+    source = (
+        "type IOF = fn(Int -> Int) effects(<IO>);\n"
+        "type W = fn(Int -> Int) effects(pure);\n"
+        "type G = fn(Nat -> Int) effects(pure);\n"
+        "type F = fn(Int -> Int) effects(pure);\n\n"
+        + _fn("main(@Tuple<IOF, G> -> @Int)",
+              "match @Tuple<IOF, G>.0 {\n    @Tuple<W, F> -> 0\n  }",
+              visibility="public"))
+    assert _codes(source) == ["E314"]
+
+
+# =====================================================================
+# The header rewrite where the body reads the namespace it joins
+# =====================================================================
+
+def _renumbered(closure: str, apply: str, params: str = "@Int, @Int") -> str:
+    arity = len(params.split(","))
+    return (f"type F = fn({', '.join(['Int'] * arity)} -> Int) "
+            "effects(pure);\n\n"
+            + _fn(f"main({params} -> @Int)",
+                  f"let @F = {closure};\n  {apply}", visibility="public"))
+
+
+_RENUMBERS = (
+    "The new parameter is read as `@Int`, so it renumbers every `@Int` "
+    "reference the body holds, captured ones included.")
+
+
+def test_repro_a_header_whose_body_reads_the_joined_slots_prints_prose_1885(
+        ) -> None:
+    """`fn(@Int, @Nat -> @Int) { @Int.0 - nat_to_int(@Nat.0) }` at
+    `fn(Int, Int -> Int)`: the header printed `fn(@Int, @Int -> @Int)
+    effects(pure) { let @Nat = @Int.0; ... }`, and the body kept for
+    `...` read `@Int.0` as the new second parameter (7 and 2 gave 0, not
+    5).  So with a second parameter of that type, or a captured one, the
+    fix writes no header and says why."""
+    for source in (
+            _renumbered("fn(@Int, @Nat -> @Int) effects(pure) "
+                        "{ @Int.0 - nat_to_int(@Nat.0) }",
+                        "apply_fn(@F.0, @Int.1, @Int.0)"),
+            _renumbered("fn(@Nat -> @Int) effects(pure) "
+                        "{ nat_to_int(@Nat.0) + @Int.0 }",
+                        "apply_fn(@F.0, @Int.0)", params="@Int")):
+        fix = str(_only_diagnostic(source)["fix"])
+        assert not re.search(r"`fn\([^`]* \.\.\. \}`", fix), fix
+        assert _RENUMBERS in fix, fix
+
+
+def test_repro_a_header_whose_body_reads_no_joined_slot_keeps_it_1885(
+        ) -> None:
+    """The body reads only the narrowed parameter: the header and its
+    narrowing stand."""
+    fix = str(_only_diagnostic(_renumbered(
+        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+        "apply_fn(@F.0, @Int.0)", params="@Int"))["fix"])
+    assert ("`fn(@Int -> @Int) effects(pure) { let @Nat = @Int.0; ... }`"
+            in fix), fix
+    assert _RENUMBERS not in fix, fix
+
+
+# =====================================================================
+# Outside the narrowing: every binding position is held to `is_subtype`
+# =====================================================================
+
+def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
+    """`@Option<W>` over an `Option<IOF>`: the either-direction test held
+    (`Option<W>` fits `Option<IOF>`), so the binder took an `<IO>` function
+    at a pure type, and the run printed from a function declared
+    `effects(pure)`.  The binder is held to `is_subtype` (#1896): E314."""
+    source = (
+        "type W = fn(Int -> Int) effects(pure);\n"
+        "type IOF = fn(Int -> Int) effects(<IO>);\n\n"
+        + _fn("run(@Option<IOF> -> @Int)",
+              "match @Option<IOF>.0 {\n    @Option<W> -> match @Option<W>.0 "
+              "{\n      Some(@W) -> apply_fn(@W.0, 5),\n      None -> 0\n    }"
+              "\n  }")
+        + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO>)\n{\n  run(Some(fn(@Int -> @Int) effects(<IO>) "
+        "{ IO.print(\"leak\\n\"); @Int.0 }))\n}\n")
+    assert _codes(source) == ["E314"], source
+
+
+def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
+    """`@Option<Int>` over an `Option<T>` inside `forall<T>`: the binder
+    took a concrete type no instantiation is held to, and `Some("abc")`
+    returned 4.  The `T` stays rigid (#1896): E314, as the `let` of it is
+    E170."""
+    source = (
+        _fn("run(@Option<T> -> @Int)",
+            "match @Option<T>.0 {\n    @Option<Int> -> "
+            "option_unwrap_or(@Option<Int>.0, 0) + 1\n  }").replace(
+                "private fn", "private forall<T> fn")
+        + _fn("main(@Unit -> @Int)", 'run(Some("abc"))', visibility="public"))
+    assert _codes(source) == ["E314"], source
+
+
+def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
+        ) -> None:
+    """Inside a generic function, a `fn(@P, @T -> @Int)` closure, `P` a
+    pure callback, passed where `fn(I, T -> Int)` is expected, `I` the same
+    callback under `<IO>`: was accepted, and the run printed from functions
+    declared `effects(pure)`.  The join's fit is held to `is_subtype`
+    (#1896): E202, as with no type variable."""
+    source = (
+        "type P = fn(Int -> Int) effects(pure);\n"
+        "type I = fn(Int -> Int) effects(<IO>);\n"
+        "type H<U> = fn(I, U -> Int) effects(pure);\n\n"
+        + _fn("helper(@H<U>, @I, @U -> @Int)",
+              "apply_fn(@H<U>.0, @I.0, @U.0)").replace(
+                  "private fn", "private forall<U> fn")
+        + _fn("outer(@I, @T -> @Int)",
+              "helper(fn(@P, @T -> @Int) effects(pure) { apply_fn(@P.0, 1) }"
+              ", @I.0, @T.0)").replace("private fn", "private forall<T> fn")
+        + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
+        "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
+    assert _codes(source) == ["E202"], source
