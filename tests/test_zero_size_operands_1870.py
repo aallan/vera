@@ -588,10 +588,17 @@ def test_the_comparison_dispatch_fails_closed(
 
     monkeypatch.setattr(InferenceMixin, "_holds_nothing",
                         lambda self, expr: None)
-    compiled = pipeline.compile(program(
-        '  let @Bool = () == ();\n  IO.print(if @Bool.0 then { "T" } else { "F" })'))
-    codes = {d.error_code for d in compiled.diagnostics}
-    assert "E699" in codes, codes
+    source = program(
+        '  let @Bool = () == ();\n  IO.print(if @Bool.0 then { "T" } else { "F" })')
+    compiled = pipeline.compile(source)
+    (diag,) = [d for d in compiled.diagnostics if d.error_code == "E699"]
+    # The refusal names both widths, at the comparison itself.
+    assert diag.description.endswith(
+        "a comparison of a width-less operand with a width-less one has no "
+        "lowering"), diag.description
+    line = source.splitlines().index("  let @Bool = () == ();") + 1
+    assert (diag.location.line, diag.location.column) == (line, 15), (
+        diag.location)
 
 
 def test_repro_1870_verifier_proves_unit_equality() -> None:
@@ -1361,3 +1368,22 @@ def test_repro_a_never_part_of_an_interpolation() -> None:
     `String` part, never reached."""
     _assert_never_cell(_never_program("throw", "interpolation"),
                        Expect(stdout="caught"))
+
+
+def test_repro_a_unit_equality_is_the_bool_true() -> None:
+    """`() == ()` is `true` itself, the `i32` 1, not merely a non-zero
+    word: compared with `true` it is equal."""
+    _runs('  let @Bool = (() == ()) == true;\n'
+          '  IO.print(if @Bool.0 then { "T" } else { "F" })', "T")
+
+
+def test_repro_a_unit_equality_reads_its_operands_slots() -> None:
+    """Each operand of a `Unit` equality is translated in the function's
+    own environment: an operand reading a parameter."""
+    source = (PROLOGUE
+              + "private fn same(@Int -> @Bool)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n"
+              "  mk_u(@Int.0) == mk_u(@Int.0 + 1)\n}\n\n"
+              + MAIN_HEAD
+              + '  IO.print(if same(1) then { "T" } else { "F" })\n}\n')
+    assert_cell(source, Expect(stdout="T"))

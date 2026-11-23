@@ -109,7 +109,7 @@ class OperatorsMixin:
                     expr)
             left = self.translate_expr(expr.left, env)
             right = self.translate_expr(expr.right, env)
-            if left is None or right is None:
+            if left is None or right is None:  # pragma: no mutate — equivalent: an operand gives None only through the [E615] channel, which no program reaches (the return below is not covered)
                 return None  # pragma: no cover — the [E615] channel
             const = 1 if expr.op == ast.BinOp.EQ else 0
             return left + right + [f"i32.const {const}"]
@@ -298,7 +298,7 @@ class OperatorsMixin:
             # and a module that does not load.  Any other pair is a lowering
             # this dispatch has no rule for, and fails here rather than in
             # the engine.
-            if ltype != "i64" or rtype != "i64":
+            if ltype != "i64" or rtype != "i64":  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so one side is `i64` only where both are (a `Never` right reads as the left)
                 raise CodegenInvariantError(
                     f"a comparison of a {ltype or 'width-less'} operand with "
                     f"a {rtype or 'width-less'} one has no lowering", expr)

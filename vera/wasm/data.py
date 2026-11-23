@@ -715,8 +715,8 @@ class DataMixin:
         a local: a binder of a zero-size type has no read (E182)."""
         if isinstance(pattern, (ast.WildcardPattern, ast.BindingPattern)):
             return True
-        return (isinstance(pattern, ast.ConstructorPattern)
-                and pattern.name == "Future"
+        return (isinstance(pattern, ast.ConstructorPattern)  # pragma: no mutate — equivalent: over a zero-size scrutinee the checker admits a wildcard, a binder, or the built-in `Future`'s constructor with one sub-pattern, and nothing else
+                and pattern.name == "Future"  # pragma: no mutate — equivalent: as the line above
                 and len(pattern.sub_patterns) == 1
                 and cls._irrefutable_over_nothing(pattern.sub_patterns[0])  # pragma: no mutate — equivalent: the checker admits no refutable sub-pattern over a zero-size payload (`()` is no pattern, `Future(Future(_))` is E314)
                 )

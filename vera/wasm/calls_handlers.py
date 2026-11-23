@@ -233,7 +233,7 @@ class CallsHandlersMixin:
         # the constructor tag with each field's own hash, the field types
         # read off the checked type, see show) take `_hash_value`.
         param_type = vera_type
-        composite = self._hash_value(param_type, arg_instrs, arg)
+        composite = self._hash_value(param_type, arg_instrs, arg)  # pragma: no mutate — equivalent: a hash reads no node (`_hash_value` passes it on only to the `show` helper's `Float64` rendering site)
         if composite is not None:
             return composite
 

@@ -21,6 +21,7 @@ from vera.runtime.heap import (
 from vera.runtime.http import _HTTP_TIMEOUT
 
 if TYPE_CHECKING:  # pragma: no cover — annotations only
+    from collections.abc import Mapping
     from urllib.error import HTTPError
 
 
@@ -196,7 +197,7 @@ def _hex_atoms(code: int, width: int) -> list[str]:
     digit in either case."""
     atoms = []
     for digit in f"{code:0{width}x}":
-        atoms.append(f"[{digit}{digit.upper()}]" if digit.isalpha() else digit)
+        atoms.append(f"[{digit}{digit.upper()}]" if digit.isalpha() else digit)  # pragma: no mutate — equivalent: a digit's class `[00]` matches what `0` does
     return atoms
 
 
@@ -287,10 +288,12 @@ def _key_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
     spans = [m.span() for m in whole.finditer(text)]
     if cut:
         # The start of the key at the end of the text begins with a form
-        # of its first character, within the longest the key can be
-        # written: each such place is tried, leftmost (longest) first.
-        window = max(0, len(text) - (len(api_key) + 1) * _LONGEST_FORM)
-        for begin in first.finditer(text, window):
+        # of its first character, within the longest a proper prefix of
+        # the key can be written (fewer than its length in characters,
+        # each in its longest form): each such place is tried, leftmost
+        # (longest) first.
+        window = max(0, len(text) - len(api_key) * _LONGEST_FORM)
+        for begin in first.finditer(text, window):  # pragma: no mutate — equivalent: the cut pattern is anchored at the text's end, so no place before the window can begin a match; the window bounds the places tried
             m = at_cut.match(text, begin.start())
             if m is not None:
                 spans.append(m.span())
@@ -298,9 +301,28 @@ def _key_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
     return spans
 
 
-#: A credential-shaped token's start, at the end of a text: the cut that made
-#: the end may have taken the rest, so its length says nothing (#1854).
-_CREDENTIAL_TAIL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]*\Z")
+#: A credential-shaped token's prefix, and the characters a token holds.
+_CREDENTIAL_PREFIX_RE = re.compile(r"(?:sk|key|token|xai)[-_]")
+_TOKEN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+
+
+def _credential_tail(text: str) -> tuple[int, int] | None:
+    """The span of a credential-shaped token's start at the end of *text*,
+    which a cut ended: the cut may have taken the rest, so its length says
+    nothing (#1854).
+
+    Such a start lies in the run of token characters that ends the text,
+    so the run is found by a scan back from the end, and the token begins
+    at the run's leftmost prefix.  Searching the whole text for a prefix
+    followed by token characters to its end tried every start and ran each
+    to the first character outside a run: quadratic in a run, seconds over
+    a body at the cap of `key-` repeated."""
+    start = len(text)
+    while start and text[start - 1] in _TOKEN_CHARS:
+        start -= 1
+    prefix = _CREDENTIAL_PREFIX_RE.search(text, start)
+    return None if prefix is None else (prefix.start(), len(text))
 
 
 def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
@@ -317,9 +339,9 @@ def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]
     spans = _key_spans(text, api_key, cut=cut)
     spans.extend(m.span() for m in _CREDENTIAL_RE.finditer(text))
     if cut:
-        tail = _CREDENTIAL_TAIL_RE.search(text)
+        tail = _credential_tail(text)
         if tail is not None:
-            spans.append(tail.span())
+            spans.append(tail)
     return spans
 
 
@@ -333,7 +355,7 @@ def _replace_spans(text: str, spans: list[tuple[int, int]]) -> str:
         else:
             merged.append((start, stop))
     out: list[str] = []
-    pos = 0
+    pos = 0  # pragma: no mutate — equivalent: `text[None:start]` is `text[0:start]`
     for start, stop in merged:
         out.append(text[pos:start])
         out.append("[redacted]")
@@ -351,7 +373,34 @@ def _redact(text: str, api_key: str) -> str:
     never given — a proxy quoting a DIFFERENT tenant's credential, or the
     same key in a form the exact match cannot see.
     """
-    return _replace_spans(text, _secret_spans(text, api_key, cut=False))
+    return _replace_spans(text, _secret_spans(text, api_key, cut=False))  # pragma: no mutate — equivalent: `cut` is read only as a truth value, and `None` is false
+
+
+def _held_keys(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Every key the host holds: the value of each provider's key variable
+    that is set, whichever provider is selected, and each as the host reads
+    the provider variable (lower-cased), since a key written there is
+    quoted back in that form (#1854)."""
+    held: list[str] = []
+    for cfg in _PROVIDERS.values():
+        key = env.get(cfg.env_key)
+        if not key:
+            continue
+        for form in (key, key.lower()):
+            if form not in held:
+                held.append(form)
+    return tuple(held)
+
+
+def _redact_held(text: str, keys: tuple[str, ...]) -> str:
+    """*text* with every key in *keys* and every credential-shaped token
+    removed, each rule's spans found on *text* as it is (`_secret_spans`).
+    The text is whole: no cut ended it, so no rule reads its end as the
+    start of a secret."""
+    spans = [m.span() for m in _CREDENTIAL_RE.finditer(text)]
+    for key in keys:
+        spans.extend(_key_spans(text, key, cut=False))
+    return _replace_spans(text, spans)
 
 
 def _redact_cut(text: str, api_key: str) -> str:
@@ -1022,6 +1071,22 @@ def register_inference(
 
             prompt = _read_wasm_string(caller, ptr, length)
             _env = env_vars if env_vars is not None else _os.environ
+            held = _held_keys(_env)
+
+            def _err(text: str) -> int:
+                """The `Err` of `Inference.complete`: the one exit of its
+                text, redacted of every key the host holds (#1854).
+
+                Every message leaves here, whichever input put the key in
+                it: the model name, the provider name, an exception's text,
+                a provider's body.  The redaction before each cut (`_safe`,
+                `_read_error_body`) stays as well, because the two catch
+                different texts: a cut can leave a fragment of a key that
+                no longer reads as the key here, and this catches a text
+                that never passed a cut."""
+                return _alloc_result_err_string(
+                    caller, _redact_held(text, held))
+
             provider = _env.get("VERA_INFERENCE_PROVIDER", "").lower()
 
             # Auto-detect provider from whichever key holds a NON-EMPTY
@@ -1038,8 +1103,7 @@ def register_inference(
                 key_vars = ", ".join(
                     c.env_key for c in _PROVIDERS.values()
                 )
-                return _alloc_result_err_string(
-                    caller,
+                return _err(
                     f"No inference provider configured. "
                     f"Set {key_vars}.",
                 )
@@ -1048,8 +1112,7 @@ def register_inference(
             api_key = _env.get(cfg.env_key, "") if cfg else ""
 
             if cfg is not None and not api_key:
-                return _alloc_result_err_string(
-                    caller,
+                return _err(
                     f"Inference provider '{provider}' selected but "
                     f"{cfg.env_key} is not set.",
                 )
@@ -1089,13 +1152,12 @@ def register_inference(
                 # `InferenceError`, so any subclass is by construction one
                 # of ours and carries a message written for a user.
                 if isinstance(exc, InferenceError):
-                    return _alloc_result_err_string(caller, str(exc))
+                    return _err(str(exc))
                 # #1854: an exception's text is text from outside, as a
                 # provider's is: the transport's own messages quote what
                 # they were handed (a header value, a URL), so it is
                 # redacted and bounded like any other.
-                return _alloc_result_err_string(
-                    caller,
+                return _err(
                     f"Inference provider '{provider}' ({resolved_model}) "
                     f"failed: "
                     f"{_safe(f'{type(exc).__name__}: {exc}', api_key)}",

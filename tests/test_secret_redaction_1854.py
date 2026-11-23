@@ -610,3 +610,260 @@ def test_repro_an_html_quoted_key_cut_inside_it() -> None:
     key = "Opaque<Credential>Remainder"
     assert inference._redact_cut(" Opaque&lt;Crede", key) == " [redacted]"
     assert inference._redact_cut(" Opaque&l", key) == " [redacted]"
+
+
+# --- Which input carries the key, by which message route --------------------
+#
+# Every text that reaches the `Err` of `Inference.complete` leaves through
+# one function, `_err` inside `host_inference_complete`, which redacts every
+# key the host holds.  The matrix puts a held key in each input a message
+# can quote, and runs each route a message can take: the key itself (a
+# line end in it, so the host refuses it), the model name
+# (`VERA_INFERENCE_MODEL`), the provider name (`VERA_INFERENCE_PROVIDER`,
+# which the host reads lower-cased), a header value by way of an
+# exception's text, and the provider's body.  The base URL is not an
+# input: no variable configures it.
+
+ROUTE_BODIES: dict[str, str] = {
+    "http-error": '{{"error": {{"message": "rejected {k}"}}}}',
+    "not-json": "<html>{k}</html>",
+    "shape": '{{"{k}": 1}}',
+}
+
+#: A held key that mixes case, so a lower-cased quotation of it is not the
+#: key as written.
+MIXED_KEY = "Mx" + KEY[2:]
+
+
+def _route_env(provider: str, carrier: str, route: str) -> dict[str, str]:
+    key = MIXED_KEY + ("\n" if route == "refusal" else "")
+    env = {inference._PROVIDERS[provider].env_key: key,
+           "VERA_INFERENCE_PROVIDER": provider}
+    if carrier == "model":
+        env["VERA_INFERENCE_MODEL"] = key
+    if carrier == "provider":
+        env["VERA_INFERENCE_PROVIDER"] = MIXED_KEY
+    return env
+
+
+def _route_transport(carrier: str, route: str) -> MagicMock:
+    quoted = MIXED_KEY if carrier in ("header", "body") else "nothing"
+    if route == "transport":
+        return MagicMock(side_effect=ValueError(
+            f"Invalid header value {quoted.encode()!r}"))
+    body = ROUTE_BODIES.get(route, "{{}}").format(k=quoted).encode()
+    if route == "http-error":
+        return MagicMock(side_effect=_http_error(body))
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return MagicMock(return_value=resp)
+
+
+#: (carrier, route): each route the carrier's text can reach a message by.
+CARRIER_ROUTES: tuple[tuple[str, str], ...] = (
+    ("key", "refusal"),
+    *(("model", route) for route in
+      ("transport", "http-error", "not-json", "shape", "refusal")),
+    ("provider", "unknown-provider"),
+    ("header", "transport"),
+    *(("body", route) for route in ("http-error", "not-json", "shape")),
+)
+
+CARRIER_CELLS = [
+    pytest.param(provider, carrier, route,
+                 id=f"{provider}-{carrier}-{route}")
+    for provider in inference._PROVIDERS
+    for carrier, route in CARRIER_ROUTES
+]
+
+
+def _carried(provider: str, carrier: str, route: str) -> str:
+    env = _route_env(provider, carrier, route)
+    with patch("urllib.request.urlopen", _route_transport(carrier, route)):
+        ran = pipeline.run(_compile_ok(_SOURCE), env_vars=env,
+                           capture_stderr=False)
+    assert ran.ok, ran.trap
+    return ran.stdout
+
+
+@pytest.mark.usefixtures("local_endpoints")
+@pytest.mark.parametrize(("provider", "carrier", "route"), CARRIER_CELLS)
+def test_a_held_key_in_every_input_by_every_route(
+    provider: str, carrier: str, route: str,
+) -> None:
+    message = _carried(provider, carrier, route)
+    assert message, message
+    assert_no_part_of(MIXED_KEY, message)
+    assert_no_part_of(MIXED_KEY.lower(), message.lower())
+
+
+@pytest.mark.usefixtures("local_endpoints")
+def test_repro_a_model_name_holding_the_key() -> None:
+    """The fourth review's instance: the model name holds the key, which
+    the key refusal and every provider message quoted."""
+    for route in ("refusal", "transport", "shape"):
+        message = _carried("anthropic", "model", route)
+        assert "(Mx" not in message, message
+        assert_no_part_of(MIXED_KEY, message)
+
+
+@pytest.mark.usefixtures("local_endpoints")
+def test_repro_a_provider_name_holding_the_key() -> None:
+    message = _carried("mistral", "provider", "unknown-provider")
+    assert message.startswith("Unknown inference provider '[redacted]'"), (
+        message)
+
+
+def test_repro_a_held_key_of_a_provider_not_selected() -> None:
+    mixed = "AbCdEf" + "123456"
+    var = inference._PROVIDERS["openai"].env_key
+    held = inference._held_keys({var: mixed,
+                                 "VERA_INFERENCE_PROVIDER": "anthropic"})
+    assert held == (mixed, mixed.lower())
+    assert inference._redact_held(f"x {mixed.lower()} y", held) == (
+        "x [redacted] y")
+
+
+def _calls_by_function(name: str) -> set[str]:
+    """The functions of `vera/runtime/inference.py` that call *name*."""
+    import ast as pyast
+    import inspect
+
+    tree = pyast.parse(inspect.getsource(inference))
+    owners: set[str] = set()
+
+    def visit(node: pyast.AST, owner: str) -> None:
+        for child in pyast.iter_child_nodes(node):
+            here = (child.name if isinstance(child, pyast.FunctionDef)
+                    else owner)
+            if (isinstance(child, pyast.Call)
+                    and isinstance(child.func, pyast.Name)
+                    and child.func.id == name):
+                owners.add(owner)
+            visit(child, here)
+
+    visit(tree, "<module>")
+    return owners
+
+
+def test_every_err_text_leaves_through_the_one_exit() -> None:
+    """The `Err` of `Inference.complete` is built in one function, which
+    redacts; a cut is made in one function, which redacts first."""
+    assert _calls_by_function("_alloc_result_err_string") == {"_err"}
+    assert _calls_by_function("_redact_held") == {"_err"}
+    assert _calls_by_function("_truncate") == {"_safe"}
+
+
+# --- The cost of every rule over a provider's text, by its worst body -------
+#
+# The redaction reads text a provider chooses, up to the 64 KiB cap.  Each
+# rule is a pattern or a scan over that text: the whole-key matcher, the
+# per-character first-form matcher and the cut matcher (`_key_patterns`),
+# the credential pattern, and the credential tail at a cut.  Each rule's
+# worst body is built for the way it searches, and each redaction over it
+# is held to a bound.  The rules are linear in the body (the key's own
+# length bounds the work at each place), and a linear pass over 64 KiB takes
+# a few milliseconds here; the bound is half a second, two orders above
+# that, so a slow runner passes, and a quadratic rule, which takes seconds
+# over 64 KiB, does not.
+
+COST_BOUND_S = 0.5
+
+
+def _bodies_worst_for_each_rule(key: str) -> dict[str, str]:
+    n = _ERROR_BODY_CAP
+    run = "x" * (n - 1)
+
+    def fill(unit: str) -> str:
+        return (unit * (n // len(unit) + 1))[:n]
+
+    return {
+        # the credential tail: a token's prefix at every place of one long
+        # run that a character outside the run ends, so no place reaches
+        # the end of the text
+        "tail-prefixes-then-a-space": fill("key-") + " ",
+        "tail-one-prefix-a-long-run": "sk-" + run[:n - 4] + " ",
+        "tail-many-short-runs": fill("sk-ab "),
+        # the credential pattern: prefixes with runs one short of a token
+        "pattern-short-runs": fill("sk-abcdefg "),
+        "pattern-prefix-chain": fill("sk_"),
+        # the whole-key and first-form matchers: the key's prefix repeated,
+        # its first character in every form
+        "key-prefix-repeated": fill(key[:-1]),
+        "key-first-char-forms": fill(f"\\u{ord(key[0]):04x}"),
+        # the cut matcher: the key's leading characters, escaped, at the end
+        "cut-escaped-prefix": fill("\\u00") + "".join(
+            f"\\u{ord(c):04x}" for c in key[:-1]),
+    }
+
+
+@pytest.mark.parametrize("cut", [False, True], ids=["whole", "cut"])
+@pytest.mark.parametrize("body", sorted(_bodies_worst_for_each_rule(KEY)))
+def test_every_rule_is_linear_in_the_body(body: str, cut: bool) -> None:
+    import time
+
+    text = _bodies_worst_for_each_rule(KEY)[body]
+    started = time.perf_counter()
+    if cut:
+        inference._redact_cut(text, KEY)
+    else:
+        inference._redact(text, KEY)
+    assert time.perf_counter() - started < COST_BOUND_S, body
+
+
+def test_repro_the_credential_tail_over_a_body_at_the_cap() -> None:
+    """The fourth review's instance: `key-` repeated to the cap, then a
+    space.  The tail search tried every start and ran each to the space."""
+    import time
+
+    text = ("key-" * (_ERROR_BODY_CAP // 4)) + " "
+    started = time.perf_counter()
+    assert inference._redact_cut(text, "") == text.replace(
+        text[:-1], "[redacted]")
+    assert time.perf_counter() - started < COST_BOUND_S
+
+
+def test_repro_the_credential_tail_is_the_trailing_run_s_leftmost_token() -> None:
+    """The tail is found in the run of token characters at the text's end,
+    and from its leftmost prefix: what precedes the run is kept."""
+    assert inference._redact_cut("a b-sk-key-12", "") == "a b-[redacted]"
+    assert inference._redact_cut("a sk-12 b", "") == "a sk-12 b"
+    assert inference._redact_cut("tokens", "") == "tokens"
+    assert inference._redact_cut("x xai_", "") == "x [redacted]"
+
+
+def test_repro_a_key_at_the_start_of_a_short_cut_text() -> None:
+    """A cut text that is only the key's start: the cut rule tries the
+    text's first place too."""
+    assert inference._redact_cut("AB", "ABCD") == "[redacted]"
+
+
+def test_repro_a_key_start_in_its_longest_forms_at_the_cut() -> None:
+    """The cut rule looks back far enough for the key's leading characters
+    each in its longest form, and a cut inside the next one's: `A` as a
+    hex entity with six leading zeros, then `B`'s form cut short."""
+    text = "&#x00000041;&#x00000042"
+    assert inference._redact_cut(text, "AB") == "[redacted]"
+
+
+def test_repro_a_held_key_s_control_character_as_a_hex_entity() -> None:
+    """A held key may hold a line end (the key refusal's case, and the
+    exit redacts the model name that repeats it): its line end in HTML's
+    hex entity, one digit wide, is a form of it."""
+    assert inference._redact("x k&#xA;y z", "k\ny") == "x [redacted] z"
+
+
+def test_repro_the_exit_reads_a_whole_text() -> None:
+    """The exit's text is whole: its end is not read as a key's start, and
+    a token's start at its end is not a token."""
+    assert inference._redact_held("x A", ("AB",)) == "x A"
+    assert inference._redact_held("x sk-1", ("AB",)) == "x sk-1"
+    assert inference._redact_held("sk-12345678 AB.", ("AB",)) == (
+        "[redacted] [redacted].")
+
+
+def test_repro_a_credential_tail_that_is_the_whole_text() -> None:
+    assert inference._redact_cut("sk-1", "") == "[redacted]"
+    assert inference._redact_cut("a-sk-1", "") == "a-[redacted]"
