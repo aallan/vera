@@ -25,6 +25,7 @@ the same expression outside one.
 from __future__ import annotations
 
 import ast as pyast
+import functools
 import re
 from collections import Counter
 from pathlib import Path
@@ -76,6 +77,14 @@ private forall<T where Ord<T>> fn empty_ord(@Unit -> @Array<T>)
 }
 
 private forall<T where Ord<T>> fn head_ord(@Array<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Array<T>.0[0]
+}
+
+private forall<T> fn first(@Array<T> -> @T)
   requires(true)
   ensures(true)
   effects(pure)
@@ -169,6 +178,12 @@ FORMS: dict[str, Form] = {
         "{ Less -> 1, _ -> 2 })", ("E241",)),
     "field_other_arg": Form("q", "MkQ(None, head_ord([]), 5)",
                             "MkQ(Some(1), head_ord([]), 5)", ()),
+    # A field whose variable no argument's type binds: the sibling gives
+    # the construction's type its argument, and the argument is held to
+    # the field's type the arguments give, as outside a branch (with the
+    # sibling's `Int` in it, `Option<Int>`, the arm was refused, E213).
+    "field_only_sibling_binds": Form("q", "MkQ(first([]), 1, 2)",
+                                     "MkQ(first([]), 1, 2)", ()),
     "field_literal": Form("q", "MkQ(None, idg(5), 7)",
                           "MkQ(Some(1), idg(5), 7)", ()),
     "state_init": Form(
@@ -279,8 +294,9 @@ SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
     _site("calls.py", "_check_constructor_call", _S, "field_expected",
           _FWD): (1, ("index_field",)),
     _site("calls.py", "_check_constructor_call", _S, "field_ty",
-          "sibling_fields[i]"): (
-        2, ("field_sibling_only", "field_other_arg", "field_literal")),
+          "False"): (
+        2, ("field_sibling_only", "field_other_arg", "field_literal",
+            "field_only_sibling_binds")),
     _site("expressions.py", "_check_in_literal_context", _S, "context",
           "from_sibling"): (
         1, ("index_refined", "index_component", "index_element")),
@@ -433,8 +449,25 @@ def test_a_branch_is_judged_as_the_same_value_outside_one(
     codes the same expression has with no sibling."""
     f = FORMS[form]
     sib = f"@{_FAMILIES[f.family]}.0"
-    body = JOINS[join].format(sib=sib, open_=f.open_)
-    assert _codes(_program(f.family, body), f.stage) == f.codes
+    source = _program(f.family, JOINS[join].format(sib=sib, open_=f.open_))
+    assert _codes(source, f.stage) == f.codes
+    if not f.codes:
+        # Accepted: each open generic is built where the control builds it,
+        # so a sibling fixed no variable on the way to the same verdict.
+        assert _instances(source) == _instances(
+            _program(f.family, f.control))
+
+
+#: The prelude's generics whose variables a call can leave open.
+_OPEN_GENERICS = frozenset({"head_ord", "empty_ord", "first", "idg", "pick"})
+
+
+@functools.cache
+def _instances(source: str) -> frozenset[tuple[str, tuple[str, ...]]]:
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    return frozenset((inst.key, inst.args) for inst in checked.typed.instances
+                     if inst.key in _OPEN_GENERICS)
 
 
 # ---------------------------------------------------------------------

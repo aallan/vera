@@ -2924,21 +2924,16 @@ class CallsMixin:
             soft.get(tv, TypeVar(tv))
             for tv in ci.parent_type_params or ())))
 
-        # Merge expected-type mapping for unresolved vars
-        from_expected: set[str] = set()
-        for tv, exp_ty in expected_mapping.items():
-            if tv not in mapping:
-                mapping[tv] = exp_ty
-                from_expected.add(tv)
-        # #1866: a field's type holds a part of the type the construction
-        # is expected at where a variable of it took its type from there,
-        # and the arguments' variables are theirs: a field another
-        # argument fixed is no sibling's type, whatever the construction
-        # is expected at.
-        sibling_fields = [
-            self._expected_from_sibling
-            and bool(_typevar_names(ft) & from_expected)
-            for ft in ci.field_types]
+        # Merge expected-type mapping for unresolved vars.  Not a sibling's
+        # type (#1866): it gives the construction's own type the arguments
+        # nothing else fixes (`_ctor_result_type`), but it is no type an
+        # argument is expected at, so each argument is held to the field
+        # type the arguments give, as the same construction is outside a
+        # branch.
+        if not self._expected_from_sibling:
+            for tv, exp_ty in expected_mapping.items():
+                if tv not in mapping:
+                    mapping[tv] = exp_ty
 
         field_types = ci.field_types
         if mapping:
@@ -3010,7 +3005,7 @@ class CallsMixin:
             if contains_typevar(arg_ty) and not is_subtype(arg_ty, field_ty):
                 arg_ty = self._synth_expr(
                     expr.args[i], expected=field_ty,
-                    from_sibling=sibling_fields[i])
+                    from_sibling=False)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -3038,7 +3033,7 @@ class CallsMixin:
                         or arg_ty)):
                 re = self._synth_expr(
                     expr.args[i], expected=field_ty,
-                    from_sibling=sibling_fields[i])
+                    from_sibling=False)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, field_ty)):
                     arg_ty = re
