@@ -2135,3 +2135,26 @@ def test_repro_an_endofunction_over_a_refinement_fills_its_data_type_1885(
               visibility="public"))
     assert pipeline.verify(source, reconcile=True).ok
     assert pipeline.run(source, fn="go", args=[3]).execution.value == 3
+
+
+def test_repro_a_generic_call_reports_each_argument_once_1885() -> None:
+    """`choose<T>(T, T)` handed callbacks at two refinements of `Int`: the
+    variable's join reported E190 at the first argument, and the argument
+    check reported it there again.  The call holds each argument to the
+    instance, so the join reports nothing: one E190 an argument."""
+    source = _ALIASES + (
+        "type FP = fn(Pos -> Int) effects(pure);\n"
+        "type FB = fn(Big -> Int) effects(pure);\n\n") + _fn(
+        "choose(@T, @T -> @T)", "@T.1").replace(
+            "private fn", "private forall<T> fn") + _fn(
+        "main(@Int -> @Int)",
+        "let @FP = fn(@Pos -> @Int) effects(pure) { @Pos.0 };\n"
+        "  let @FB = fn(@Big -> @Int) effects(pure) { @Big.0 };\n"
+        "  apply_fn(choose(@FP.0, @FB.0), 50)", visibility="public")
+    line = next(n for n, text in enumerate(source.splitlines(), 1)
+                if "choose(@FP.0" in text)
+    text = source.splitlines()[line - 1]
+    found = [(d.error_code, d.location.line, d.location.column)
+             for d in pipeline.check(source).errors]
+    assert found == [("E190", line, text.index("@FP.0") + 1),
+                     ("E190", line, text.index("@FB.0") + 1)], found

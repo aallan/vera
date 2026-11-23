@@ -1333,7 +1333,11 @@ class ResolutionMixin:
                     break
                 structure = step
             else:
-                mapping[tv] = self._value_join(structure, parts)
+                # The call holds each argument to the instance after this
+                # (`_check_fn_call_with_info`), one report an argument, as
+                # an array literal's elements are: the join reports none.
+                mapping[tv] = self._value_join(structure, parts,
+                                               report=False)
 
     def _expected_bindings(self, result_type: Type | None,
                            expected: Type | None) -> dict[str, Type]:
