@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -49,6 +50,13 @@ _ALIASES = (
 )
 
 _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+#: The sentence every parameter's fix closes its rewrite with: E190 prints
+#: no code for a closure written in place (spec §2.8).
+_RENUMBER = (
+    "Changing a parameter's type and binding the narrowed value both "
+    "renumber the body's slot references of those two types: rewrite each "
+    "to the binding it read before.")
 
 
 def _fn(signature: str, body: str, *, visibility: str = "private",
@@ -77,6 +85,23 @@ def _accepted(source: str, value: int) -> None:
     ran = pipeline.run(source, fn="main", args=[50])
     assert ran.trap is None, str(ran.trap)[:300]
     assert ran.execution.value == value
+
+
+class _KnownVerdict(Exception):
+    """An open issue's recorded verdict, still given: the one failure a
+    strict xfail of this file expects (`raises=_KnownVerdict`)."""
+
+
+def _known(got: list[str], *, known: list[str],
+           fixed: Callable[[list[str]], bool]) -> None:
+    """A strict xfail's verdict: return where *fixed* holds of the codes
+    *got* (the issue is fixed, and the xfail reports an unexpected pass);
+    raise `_KnownVerdict` where *got* is the issue's *known* verdict; and
+    fail the test on any other, so an unrelated error is no xfail."""
+    if fixed(got):
+        return
+    assert got == known, (got, known)
+    raise _KnownVerdict(got)
 
 
 # =====================================================================
@@ -124,10 +149,9 @@ def test_repro_a_narrower_closure_bound_by_a_let_is_refused_1885() -> None:
         "and that type hands it any `Int`, not only a `Pos`.")
     assert diagnostic["fix"] == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check: "
-        "`fn(@Int -> @Int) effects(pure) { let @Pos = @Int.0; ... }`.  Or "
-        "declare the binding at a function type whose parameter 0 is "
-        "`Pos`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or declare the binding at a function "
+        "type whose parameter 0 is `Pos`.")
     assert diagnostic["spec_ref"] == 'Chapter 2, Section 2.8 "Subtyping Rules"'
 
 
@@ -149,9 +173,9 @@ def test_repro_array_map_names_its_instance_and_the_argument_1885() -> None:
         "hands it any `Int`, not only a `Pos`.")
     assert diagnostic["fix"] == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check: "
-        "`fn(@Int -> @Int) effects(pure) { let @Pos = @Int.0; ... }`.  Or "
-        "pass argument 0 as `Array<Pos>`, which fixes `A` at `Pos`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or pass argument 0 as `Array<Pos>`, "
+        "which fixes `A` at `Pos`.")
 
 
 def test_repro_a_user_generic_names_its_instance_1885() -> None:
@@ -223,8 +247,7 @@ def test_repro_a_wider_result_read_back_as_pos_is_refused_1819() -> None:
         "guarantee.")
     assert diagnostic["fix"] == (
         "Declare the closure's result as `@{ @Int | @Int.0 > 0 }`, the type "
-        "the position states: `fn(@Int -> @{ @Int | @Int.0 > 0 }) "
-        "effects(pure) { ... }`; the closure's own return is then proved or "
+        "the position states; the closure's own return is then proved or "
         "checked, where the value is.  Or declare the binding at a function "
         "type whose result is `Int`.")
 
@@ -514,13 +537,19 @@ _ORDER_DECIDES = (
     "give (spec §5.9 rule B), #1891")
 
 
+def _order_cell(flow: str, kind: str, form: str, p: str, c: str) -> bool:
+    """A cell #1891's order decides: accepted, though refused by the
+    relation table."""
+    return ((flow, kind) == ("generic", "parameter")
+            and form in ("in-place", "slot", "type-argument")
+            and {p, c} == {"Pos", "Big"})
+
+
 def _cell(flow: str, kind: str, form: str, p: str, c: str) -> object:
     cell = (flow, kind, form, p, c)
-    if ((flow, kind) == ("generic", "parameter")
-            and form in ("in-place", "slot", "type-argument")
-            and {p, c} == {"Pos", "Big"}):
+    if _order_cell(*cell):
         return pytest.param(*cell, id="-".join(cell), marks=pytest.mark.xfail(
-            strict=True, reason=_ORDER_DECIDES))
+            strict=True, raises=_KnownVerdict, reason=_ORDER_DECIDES))
     return pytest.param(*cell, id="-".join(cell))
 
 
@@ -533,7 +562,9 @@ CELLS = [_cell(flow, kind, form, p, c) for flow in FLOWS
 def test_a_function_value_meets_a_function_type(
         flow: str, kind: str, form: str, p: str, c: str) -> None:
     source = program(flow, kind, form, p, c)
-    if expected_refused(flow, kind, form, p, c):
+    if _order_cell(flow, kind, form, p, c):
+        _known(_codes(source), known=[], fixed=lambda g: g == ["E190"])
+    elif expected_refused(flow, kind, form, p, c):
         assert _codes(source) == ["E190"], source
     else:
         # `array_map`'s result column counts the mapped array.
@@ -1122,7 +1153,8 @@ def _binding_cell(form: str, generic: bool, kind: str, p: str,
     if refused and form in _CLAUSE_FORMS:
         return pytest.param(form, generic, kind, p, c, id=cell_id,
                             marks=pytest.mark.xfail(
-                                strict=True, reason=_CLAUSE_PARAMETER))
+                                strict=True, raises=_KnownVerdict,
+                                reason=_CLAUSE_PARAMETER))
     return pytest.param(form, generic, kind, p, c, id=cell_id)
 
 
@@ -1170,6 +1202,10 @@ def test_every_binding_form_meets_a_function_type(
     # A user effect's handler is refused (E340) before its clause binder
     # is reached by anything (#1896): the form's own code alone.
     judged = refused and form != "user-op-clause-param"
+    if refused and form in _CLAUSE_FORMS:
+        # #1896: the binder is compared with nothing, and checks clean.
+        _known(_codes(source), known=[], fixed=lambda g: g == ["E190"])
+        return
     assert sorted(_codes(source)) == sorted(
         ["E190"] * _E190_COUNT.get(form, 1) * judged + list(own)), source
     if not refused and not own:
@@ -1383,84 +1419,41 @@ def _ran(source: str) -> int:
 def test_every_rewrite_e190_prints_checks_and_runs_pasted(
         params: tuple[str, ...], kind: str, narrowed: int | None,
         form: str) -> None:
-    """Every rewrite E190's fix prints, pasted into the program, checks
-    and gives the value the original function gives on unequal arguments:
-    the header with the parameter at the position's type and its
-    narrowing, the header with the result the position states, and the
-    wrapper of a value held in a slot.  The narrowing and the wrapper read
-    each parameter by the compiler's slot rule; a slot read in another's
-    place changes the value, and a `Unit` or another type between two
-    parameters of one type shifts nothing."""
+    """The code E190's fix prints is the wrapper of a value held in a slot
+    alone, and pasted it checks and gives the value the original function
+    gives on unequal arguments: the wrapper reads each parameter by the
+    compiler's slot rule, so a slot read in another's place changes the
+    value, and a `Unit` or another type between two parameters of one type
+    shifts nothing.  A closure written in place is given prose and no
+    code, whatever its parameter list: nothing here rebuilds a body."""
     plist = list(params)
     source = _fix_program(plist, kind, narrowed, form)
     fix = str(_only_diagnostic(source)["fix"])
     expected = _expected(plist)
-    position = [_ALPHABET[p][0] for p in plist]
-    pasted = 0
-    if form == "slot" and "Fn" in plist:
-        # Held in a slot, the rewrite is a closure of the position's type
-        # written out, and a function-typed parameter is not written out in
-        # a header (`@fn(Int -> Int) effects(pure)` does not parse): the fix
-        # prints neither the narrowing's header nor a wrapper.
-        assert "let @" not in fix and "apply_fn(@G.0" not in fix, fix
-        return
-    if (kind == "parameter" and form == "in-place"
-            and any(_ALPHABET[p][1] == "Int" and _ALPHABET[p][3]
-                    for j, p in enumerate(plist) if j != narrowed)):
-        # Written in place, the closure's body (kept for the header's
-        # `...`) reads another `@Int`, which the new `@Int` parameter would
-        # renumber: the fix prints no header, and says so.
-        assert "let @" not in fix, fix
-        assert _RENUMBERS in fix, fix
-        return
-    if kind == "parameter":
-        assert narrowed is not None
-        # The narrowing binds the closure's own parameter type: by its alias
-        # where the closure is written in place, by the type written out
-        # (a refinement in place, read by its base) where it is not.
-        narrow = re.search(r"(let @(Pos|\{ @(\w+) \|[^}]*\}) = @[\w<>]+\.\d+;)",
-                           fix)
-        assert narrow is not None, fix
-        bound = narrow.group(3) or narrow.group(2)
-        # The body after the narrowing: parameter `narrowed` is the
-        # narrowing's binding, index 0; every other parameter by its slot
-        # in the header at the position's types, one more of the narrowing's
-        # slot bound after it.
-        # In place, the header is the closure's own, its other parameters
-        # as written; held in a slot, it is the position's type written out,
-        # an alias by the refinement it names, read by its base.
-        if form == "in-place":
-            slots = [_ALPHABET[p][1] for p in plist]
+    if form == "in-place":
+        # Written in place, the rewrites are prose: no header is printed
+        # around a body the reader keeps, whose slot references it would
+        # renumber.
+        assert not re.search(r"`fn\(", fix), fix
+        if kind == "parameter":
+            assert f"parameter {narrowed} as `@Int`" in fix, fix
+            assert _RENUMBER in fix, fix
         else:
-            position = ["{ @Int | @Int.0 > 0 }" if p == "Pos" else t
-                        for p, t in zip(plist, position)]
-            slots = ["Int" if p == "Pos" else _ALPHABET[p][1] for p in plist]
-        reads = []
-        for j, s in enumerate(slots):
-            later = slots[j + 1:].count(s) + (1 if s == bound else 0)
-            reads.append(f"@{bound}.0" if j == narrowed else f"@{s}.{later}")
-        header = (f"fn({', '.join('@' + t for t in position)} -> @Int) "
-                  "effects(pure)")
-        assert f"`{header} {{ {narrow.group(1)} ... }}`" in fix, fix
-        rewritten = f"{header} {{ {narrow.group(1)} {_body(plist, reads)} }}"
-        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
-                                 rewritten)) == expected, rewritten
-        pasted += 1
-    elif form == "in-place":
-        header = (f"fn({', '.join('@' + t for t in position)} -> @Nat) "
-                  "effects(pure)")
-        assert f"`{header} {{ ... }}`" in fix, fix
-        rewritten = f"{header} {{ {_body(plist, _reads(plist))} }}"
-        assert _ran(_fix_program(plist, kind, narrowed, "in-place",
-                                 rewritten)) == expected, rewritten
-        pasted += 1
-    if form == "slot":
-        wrapper = re.findall(r"`(fn\([^`]*\{ apply_fn\(@G\.0[^`]*\})`", fix)
-        assert len(wrapper) == 1, fix
-        assert _ran(_fix_program(plist, kind, narrowed, "slot",
-                                 wrapper[0])) == expected, wrapper[0]
-        pasted += 1
-    assert pasted >= 1
+            assert "Declare the closure's result as `@Nat`" in fix, fix
+        return
+    # Held in a slot, the wrapper alone is code: it applies the value, and
+    # nothing of the reader's is pasted into it.  Pasted, it checks and
+    # gives the original function's value on unequal arguments.
+    wrapper = re.findall(r"`(fn\([^`]*\{ apply_fn\(@G\.0[^`]*\})`", fix)
+    assert len(re.findall(r"`fn\(", fix)) == len(wrapper), fix
+    if "Fn" in plist:
+        # A function-typed parameter is not written out in a header
+        # (`@fn(Int -> Int) effects(pure)` does not parse): no wrapper.
+        assert wrapper == [], fix
+        return
+    assert len(wrapper) == 1, fix
+    assert _ran(_fix_program(plist, kind, narrowed, "slot",
+                             wrapper[0])) == expected, wrapper[0]
 
 
 # =====================================================================
@@ -1478,15 +1471,13 @@ def _refused_cells() -> list[object]:
                 for p, c in PAIRS:
                     if expected_refused(flow, kind, form, p, c):
                         # The order cells (#1891) are accepted: no E190.
-                        order = ((flow, kind) == ("generic", "parameter")
-                                 and form in ("in-place", "slot",
-                                              "type-argument")
-                                 and {p, c} == {"Pos", "Big"})
+                        order = _order_cell(flow, kind, form, p, c)
                         cells.append(pytest.param(
                             "flows", (flow, kind, form, p, c), c,
                             id="-".join(("flows", flow, kind, form, p, c)),
                             marks=[pytest.mark.xfail(
-                                strict=True, reason=_ORDER_DECIDES)]
+                                strict=True, raises=_KnownVerdict,
+                                reason=_ORDER_DECIDES)]
                             if order else []))
     for flow in GENERIC_FLOWS:
         for p, c, r, cr in GENERIC_RELATIONS:
@@ -1552,13 +1543,18 @@ def test_every_rewrite_a_refused_cell_prints_checks_pasted(
     source = _source_of(matrix, cell)
     own = (_FORM_OWN_CODES.get(str(cell[0]), set()) if matrix == "binding"
            else set())
-    refused = [d for d in pipeline.check(source).errors
-               if d.error_code == "E190"]
+    errors = pipeline.check(source).errors
+    refused = [d for d in errors if d.error_code == "E190"]
     # Every refused cell is E190 before anything is replayed, bar the
     # forms whose binder no judge compares (#1896), the user operation's
     # behind its E340 among them.
     unjudged = matrix == "binding" and cell[0] in (
         *_CLAUSE_FORMS, "user-op-clause-param")
+    if matrix == "flows" and _order_cell(*cell):  # type: ignore[arg-type]
+        # The whole verdict, not the E190s alone: an unrelated error
+        # is no xfail.
+        _known([d.error_code for d in errors], known=[],
+               fixed=lambda g: g == ["E190"])
     assert bool(refused) != unjudged, (matrix, cell)
     for diagnostic in refused:
         rewrites = re.findall(r"`(fn\([^`]*\})`", diagnostic.fix)
@@ -1667,9 +1663,10 @@ def test_repro_a_nested_pair_names_no_outer_variable_1885() -> None:
     assert "instantiated" not in description, description
     assert fix == (
         "Declare the closure's parameter 0 as `@Int`, the type the position "
-        "hands it, and narrow inside, where there is a value to check.  Or "
-        "declare parameter 0 of 'use' at a type holding, where this one "
-        "sits, a function type whose parameter 0 is `Nat`.")
+        "hands it, and narrow inside with a `let`, where there is a value to "
+        "check.  " + _RENUMBER + "  Or declare parameter 0 of 'use' at a "
+        "type holding, where this one sits, a function type whose parameter "
+        "0 is `Nat`.")
 
 
 def test_repro_each_element_of_an_array_is_reported_once_1885() -> None:
@@ -1854,52 +1851,62 @@ def test_repro_a_binder_keeps_e190_beside_another_misfit_1885() -> None:
 
 
 # =====================================================================
-# The header rewrite where the body reads the namespace it joins
+# A closure written in place: its rewrites are prose, its body kept
 # =====================================================================
 
-def _renumbered(closure: str, apply: str, params: str = "@Int, @Int") -> str:
-    arity = len(params.split(","))
-    return (f"type F = fn({', '.join(['Int'] * arity)} -> Int) "
-            "effects(pure);\n\n"
-            + _fn(f"main({params} -> @Int)",
-                  f"let @F = {closure};\n  {apply}", visibility="public"))
+#: (the position, the closure as the program writes it, the parameters the
+#: fix must name).  Each kept body reads a slot a rewritten header would
+#: renumber: another parameter of the type the changed one takes, a
+#: capture, a later parameter of the narrowed type itself (`@Pos.1`, the
+#: second `Pos`, which a `let @Pos` would make the third), a `Nat` the
+#: narrowing's `let @Nat` would shadow, and a second unfit parameter and a
+#: result a first rewrite left unfit.
+_IN_PLACE = {
+    "joined-namespace": (
+        "fn(Int, Int -> Int)",
+        "fn(@Int, @Nat -> @Int) effects(pure) { @Int.0 - nat_to_int(@Nat.0) }",
+        ["parameter 1 as `@Int`"]),
+    "capture": (
+        "fn(Int -> Int)",
+        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) + @Int.0 }",
+        ["parameter 0 as `@Int`"]),
+    "narrowed-namespace": (
+        "fn(Int, Pos -> Int)",
+        "fn(@Pos, @Pos -> @Int) effects(pure) { 1000 + @Pos.1 - 2 * @Pos.0 }",
+        ["parameter 0 as `@Int`"]),
+    "shadowed-nat": (
+        "fn(Int, Nat -> Int)",
+        "fn(@Nat, @Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+        ["parameter 0 as `@Int`"]),
+    "every-unfit-part": (
+        "fn(Int, Int -> Nat)",
+        "fn(@Nat, @Nat -> @Int) effects(pure) { 0 }",
+        ["parameter 0 as `@Int`", "parameter 1 as `@Int`",
+         "its result as `@Nat`"]),
+}
 
 
-_RENUMBERS = (
-    "The new parameter is read as `@Int`, so it renumbers every `@Int` "
-    "reference the body holds, captured ones included.")
-
-
-def test_repro_a_header_whose_body_reads_the_joined_slots_prints_prose_1885(
-        ) -> None:
-    """`fn(@Int, @Nat -> @Int) { @Int.0 - nat_to_int(@Nat.0) }` at
-    `fn(Int, Int -> Int)`: the header printed `fn(@Int, @Int -> @Int)
-    effects(pure) { let @Nat = @Int.0; ... }`, and the body kept for
-    `...` read `@Int.0` as the new second parameter (7 and 2 gave 0, not
-    5).  So with a second parameter of that type, or a captured one, the
-    fix writes no header and says why."""
-    for source in (
-            _renumbered("fn(@Int, @Nat -> @Int) effects(pure) "
-                        "{ @Int.0 - nat_to_int(@Nat.0) }",
-                        "apply_fn(@F.0, @Int.1, @Int.0)"),
-            _renumbered("fn(@Nat -> @Int) effects(pure) "
-                        "{ nat_to_int(@Nat.0) + @Int.0 }",
-                        "apply_fn(@F.0, @Int.0)", params="@Int")):
-        fix = str(_only_diagnostic(source)["fix"])
-        assert not re.search(r"`fn\([^`]* \.\.\. \}`", fix), fix
-        assert _RENUMBERS in fix, fix
-
-
-def test_repro_a_header_whose_body_reads_no_joined_slot_keeps_it_1885(
-        ) -> None:
-    """The body reads only the narrowed parameter: the header and its
-    narrowing stand."""
-    fix = str(_only_diagnostic(_renumbered(
-        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
-        "apply_fn(@F.0, @Int.0)", params="@Int"))["fix"])
-    assert ("`fn(@Int -> @Int) effects(pure) { let @Nat = @Int.0; ... }`"
-            in fix), fix
-    assert _RENUMBERS not in fix, fix
+@pytest.mark.parametrize("shape", list(_IN_PLACE))
+def test_repro_a_closure_written_in_place_is_given_prose_1885(
+        shape: str) -> None:
+    """The header rewritten in place misled three ways once the reader
+    kept the body: the namespace the changed parameter joins, the narrowed
+    type's own namespace (`fn(@Pos, @Pos -> @Int)`: 100 and 7 gave 807,
+    not 1086), the narrowing's `let @Nat` read by the kept `@Nat.0` (7 and
+    2 gave 7, not 2), and a second unfit part left unfit.  The fix prints
+    no code for a closure written in place: it names every part to
+    declare, and says how the references move."""
+    position, closure, named = _IN_PLACE[shape]
+    source = (_ALIASES + f"type F = {position} effects(pure);\n\n" + _fn(
+        "main(@Int, @Int -> @Int)",
+        f"let @F = {closure};\n  apply_fn(@F.0, "
+        + ("@Int.1, @Int.0" if "," in position else "@Int.0") + ")",
+        visibility="public"))
+    fix = str(_only_diagnostic(source)["fix"])
+    assert not re.search(r"`fn\(", fix), fix
+    assert _RENUMBER in fix, fix
+    for part in named:
+        assert part in fix, (part, fix)
 
 
 # =====================================================================
@@ -1911,7 +1918,7 @@ _FIT = ("a binding position judged outside `is_subtype` (the join used as "
         "type a `let` refuses: an effect row, a type variable: #1896")
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
     """`@Option<W>` over an `Option<IOF>`: the either-direction test holds
     (`Option<W>` fits `Option<IOF>`), so the binder takes an `<IO>`
@@ -1927,10 +1934,10 @@ def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  run(Some(fn(@Int -> @Int) effects(<IO>) "
         "{ IO.print(\"leak\\n\"); @Int.0 }))\n}\n")
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
     """`@Option<Int>` over an `Option<T>` inside `forall<T>`: the binder
     takes a concrete type no instantiation is held to, and `Some("abc")`
@@ -1941,10 +1948,10 @@ def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
             "option_unwrap_or(@Option<Int>.0, 0) + 1\n  }").replace(
                 "private fn", "private forall<T> fn")
         + _fn("main(@Unit -> @Int)", 'run(Some("abc"))', visibility="public"))
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         ) -> None:
     """Inside a generic function, a `fn(@P, @T -> @Int)` closure, `P` a
@@ -1964,4 +1971,257 @@ def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
         "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
+
+
+# =====================================================================
+# A join's arms in either order (a `match` joins as an `if` does)
+# =====================================================================
+
+#: Two pure functions whose second parameters are a pure callback and the
+#: same callback under `<IO>`: the join is `fn(Nat, P -> Int)` in every
+#: order, the arm that takes `P` read at its first parameter's narrowing.
+_ARM_A = "fn(@Int, @P -> @Int) effects(pure) { apply_fn(@P.0, @Int.0) }"
+_ARM_B = "fn(@Nat, @I -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+_ARM_TYPES = ("type P = fn(Int -> Int) effects(pure);\n"
+              "type I = fn(Int -> Int) effects(<IO>);\n"
+              "type J = fn(Nat, P -> Int) effects(pure);\n"
+              "type JI = fn(Nat, I -> Int) effects(pure);\n\n")
+
+
+def _joined(form: str, arms: Sequence[str]) -> str:
+    """*arms* joined by an `if` (two) or a `match` on an `Int` (any
+    number), the arm that takes `P` chosen where it stands."""
+    if form == "if":
+        return f"if @Int.0 == 0 then {{ {arms[0]} }} else {{ {arms[1]} }}"
+    cases = [f"    {i} -> {arm}," for i, arm in enumerate(arms[:-1])]
+    return ("match @Int.0 {\n" + "\n".join(cases)
+            + f"\n    _ -> {arms[-1]}\n  }}")
+
+
+def _arm_program(form: str, arms: Sequence[str], callback: str,
+                 bind: str | None = None) -> str:
+    """A pure `pick(@Int, @CB -> @Int)` applies the join of *arms* to `5`
+    and its callback; `main` picks the arm that takes `P`.  *callback* is
+    `pure` or `io`; *bind* is the type a `let` binds the join at."""
+    cb = "P" if callback == "pure" else "I"
+    joined = _joined(form, arms)
+    body = (f"let @{bind} = {joined};\n  apply_fn(@{bind}.0, 5, @{cb}.0)"
+            if bind else f"apply_fn({joined}, 5, @{cb}.0)")
+    value = ("fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }" if cb == "P"
+             else 'fn(@Int -> @Int) effects(<IO>) { IO.print("leak\\n"); '
+                  "@Int.0 }")
+    return (_ARM_TYPES
+            + _fn(f"pick(@Int, @{cb} -> @Int)", body)
+            + "public fn main(@Unit -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n"
+            f"  pick({arms.index(_ARM_A)}, {value})\n}}\n")
+
+
+_ARM_ORDERS = {"A-first": (_ARM_A, _ARM_B), "B-first": (_ARM_B, _ARM_A)}
+
+
+@pytest.mark.parametrize("form", ["if", "match"])
+@pytest.mark.parametrize("order", list(_ARM_ORDERS))
+def test_repro_a_join_s_arms_join_in_either_order_1885(
+        form: str, order: str) -> None:
+    """A `match` folded its arms left to right and asked the join in one
+    walk order, which compares a callback's effect row the failing way
+    round when the `P` arm comes first: E302, where an `if`, which asks
+    both orders, and `main` accepted it.  Now every order is accepted, at
+    `fn(Nat, P -> Int)`, and runs; with an `<IO>` callback the
+    application is refused against that pure parameter (E202)."""
+    arms = _ARM_ORDERS[order]
+    pure = _arm_program(form, arms, "pure")
+    verified = pipeline.verify(pure, reconcile=True)
+    assert verified.ok, [(d.error_code, d.description[:160])
+                         for d in verified.errors]
+    assert pipeline.run(pure, fn="main", args=[]).execution.value == 6
+    io = pipeline.check(_arm_program(form, arms, "io")).errors
+    assert [d.error_code for d in io] == ["E202"], [d.description for d in io]
+    assert "expected fn(Int -> Int) effects(pure)" in io[0].description
+
+
+@pytest.mark.parametrize("odd", [0, 1, 2])
+def test_repro_three_arms_join_whichever_arm_is_odd_1885(odd: int) -> None:
+    """Three `match` arms, the `P` arm first, second or third."""
+    arms = [_ARM_B, _ARM_B, _ARM_B]
+    arms[odd] = _ARM_A
+    source = _arm_program("match", arms, "pure")
+    assert _codes(source) == [], source
+    assert pipeline.run(source, fn="main", args=[]).execution.value == 6
+
+
+@pytest.mark.parametrize("form", ["if", "match"])
+@pytest.mark.parametrize("order", list(_ARM_ORDERS))
+def test_repro_the_join_is_bound_at_its_pure_type_and_no_other_1885(
+        form: str, order: str) -> None:
+    """The joined type is `fn(Nat, P -> Int)`: a `let` binds it there, and
+    at `fn(Nat, I -> Int)` it is refused (E170) in every order, so the
+    `<IO>` callback reaches the `P` arm in none."""
+    arms = _ARM_ORDERS[order]
+    pinned = _arm_program(form, arms, "pure", bind="J")
+    assert _codes(pinned) == [], pinned
+    assert pipeline.run(pinned, fn="main", args=[]).execution.value == 6
+    assert _codes(_arm_program(form, arms, "io", bind="JI")) == ["E170"]
+
+
+# =====================================================================
+# A variable an argument writes one refinement at, at every position
+# =====================================================================
+
+_ENDO_TYPES = (_ALIASES
+               + "type G<T> = fn(T -> T) effects(pure);\n"
+               "type G3<T> = fn(T, T -> T) effects(pure);\n\n")
+_ENDO_HELPERS = "".join(
+    _fn(sig, body).replace("private fn", "private forall<T> fn")
+    for sig, body in (
+        ("app(@G<T>, @T -> @T)", "apply_fn(@G<T>.0, @T.0)"),
+        ("ppa(@T, @G<T> -> @T)", "apply_fn(@G<T>.0, @T.0)"),
+        ("app3(@G3<T>, @T -> @T)", "apply_fn(@G3<T>.0, @T.0, @T.0)")))
+
+#: (the parameter `main` takes, the call, whether it is accepted).  An
+#: argument that writes `Pos` at every position its function type gives
+#: `T` pins nothing, so `T` is `Pos` where no other argument says
+#: otherwise: the polarity pin chooses between `Int` and `Nat` only where
+#: the positions differ (spec §4.2).  Two refinements leave no instance
+#: the closure fits: refused in either order.  A value at the base beside
+#: the closure makes the instance the value's, `Int`, which the closure
+#: does not fit: refused in either order, as today, though `Pos` would fit
+#: it and narrow the value; that choice is #1891's, recorded there.
+_ENDO_CELLS = {
+    "one-refinement-closure-first": (
+        "@Pos", "app(fn(@Pos -> @Pos) effects(pure) { @Pos.0 }, @Pos.0)",
+        True),
+    "one-refinement-value-first": (
+        "@Pos", "ppa(@Pos.0, fn(@Pos -> @Pos) effects(pure) { @Pos.0 })",
+        True),
+    "three-positions": (
+        "@Pos", "app3(fn(@Pos, @Pos -> @Pos) effects(pure) { @Pos.1 }, "
+        "@Pos.0)", True),
+    "two-refinements-closure-first": (
+        "@Big", "app(fn(@Pos -> @Big) effects(pure) { 11 }, @Big.0)", False),
+    "two-refinements-value-first": (
+        "@Big", "ppa(@Big.0, fn(@Pos -> @Big) effects(pure) { 11 })", False),
+    "base-value-closure-first": (
+        "@Int", "app(fn(@Pos -> @Pos) effects(pure) { @Pos.0 }, @Int.0)",
+        False),
+    "base-value-value-first": (
+        "@Int", "ppa(@Int.0, fn(@Pos -> @Pos) effects(pure) { @Pos.0 })",
+        False),
+    "int-endofunction": (
+        "@Int", "app(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0)",
+        True),
+}
+
+
+@pytest.mark.parametrize("cell", list(_ENDO_CELLS))
+def test_a_variable_written_once_at_every_position_is_that_type(
+        cell: str) -> None:
+    param, call, accepted = _ENDO_CELLS[cell]
+    source = _ENDO_TYPES + _ENDO_HELPERS + _fn(
+        f"main({param} -> @Int)", call, visibility="public")
+    if not accepted:
+        assert _codes(source) == ["E190"], source
+        return
+    assert pipeline.verify(source, reconcile=True).ok, source
+    assert pipeline.run(source, fn="main", args=[12]).execution.value == 12
+
+
+def test_repro_an_endofunction_over_a_refinement_fills_its_data_type_1885(
+        ) -> None:
+    """`B(fn(@Pos -> @Pos) ...)` into `data Box<T> { B(fn(T -> T)) }`: the
+    polarity pin took the result's `Pos` for an `Int` and fixed `T` at the
+    base, so the closure was refused (E190) where every position wrote
+    `Pos`; main accepted it by the relaxed rule this change removes."""
+    source = _ALIASES + (
+        "type F = fn(Pos -> Pos) effects(pure);\n\n"
+        "private data Box<T> {\n  B(fn(T -> T) effects(pure))\n}\n\n"
+        + _fn("go(@Pos -> @Int)",
+              "let @Box<Pos> = B(fn(@Pos -> @Pos) effects(pure) { @Pos.0 });\n"
+              "  match @Box<Pos>.0 {\n    B(@F) -> apply_fn(@F.0, @Pos.0)\n  }",
+              visibility="public"))
+    assert pipeline.verify(source, reconcile=True).ok
+    assert pipeline.run(source, fn="go", args=[3]).execution.value == 3
+
+
+def test_repro_a_generic_call_reports_each_argument_once_1885() -> None:
+    """`choose<T>(T, T)` handed callbacks at two refinements of `Int`: the
+    variable's join reported E190 at the first argument, and the argument
+    check reported it there again.  The call holds each argument to the
+    instance, so the join reports nothing: one E190 an argument."""
+    source = _ALIASES + (
+        "type FP = fn(Pos -> Int) effects(pure);\n"
+        "type FB = fn(Big -> Int) effects(pure);\n\n") + _fn(
+        "choose(@T, @T -> @T)", "@T.1").replace(
+            "private fn", "private forall<T> fn") + _fn(
+        "main(@Int -> @Int)",
+        "let @FP = fn(@Pos -> @Int) effects(pure) { @Pos.0 };\n"
+        "  let @FB = fn(@Big -> @Int) effects(pure) { @Big.0 };\n"
+        "  apply_fn(choose(@FP.0, @FB.0), 50)", visibility="public")
+    line = next(n for n, text in enumerate(source.splitlines(), 1)
+                if "choose(@FP.0" in text)
+    text = source.splitlines()[line - 1]
+    found = [(d.error_code, d.location.line, d.location.column)
+             for d in pipeline.check(source).errors]
+    assert found == [("E190", line, text.index("@FP.0") + 1),
+                     ("E190", line, text.index("@FB.0") + 1)], found
+
+
+# =====================================================================
+# `Nat` and its written form are one type inside a function type
+# =====================================================================
+
+_NAT_SPELLINGS = ("type NN = { @Int | @Int.0 >= 0 };\n"
+                  "type LE = { @Int | 0 <= @Int.0 };\n"
+                  "type GT = { @Int | @Int.0 > -1 };\n")
+
+#: (the position, the closure's parameter, its result, accepted).  `Nat`
+#: is `{ @Int | @Int.0 >= 0 }` (spec §2.2.1): written exactly so, the two
+#: are one type both ways, at a parameter and at a result; any other
+#: spelling is another refinement, and `Int` fits neither.
+_NAT_CELLS = {
+    "result-nat-at-written": ("fn(Int -> NN)", "Int", "Nat", True),
+    "result-written-at-nat": ("fn(Int -> Nat)", "Int", "NN", True),
+    "parameter-nat-at-written": ("fn(NN -> Int)", "Nat", "Int", True),
+    "parameter-written-at-nat": ("fn(Nat -> Int)", "NN", "Int", True),
+    "result-nat-at-inline": ("fn(Int -> { @Int | @Int.0 >= 0 })", "Int",
+                             "Nat", True),
+    "result-nat-at-le": ("fn(Int -> LE)", "Int", "Nat", False),
+    "result-nat-at-gt": ("fn(Int -> GT)", "Int", "Nat", False),
+    "parameter-le-at-nat": ("fn(Nat -> Int)", "LE", "Int", False),
+    "result-int-at-written": ("fn(Int -> NN)", "Int", "Int", False),
+    "parameter-written-at-int": ("fn(Int -> Int)", "NN", "Int", False),
+}
+
+
+@pytest.mark.parametrize("cell", list(_NAT_CELLS))
+def test_nat_and_its_written_form_are_one_type_in_a_function_type(
+        cell: str) -> None:
+    position, param, result, accepted = _NAT_CELLS[cell]
+    body = "7" if result != "Int" else "0"
+    source = (_NAT_SPELLINGS + f"type F = {position} effects(pure);\n\n"
+              + _fn("main(@Nat -> @Int)",
+                    f"let @F = fn(@{param} -> @{result}) effects(pure) "
+                    f"{{ {body} }};\n  0", visibility="public"))
+    assert _codes(source) == ([] if accepted else ["E190"]), source
+
+
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=(
+    "a data type's type arguments are compared covariantly whatever its "
+    "fields do with the parameter: #1902"))
+def test_repro_a_box_of_a_nat_callback_at_a_box_of_int_is_refused() -> None:
+    """`Box<Nat>` at `Box<Int>`, `Box`'s field a `fn(T -> Int)`: the field
+    is read as `fn(Int -> Int)`, and `go(-5)` returns -5 out of the
+    closure's `@Nat` parameter after a clean verify, at main too."""
+    source = (
+        "private data Box<T> {\n  B(fn(T -> Int) effects(pure))\n}\n\n"
+        "type IntToInt = fn(Int -> Int) effects(pure);\n\n"
+        + _fn("use_box(@Box<Int>, @Int -> @Int)",
+              "match @Box<Int>.0 {\n    B(@IntToInt) -> "
+              "apply_fn(@IntToInt.0, @Int.0)\n  }")
+        + _fn("make(@Unit -> @Box<Nat>)",
+              "B(fn(@Nat -> @Int) effects(pure) { @Nat.0 })")
+        + _fn("go(@Int -> @Int)", "use_box(make(()), @Int.0)",
+              visibility="public"))
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
