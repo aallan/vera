@@ -207,7 +207,7 @@ class OperatorsMixin:
                 # An operand that does not complete (`Never`, a `throw`):
                 # the comparison is never reached, and `unreachable` says
                 # so to the validator, whatever the other operand pushed.
-                return left + right + ["unreachable"]
+                return self._after_never(left + right)
             if lnothing == "unit" and rnothing == "unit":
                 if op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
                     raise CodegenInvariantError(

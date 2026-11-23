@@ -123,7 +123,7 @@ class CallsHandlersMixin:
             if arg_instrs is None:
                 return None  # pragma: no cover — the [E615] channel
             if nothing == "never":
-                return arg_instrs + ["unreachable"]
+                return self._after_never(arg_instrs)
             offset, length = self.string_pool.intern("unit")
             return arg_instrs + [f"i32.const {offset}", f"i32.const {length}"]
         vera_type = self._type_name_of(arg)
@@ -207,7 +207,7 @@ class CallsHandlersMixin:
             if arg_instrs is None:
                 return None  # pragma: no cover — the [E615] channel
             if nothing == "never":
-                return arg_instrs + ["unreachable"]
+                return self._after_never(arg_instrs)
             return arg_instrs + ["i64.const 0"]
         vera_type = self._type_name_of(arg)
         if vera_type is None:

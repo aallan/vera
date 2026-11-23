@@ -733,7 +733,7 @@ class DataMixin:
         if nothing == "never":
             # #1870: a scrutinee that does not complete (a `throw`): no arm
             # is reached, and `unreachable` says so to the validator.
-            return scr_instrs + ["unreachable"]
+            return self._after_never(scr_instrs)
         if nothing == "unit":
             # #1870: a scrutinee with no WebAssembly value (`Unit`, a
             # `Future` of one, a refinement of one) is evaluated for its

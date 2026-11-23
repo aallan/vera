@@ -188,6 +188,15 @@ class InferenceMixin:
             return "never"
         return None
 
+    @staticmethod
+    def _after_never(instrs: list[str]) -> list[str]:
+        """*instrs*, an operand that does not complete (`Never`), and then
+        `unreachable`: what a lowering over the operand would compute is
+        never reached, and the instruction says so to the validator, which
+        then takes any stack the lowering's result is expected to leave
+        (#1870)."""
+        return [*instrs, "unreachable"]
+
     def _declared_width(self, node: ast.Node) -> str | None:
         """The WAT value a value declared at *node*, a type expression or a
         pattern, is held in: the width of the type the checker resolved the
