@@ -937,7 +937,7 @@ def test_a_projected_refinement_binding_shows_its_counterexample() -> None:
     out."""
     code, stage, source, _ = WHOLE["E505-projected-clause"]
     description = _the(code, stage, source).description
-    assert "\n  Counterexample:\n      @Bool.0 = True\n" in description, (
+    assert "\n  Counterexample:\n      @Bool.0 = true\n" in description, (
         description)
 
 

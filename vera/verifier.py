@@ -65,6 +65,7 @@ from vera.tail_position import compute_tail_call_sites
 from vera.smt import (
     AxiomKind,
     CalleeScope,
+    Counterexample,
     SlotEnv,
     SmtContext,
     SmtResult,
@@ -709,6 +710,22 @@ def _mentions_a_slot(expr: ast.Expr) -> bool:
 
 
 _PARAM_SLOT = re.compile(r"@([A-Z][A-Za-z0-9_]*)\.(\d+)")
+
+
+def counterexample_text(
+    counterexample: Counterexample | None,
+    *,
+    result_name: str | None = None,
+) -> str:
+    """The counterexample block every refutation's description carries
+    (#1871): the header, then each input the refutation lists as its
+    literal, then *result_name*'s value where the obligation is an
+    `ensures`; empty when nothing is listed, so no header stands over
+    nothing.  The one writer of the block: each emitter calls it."""
+    lines = [] if counterexample is None else counterexample.lines(result_name)
+    if not lines:
+        return ""
+    return "\n  ".join(["Counterexample:", *(f"    {x}" for x in lines)])
 
 
 def _param_slot_ref(name: str) -> ast.SlotRef | None:
@@ -1915,7 +1932,7 @@ class ContractVerifier:
         status: ObligationStatus,
         *,
         error_code: str = "",
-        counterexample: dict[str, str] | None = None,
+        counterexample: Counterexample | None = None,
         span_node: ast.Node | None = None,
         rows: tuple[int, ...] | None = None,
         expr_text: str | None = None,
@@ -1960,7 +1977,8 @@ class ContractVerifier:
             line=line,
             column=column,
             error_code=error_code,
-            counterexample=counterexample,
+            counterexample=(counterexample.as_dict()
+                            if counterexample is not None else None),
             file=self._current_file,
             # An obligation belongs to the scope that records it: every one
             # of this method's call sites passes the `decl.name` of the
@@ -3167,8 +3185,9 @@ class ContractVerifier:
         base_key = naming.slot_name_or_none(node.base_type, env)
         binder_key = naming.predicate_binder_key(node.predicate, env)
         base_ty = self._written_type(node.base_type)
-        binder = self._declare_value(
-            smt, f"@{binder_key or base_key or 'binder'}.0", base_ty)
+        binder_name = f"@{binder_key or base_key or 'binder'}.0"
+        binder = self._declare_value(smt, binder_name, base_ty)
+        smt.declare_input(binder_name, binder, base_ty)
         facts = self._declared_type_facts(smt, base_ty, binder)
         if base_ty == BYTE:
             # A `@Byte` is modelled as an unbounded integer; its range is a
@@ -4504,6 +4523,7 @@ class ContractVerifier:
                 decl.params, param_types, slot_refs, strict=True):
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
             var = self._declare_value(smt, z3_name, param_ty)
+            smt.declare_input(z3_name, var, param_ty)
             slot_env = slot_env.push(type_name, var)
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
@@ -11507,7 +11527,7 @@ class ContractVerifier:
         node: ast.Expr,
         formal_ty: Type | None,
         site: str,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> None:
         """Emit the E505 for an undischarged NESTED refinement (#1410).
 
@@ -11517,13 +11537,7 @@ class ContractVerifier:
         writes on a component.  Pointing the reader at "the value" would send
         them to check the wrong thing.
         """
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
         target = pretty_type(formal_ty) if formal_ty is not None else "the target type"
         description = (
             f"Value passed as a {site} in '{decl.name}' may not satisfy the "
@@ -11923,6 +11937,7 @@ class ContractVerifier:
                     z3_name)
             else:
                 var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
+            smt.declare_input(z3_name, var, param_ty)
             slot_env = slot_env.push(type_name, var)
             # Assume a refined param's predicate (parallel to the non-generic
             # param-assume), so a return justified by `@PosInt` etc. proves.
@@ -13361,7 +13376,7 @@ class ContractVerifier:
         smt: SmtContext,
         obligation: object,
         assumptions: list[object],
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         site_env: SlotEnv | None = None,
         exprs: tuple[ast.Expr, ...] = (),
@@ -13402,16 +13417,20 @@ class ContractVerifier:
         flags: list[tuple[ast.Expr, object]] = []
         for name, var in params:
             ref = _param_slot_ref(name)
-            value = (counterexample or {}).get(name)
+            # The model's value, never the text a diagnostic prints: a
+            # change to how a value is written moves no fix (#1871).
+            value = (None if counterexample is None
+                     else counterexample.value(name))
             if ref is None or value is None or not z3.is_expr(var):
                 continue
             if z3.is_bool(var):
-                if value == "False":
+                if z3.is_false(value):
                     flags.append((ref, var))
-                elif value == "True":
+                elif z3.is_true(value):
                     flags.append(
                         (ast.UnaryExpr(ast.UnaryOp.NOT, ref), z3.Not(var)))
-            elif z3.is_int(var) and value.startswith("-"):
+            elif (z3.is_int(var) and z3.is_int_value(value)
+                    and value.as_long() < 0):
                 candidates.append(
                     (ast.BinaryExpr(ast.BinOp.GE, ref, ast.IntLit(0)),
                      cast(z3.ArithRef, var) >= 0))
@@ -13535,7 +13554,7 @@ class ContractVerifier:
     def _refined_clause(
         self, smt: SmtContext, refined_ty: Type, value: ast.Expr | None,
         goal: object, assumptions: list[object],
-        counterexample: dict[str, str] | None, site_env: SlotEnv | None,
+        counterexample: Counterexample | None, site_env: SlotEnv | None,
     ) -> str | None:
         """E505's clause (#1858): the membership predicate at the narrowed
         *value*, where it reads at entry as at the site, or a counterexample
@@ -13551,7 +13570,7 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         expr: ast.BinaryExpr,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         clause: str | None = None,
     ) -> None:
@@ -13559,13 +13578,7 @@ class ContractVerifier:
 
         *clause*, where :meth:`_discharging_clause` found one, is a
         precondition the solver confirmed discharges it (#1763)."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         description = (
             f"@Nat subtraction in '{decl.name}' may underflow."
@@ -13622,7 +13635,7 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         expr: ast.BinaryExpr,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         clause: str | None = None,
     ) -> None:
@@ -13634,13 +13647,7 @@ class ContractVerifier:
         whatever binding is nearest there, which for a `let`-bound divisor
         is a parameter.  The guard is written where it is applied, around
         the operation, so the divisor as written is the divisor there."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         op_word = "modulo" if expr.op == ast.BinOp.MOD else "division"
         zero = ast.BinaryExpr(
@@ -13680,16 +13687,10 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         expr: ast.BinaryExpr | ast.FnCall | ast.UnaryExpr,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> None:
         """Emit an E528 diagnostic for a provably-overflowing arithmetic op."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines)
+        ce_text = counterexample_text(counterexample)
 
         if isinstance(expr, ast.FnCall):
             op_word = "`abs`"
@@ -13791,16 +13792,10 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         expr: ast.AssertExpr,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> None:
         """Emit E507 for a body assert the solver proved can never hold (#800)."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         pred = self._written(expr.expr)
         description = (
@@ -13830,7 +13825,7 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         expr: ast.IndexExpr,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> None:
         """Emit an E527 diagnostic for a provably out-of-bounds array index.
 
@@ -13841,13 +13836,7 @@ class ContractVerifier:
         written from the site's operands named, for a `let`-bound index,
         a parameter.  The guard is written where it is applied, around the
         access, so its operands are the access's own."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines)
+        ce_text = counterexample_text(counterexample)
 
         # The bound as a node rendered whole (#1573).
         lower, upper = ast.index_bounds(
@@ -13885,7 +13874,7 @@ class ContractVerifier:
         decl: ast.FnDecl,
         node: ast.Expr,
         site: str,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         clause: str | None = None,
     ) -> None:
@@ -13893,13 +13882,7 @@ class ContractVerifier:
 
         *clause*, where :meth:`_discharging_clause` found one, is a
         precondition the solver confirmed discharges it (#1763)."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         description = (
             f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
@@ -13941,7 +13924,7 @@ class ContractVerifier:
         node: ast.Expr,
         refined_ty: Type,
         site: str,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         concrete_value: str | None = None,
         clause: str | None = None,
@@ -13965,13 +13948,7 @@ class ContractVerifier:
         simply does — and the standing fix, "add a precondition implying the
         predicate", cannot constrain a literal, so it would send the reader
         somewhere that does not help."""
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         # The WHOLE chain, because membership is the conjunction over every
         # level and that is what was refuted (R-1431 review of PR #1453).
@@ -14329,28 +14306,20 @@ class ContractVerifier:
         self,
         fn: ast.FnDecl,
         contract: ast.Ensures,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> None:
         """Report a contract violation with counterexample."""
         # Build counterexample description
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if name != "@result":
-                    ce_lines.append(f"    {name} = {value}")
-            if "@result" in counterexample:
-                # #1208: named in the function's OWN scope, so a `forall<T>`
-                # return type reads `@T.result` as written rather than picking
-                # up a same-named module alias's resolution; a clone's by its
-                # template's, as its parameters are (#1767).
-                source, source_env = self._written_source(
-                    fn, self._fn_naming_scope(self._current_alias_env, fn))
-                result_name = "@{}.result".format(self._type_expr_to_slot_name(
-                    source.return_type, source_env))
-                ce_lines.append(f"    {result_name} = {counterexample['@result']}")
-
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        # #1208: named in the function's OWN scope, so a `forall<T>`
+        # return type reads `@T.result` as written rather than picking
+        # up a same-named module alias's resolution; a clone's by its
+        # template's, as its parameters are (#1767).
+        source, source_env = self._written_source(
+            fn, self._fn_naming_scope(self._current_alias_env, fn))
+        result_name = "@{}.result".format(self._type_expr_to_slot_name(
+            source.return_type, source_env))
+        ce_text = counterexample_text(
+            counterexample, result_name=result_name)
 
         description = (
             f"Postcondition does not hold in function '{fn.name}'."
@@ -14436,7 +14405,7 @@ class ContractVerifier:
         call_node: ast.FnCall | ast.ModuleCall,
         goal: object,
         env: SlotEnv,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
     ) -> str | None:
         """E501's clause (#1858), asked by the SMT layer where it refutes
         the call: the callee's precondition at the call's arguments, where
@@ -14462,7 +14431,7 @@ class ContractVerifier:
         callee_name: str,
         call_node: ast.FnCall | ast.ModuleCall,
         precondition: ast.Requires,
-        counterexample: dict[str, str] | None,
+        counterexample: Counterexample | None,
         *,
         clause: str | None = None,
         lookup: Callable[[str], Any] | None = None,
@@ -14520,14 +14489,7 @@ class ContractVerifier:
         site_pre = None if at_call is None else ast.format_expr(at_call)
 
         # Build counterexample description
-        ce_lines: list[str] = []
-        if counterexample:
-            ce_lines.append("Counterexample:")
-            for name, value in sorted(counterexample.items()):
-                if not name.startswith("_call_"):
-                    ce_lines.append(f"    {name} = {value}")
-
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = counterexample_text(counterexample)
 
         at = self._evaluated_at
         where = (

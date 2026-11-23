@@ -1738,7 +1738,7 @@ def cmd_test(
         # INSIDE the try, as in `cmd_verify` (#1361 review).
         from vera.checker import typecheck_with_artifacts
         from vera.resolver import ModuleResolver
-        from vera.tester import test as run_test
+        from vera.tester import render_args, test as run_test
 
         p, source, tree = _load_and_parse(path)
         ast = transform(tree)
@@ -1872,9 +1872,7 @@ def cmd_test(
             # Show first few failures
             if f.failures:
                 for trial in f.failures[:3]:
-                    args_str = ", ".join(
-                        f"{k} = {v}" for k, v in trial.args.items()
-                    )
+                    args_str = render_args(trial.args)
                     print(f"    {args_str} -> {trial.message}")
                     if trial.attribution:
                         print(f"      {trial.attribution}")

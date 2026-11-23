@@ -1,0 +1,183 @@
+"""A value written as the program would write it (#1871, #1768).
+
+A diagnostic that quotes a value — a refuted contract's counterexample, a
+`vera test` trial's arguments — quotes it as the literal that denotes it in
+Vera source: the expression a model would write to mean that value, in the
+form `vera fmt` gives it (spec §0.2.3, one canonical form; DESIGN.md
+principle 1, a diagnostic is an instruction).  A value reaches here in one
+of two representations, the solver's model term (:func:`z3_text`) or the
+Python value a compiled function was called with (:func:`value_text`); each
+is turned into the literal node of its Vera type, and
+:func:`vera.formatter.format_expr_canonical` writes every node.  So the
+rule for each type is stated once:
+
+- `Bool`: `true` / `false`, never the `1` / `0` WebAssembly carries.
+- `Int`, `Nat`, `Byte`: the decimal integer.
+- `Float64`: the shortest decimal that reads back as the same value,
+  written positionally (`FLOAT_LIT` has no exponent), so `0.1` is `0.1`
+  and `1e23` is `100000000000000000000000.0`; NaN is `nan()`, positive
+  infinity `infinity()` and negative infinity `0.0 - infinity()`, the
+  expressions the language makes them with.
+- `String`: the quoted literal with the formatter's escapes (`\\n`, `\\"`,
+  `\\u{200B}`).
+- A constructor value: the constructor applied to its fields' literals,
+  `Some(7)`, `None`, `Tuple(7, true)`.
+- An array: `[a, b]`; past :data:`ARRAY_CAP` elements its first ones and
+  how many more there are (`[0, 1, ..., ... and 2 more]` is no expression,
+  so it cannot be pasted as the whole value).
+
+A value of a type with no literal (a `Map`, a `Set`, a function, a type
+variable's) is not written: :data:`NO_LITERAL` says so where it is listed.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Callable, Sequence
+
+import z3
+
+from vera import ast
+from vera.formatter import format_expr_canonical
+
+#: The elements of an array a diagnostic writes whole; a longer array shows
+#: this many and the count of the rest.
+ARRAY_CAP = 8
+
+#: What a listed input with no literal form shows after its name.
+NO_LITERAL = "its value has no literal form"
+
+#: The array elements a solver value holds, for :func:`z3_text`: the array's
+#: length and its first elements' values (at most ``ARRAY_CAP``), or
+#: ``None`` where the model does not fix them.
+ArrayReader = Callable[[z3.ExprRef], "tuple[int, list[z3.ExprRef]] | None"]
+
+
+def text(node: ast.Expr) -> str:
+    """*node* in canonical source form: the one writer of a value."""
+    return format_expr_canonical(node)
+
+
+def bool_literal(value: bool) -> ast.Expr:
+    return ast.BoolLit(value)
+
+
+def int_literal(value: int) -> ast.Expr:
+    return ast.IntLit(value)
+
+
+def string_literal(value: str) -> ast.Expr:
+    return ast.StringLit(value)
+
+
+def float_literal(value: float) -> ast.Expr:
+    """A `Float64` as the expression that makes it: a literal for a finite
+    value, `nan()` and `infinity()` for the values no literal spells."""
+    if math.isnan(value):
+        return ast.FnCall("nan", ())
+    if math.isinf(value):
+        inf = ast.FnCall("infinity", ())
+        return inf if value > 0 else ast.BinaryExpr(
+            ast.BinOp.SUB, ast.FloatLit(0.0), inf)
+    return ast.FloatLit(value)
+
+
+def value_text(value: bool | int | float | str) -> str:
+    """The literal of a `vera test` trial's argument, a value of one of the
+    types it generates held as the Python value of that type: a `Bool` as
+    a ``bool``, an `Int`, `Nat` or `Byte` as an ``int``, a `Float64` as a
+    ``float``, a `String` as a ``str``."""
+    if isinstance(value, bool):
+        return text(bool_literal(value))
+    if isinstance(value, str):
+        return text(string_literal(value))
+    if isinstance(value, float):
+        return text(float_literal(value))
+    return text(int_literal(value))
+
+
+def z3_float(value: z3.ExprRef) -> float:
+    """A Z3 floating-point model value as the Python float it is (#797):
+    NaN and the infinities to theirs, a finite value through `fpToReal`
+    (exact), the sign of zero kept."""
+    fp = value if isinstance(value, z3.FPNumRef) else z3.simplify(value)
+    assert isinstance(fp, z3.FPNumRef), fp  # noqa: S101 — a model value
+    if fp.isNaN():
+        return math.nan
+    if fp.isInf():
+        return -math.inf if fp.isNegative() else math.inf
+    f = float(z3.simplify(z3.fpToReal(fp)).as_fraction())
+    return -0.0 if (f == 0.0 and fp.isNegative()) else f
+
+
+_Z3_ESCAPE = re.compile(r"\\u\{([0-9a-fA-F]{1,6})\}")
+
+
+def z3_string(value: z3.ExprRef) -> str:
+    """A Z3 string model value as the Python string it holds: Z3 writes a
+    character outside printable ASCII as `\\u{...}`, which is decoded."""
+    raw = z3.simplify(value).as_string()
+    return _Z3_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), raw)
+
+
+def _z3_node(value: z3.ExprRef, arrays: ArrayReader | None) -> ast.Expr | str | None:
+    """*value*'s literal node; text where it is an array written in part;
+    ``None`` where it has no literal."""
+    sort = value.sort()
+    if sort == z3.BoolSort():
+        if z3.is_true(value) or z3.is_false(value):
+            return bool_literal(z3.is_true(value))
+        return None
+    if sort == z3.IntSort():
+        return int_literal(value.as_long()) if z3.is_int_value(value) else None
+    if isinstance(sort, z3.FPSortRef):
+        return float_literal(z3_float(value))
+    if isinstance(sort, z3.SeqSortRef) and sort.is_string():
+        return string_literal(z3_string(value))
+    if isinstance(sort, z3.DatatypeSortRef):
+        decl = value.decl()
+        if decl.kind() != z3.Z3_OP_DT_CONSTRUCTOR:
+            return None
+        if value.num_args() == 0:
+            return ast.NullaryConstructor(decl.name())
+        fields = [_z3_node(value.arg(i), arrays) for i in range(value.num_args())]
+        if any(f is None for f in fields):
+            return None
+        if all(isinstance(f, ast.Expr) for f in fields):
+            return ast.ConstructorCall(
+                decl.name(), tuple(f for f in fields if isinstance(f, ast.Expr)))
+        return f"{decl.name()}({', '.join(_as_text(f) for f in fields)})"
+    if arrays is not None:
+        read = arrays(value)
+        if read is not None:
+            return _array_node(read, arrays)
+    return None
+
+
+def _as_text(node: ast.Expr | str | None) -> str:
+    assert node is not None  # noqa: S101 — filtered by the callers
+    return node if isinstance(node, str) else text(node)
+
+
+def _array_node(
+    read: tuple[int, Sequence[z3.ExprRef]], arrays: ArrayReader | None,
+) -> ast.Expr | str | None:
+    length, shown = read
+    elements = [_z3_node(e, arrays) for e in shown]
+    if any(e is None for e in elements):
+        return None
+    more = length - len(elements)
+    if more <= 0 and all(isinstance(e, ast.Expr) for e in elements):
+        return ast.ArrayLit(tuple(e for e in elements if isinstance(e, ast.Expr)))
+    parts = [_as_text(e) for e in elements]
+    if more > 0:
+        parts.append(f"... and {more} more")
+    return f"[{', '.join(parts)}]"
+
+
+def z3_text(value: z3.ExprRef, arrays: ArrayReader | None = None) -> str | None:
+    """The literal of a solver model value, by its sort; ``None`` where the
+    value has no literal (an uninterpreted carrier *arrays* cannot read)."""
+    node = _z3_node(value, arrays)
+    return None if node is None else _as_text(node)
