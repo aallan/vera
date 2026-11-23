@@ -536,6 +536,23 @@ def test_repro_1870_prelude_generic_at_unit_is_refused() -> None:
     assert "E206" in {d.error_code for d in pipeline.check(source).errors}
 
 
+def test_the_comparison_dispatch_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pair of widths the comparison dispatch has no rule for is an
+    internal error (E699), never the i64 default: with the zero-size rule
+    blinded, `() == ()` reaches the default's guard, which refuses it where
+    the default wrote the module that did not load."""
+    from vera.wasm.inference import InferenceMixin
+
+    monkeypatch.setattr(InferenceMixin, "_holds_nothing",
+                        lambda self, expr: None)
+    compiled = pipeline.compile(program(
+        '  let @Bool = () == ();\n  IO.print(if @Bool.0 then { "T" } else { "F" })'))
+    codes = {d.error_code for d in compiled.diagnostics}
+    assert "E699" in codes, codes
+
+
 def test_repro_1870_verifier_proves_unit_equality() -> None:
     """Two `Unit` values are equal at Tier 1, and a claim that they differ
     is refuted, not left to run time."""
