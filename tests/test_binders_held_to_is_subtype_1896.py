@@ -384,3 +384,68 @@ def test_a_head_over_an_open_variable_stays_accepted(head: str) -> None:
         f"match idt(none_of(())) {{\n    {HEADS[head]},\n    _ -> 0\n  }}",
         visibility="public")
     assert _codes(source) == [], source
+
+
+def test_a_head_over_a_bare_open_variable_reads_its_fields_as_unknown(
+        ) -> None:
+    """`first([])` leaves its result a bare open variable: the head decides
+    nothing, and `Some`'s field, whose own parameter is named `T` like the
+    enclosing function's, is read as unknown, not as that `T`."""
+    source = _fn("run(@T -> @Int)",
+                 "match first_of([]) {\n    Some(@Int) -> @Int.0,\n    _ -> 0\n  }"
+                 ).replace("private fn", "private forall<T> fn") + _fn(
+        "first_of(@Array<X> -> @X)", "@Array<X>.0[0]").replace(
+        "private fn", "private forall<X> fn").replace(
+        "requires(true)", "requires(array_length(@Array<X>.0) > 0)")
+    assert "E314" not in _codes(source), source
+
+
+# =====================================================================
+# The slot a clause parameter binds has the type the clause writes
+# =====================================================================
+
+def test_a_narrower_clause_binder_is_guarded_once_1896() -> None:
+    """`throw(@Nat)` under `Exn<Int>` binds a `Nat`: the bind is the one
+    narrowing, so the clause's `@Nat.0` returned at `-> @Nat` is no second
+    `nat_bind` (it was one at the function's return when the slot held the
+    operation's `Int`)."""
+    source = _fn("go(@Int -> @Nat)",
+                 "handle[Exn<Int>] {\n    throw(@Nat) -> { @Nat.0 }\n"
+                 "  } in {\n    throw(@Int.0)\n  }", visibility="public")
+    verified = pipeline.verify(source, reconcile=True)
+    kinds = [o.kind for o in verified.result.obligations]
+    assert kinds.count("nat_bind") == 1, kinds
+
+
+# =====================================================================
+# A built-in's variable a failed substitution lost (#1688)
+# =====================================================================
+
+_LOST = (
+    "type P = fn(Int -> Int) effects(pure);\n"
+    "type I = fn(Int -> Int) effects(<IO>);\n"
+    "type F = fn(I -> Int) effects(pure);\n\n"
+    + _fn("first(@Array<T> -> @T)", "@Array<T>.0[0]").replace(
+        "private fn", "private forall<T> fn").replace(
+        "requires(true)", "requires(array_length(@Array<T>.0) > 0)")
+    + _fn("idt(@A -> @A)", "@A.0").replace("private fn", "private forall<A> fn")
+    + _fn("take(@Tuple<Int, F> -> @Int)", "0"))
+_LOST_VALUE = ("Tuple(array_map([1], first([]))[0], "
+               "fn(@P -> @Int) effects(pure) { apply_fn(@P.0, 1) })")
+
+
+@pytest.mark.parametrize(("form", "code"), [
+    ("argument", "E202"), ("element", "E170"), ("adopted", "E170")])
+def test_a_lost_variable_beside_a_parameter_row_the_wrong_way_round(
+        form: str, code: str) -> None:
+    """The lost variable is read as unknown, and the `fn(P -> Int)` beside
+    it is held to `fn(I -> Int)` by `is_subtype`: refused, where the
+    either-way reading passed it to a function code generation then
+    skipped (E602)."""
+    body = {
+        "argument": f"take({_LOST_VALUE})",
+        "element": f"let @Array<Tuple<Int, F>> = [{_LOST_VALUE}];\n  0",
+        "adopted": f"let @Tuple<Int, F> = idt({_LOST_VALUE});\n  0",
+    }[form]
+    source = _LOST + _fn("outer(@Unit -> @Int)", body)
+    assert _codes(source) == [code], source
