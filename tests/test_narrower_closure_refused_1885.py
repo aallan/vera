@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -85,6 +85,23 @@ def _accepted(source: str, value: int) -> None:
     ran = pipeline.run(source, fn="main", args=[50])
     assert ran.trap is None, str(ran.trap)[:300]
     assert ran.execution.value == value
+
+
+class _KnownVerdict(Exception):
+    """An open issue's recorded verdict, still given: the one failure a
+    strict xfail of this file expects (`raises=_KnownVerdict`)."""
+
+
+def _known(got: list[str], *, known: list[str],
+           fixed: Callable[[list[str]], bool]) -> None:
+    """A strict xfail's verdict: return where *fixed* holds of the codes
+    *got* (the issue is fixed, and the xfail reports an unexpected pass);
+    raise `_KnownVerdict` where *got* is the issue's *known* verdict; and
+    fail the test on any other, so an unrelated error is no xfail."""
+    if fixed(got):
+        return
+    assert got == known, (got, known)
+    raise _KnownVerdict(got)
 
 
 # =====================================================================
@@ -520,13 +537,19 @@ _ORDER_DECIDES = (
     "give (spec §5.9 rule B), #1891")
 
 
+def _order_cell(flow: str, kind: str, form: str, p: str, c: str) -> bool:
+    """A cell #1891's order decides: accepted, though refused by the
+    relation table."""
+    return ((flow, kind) == ("generic", "parameter")
+            and form in ("in-place", "slot", "type-argument")
+            and {p, c} == {"Pos", "Big"})
+
+
 def _cell(flow: str, kind: str, form: str, p: str, c: str) -> object:
     cell = (flow, kind, form, p, c)
-    if ((flow, kind) == ("generic", "parameter")
-            and form in ("in-place", "slot", "type-argument")
-            and {p, c} == {"Pos", "Big"}):
+    if _order_cell(*cell):
         return pytest.param(*cell, id="-".join(cell), marks=pytest.mark.xfail(
-            strict=True, reason=_ORDER_DECIDES))
+            strict=True, raises=_KnownVerdict, reason=_ORDER_DECIDES))
     return pytest.param(*cell, id="-".join(cell))
 
 
@@ -539,7 +562,9 @@ CELLS = [_cell(flow, kind, form, p, c) for flow in FLOWS
 def test_a_function_value_meets_a_function_type(
         flow: str, kind: str, form: str, p: str, c: str) -> None:
     source = program(flow, kind, form, p, c)
-    if expected_refused(flow, kind, form, p, c):
+    if _order_cell(flow, kind, form, p, c):
+        _known(_codes(source), known=[], fixed=lambda g: g == ["E190"])
+    elif expected_refused(flow, kind, form, p, c):
         assert _codes(source) == ["E190"], source
     else:
         # `array_map`'s result column counts the mapped array.
@@ -1128,7 +1153,8 @@ def _binding_cell(form: str, generic: bool, kind: str, p: str,
     if refused and form in _CLAUSE_FORMS:
         return pytest.param(form, generic, kind, p, c, id=cell_id,
                             marks=pytest.mark.xfail(
-                                strict=True, reason=_CLAUSE_PARAMETER))
+                                strict=True, raises=_KnownVerdict,
+                                reason=_CLAUSE_PARAMETER))
     return pytest.param(form, generic, kind, p, c, id=cell_id)
 
 
@@ -1176,6 +1202,10 @@ def test_every_binding_form_meets_a_function_type(
     # A user effect's handler is refused (E340) before its clause binder
     # is reached by anything (#1896): the form's own code alone.
     judged = refused and form != "user-op-clause-param"
+    if refused and form in _CLAUSE_FORMS:
+        # #1896: the binder is compared with nothing, and checks clean.
+        _known(_codes(source), known=[], fixed=lambda g: g == ["E190"])
+        return
     assert sorted(_codes(source)) == sorted(
         ["E190"] * _E190_COUNT.get(form, 1) * judged + list(own)), source
     if not refused and not own:
@@ -1441,15 +1471,13 @@ def _refused_cells() -> list[object]:
                 for p, c in PAIRS:
                     if expected_refused(flow, kind, form, p, c):
                         # The order cells (#1891) are accepted: no E190.
-                        order = ((flow, kind) == ("generic", "parameter")
-                                 and form in ("in-place", "slot",
-                                              "type-argument")
-                                 and {p, c} == {"Pos", "Big"})
+                        order = _order_cell(flow, kind, form, p, c)
                         cells.append(pytest.param(
                             "flows", (flow, kind, form, p, c), c,
                             id="-".join(("flows", flow, kind, form, p, c)),
                             marks=[pytest.mark.xfail(
-                                strict=True, reason=_ORDER_DECIDES)]
+                                strict=True, raises=_KnownVerdict,
+                                reason=_ORDER_DECIDES)]
                             if order else []))
     for flow in GENERIC_FLOWS:
         for p, c, r, cr in GENERIC_RELATIONS:
@@ -1522,6 +1550,9 @@ def test_every_rewrite_a_refused_cell_prints_checks_pasted(
     # behind its E340 among them.
     unjudged = matrix == "binding" and cell[0] in (
         *_CLAUSE_FORMS, "user-op-clause-param")
+    if matrix == "flows" and _order_cell(*cell):  # type: ignore[arg-type]
+        _known(["E190"] * bool(refused), known=[],
+               fixed=lambda g: g == ["E190"])
     assert bool(refused) != unjudged, (matrix, cell)
     for diagnostic in refused:
         rewrites = re.findall(r"`(fn\([^`]*\})`", diagnostic.fix)
@@ -1885,7 +1916,7 @@ _FIT = ("a binding position judged outside `is_subtype` (the join used as "
         "type a `let` refuses: an effect row, a type variable: #1896")
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
     """`@Option<W>` over an `Option<IOF>`: the either-direction test holds
     (`Option<W>` fits `Option<IOF>`), so the binder takes an `<IO>`
@@ -1901,10 +1932,10 @@ def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  run(Some(fn(@Int -> @Int) effects(<IO>) "
         "{ IO.print(\"leak\\n\"); @Int.0 }))\n}\n")
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
     """`@Option<Int>` over an `Option<T>` inside `forall<T>`: the binder
     takes a concrete type no instantiation is held to, and `Some("abc")`
@@ -1915,10 +1946,10 @@ def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
             "option_unwrap_or(@Option<Int>.0, 0) + 1\n  }").replace(
                 "private fn", "private forall<T> fn")
         + _fn("main(@Unit -> @Int)", 'run(Some("abc"))', visibility="public"))
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
 
 
-@pytest.mark.xfail(strict=True, reason=_FIT)
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         ) -> None:
     """Inside a generic function, a `fn(@P, @T -> @Int)` closure, `P` a
@@ -1938,7 +1969,7 @@ def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
         "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
-    assert not pipeline.check(source).ok
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
 
 
 # =====================================================================
@@ -2170,3 +2201,23 @@ def test_nat_and_its_written_form_are_one_type_in_a_function_type(
                     f"let @F = fn(@{param} -> @{result}) effects(pure) "
                     f"{{ {body} }};\n  0", visibility="public"))
     assert _codes(source) == ([] if accepted else ["E190"]), source
+
+
+@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=(
+    "a data type's type arguments are compared covariantly whatever its "
+    "fields do with the parameter: #1902"))
+def test_repro_a_box_of_a_nat_callback_at_a_box_of_int_is_refused() -> None:
+    """`Box<Nat>` at `Box<Int>`, `Box`'s field a `fn(T -> Int)`: the field
+    is read as `fn(Int -> Int)`, and `go(-5)` returns -5 out of the
+    closure's `@Nat` parameter after a clean verify, at main too."""
+    source = (
+        "private data Box<T> {\n  B(fn(T -> Int) effects(pure))\n}\n\n"
+        "type IntToInt = fn(Int -> Int) effects(pure);\n\n"
+        + _fn("use_box(@Box<Int>, @Int -> @Int)",
+              "match @Box<Int>.0 {\n    B(@IntToInt) -> "
+              "apply_fn(@IntToInt.0, @Int.0)\n  }")
+        + _fn("make(@Unit -> @Box<Nat>)",
+              "B(fn(@Nat -> @Int) effects(pure) { @Nat.0 })")
+        + _fn("go(@Int -> @Int)", "use_box(make(()), @Int.0)",
+              visibility="public"))
+    _known(_codes(source), known=[], fixed=lambda g: g != [])
