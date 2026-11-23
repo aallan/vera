@@ -594,6 +594,73 @@ def test_the_import_that_names_a_module_carries_its_diagnostics(
     assert {rng(d.range) for d in got} == {(line, 0, line, utf16(head))}
 
 
+def _bound_tree(tmp_path: pathlib.Path, unread: bool) -> tuple[pathlib.Path, str]:
+    """`main` imports `a.mid` then `lib`; `a/mid.vera` imports `lib`, which
+    resolves beside it to `a/lib.vera`, the module that fails; a root
+    `lib.vera` reads.  The resolver binds a path once, so a read
+    `a/lib.vera` is what `main`'s `import lib` is bound to; an unread one
+    is cached by nobody, and `main`'s `import lib` reads the root file."""
+    (tmp_path / "a").mkdir(exist_ok=True)
+    write(tmp_path / "lib.vera", lib_program("").replace("missing(1)", "1"))
+    bad = lib_program("")
+    if unread:
+        (tmp_path / "a" / "lib.vera").write_bytes(
+            bad.replace("missing(1)", "1").encode("utf-8") + b"\xe9")
+    else:
+        write(tmp_path / "a" / "lib.vera", bad)
+    write(tmp_path / "a" / "mid.vera",
+          MID.replace("module mid;", "module a.mid;").replace("word(())", "1"))
+    main = ("import a.mid(w2);\nimport lib(word);\n\n"
+            "public fn main(@Unit -> @Int)\n" + HDR + "{\n  0\n}\n")
+    return tmp_path / "main.vera", main
+
+
+@pytest.mark.parametrize("unread", [False, True], ids=["checked", "unread"])
+def test_a_module_is_placed_by_the_resolvers_binding(
+    unread: bool, tmp_path: pathlib.Path,
+) -> None:
+    """Placement reads what the resolver bound and repeats no lookup: a
+    read `a/lib.vera` is `main`'s `import lib` (line 1), and an unread one
+    is only `a.mid`'s, by the resolver's record (line 0)."""
+    path, main = _bound_tree(tmp_path, unread)
+    a = analysed(path, main)
+    code = "E024" if unread else "E200"
+    (want,) = [d for d in cli(path) if d["error_code"] == code]
+    assert pathlib.Path(want["location"]["file"]).parts[-2:] == (
+        "a", "lib.vera")
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == code]
+    line = 0 if unread else 1
+    head = lsp_lines(main)[line]
+    assert rng(got.range) == (line, 0, line, utf16(head))
+
+
+def test_repro_cr4_placement_reads_the_resolvers_binding(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The second review's shape: the compiler binds `main`'s `import lib`
+    to `a/lib.vera`; a second lookup resolved it to the root `lib.vera`,
+    and `a/lib.vera`'s E200 was published on `import a.mid`."""
+    path, main = _bound_tree(tmp_path, unread=False)
+    a = analysed(path, main)
+    bound = {m.path: m.file_path for m in a.modules}
+    assert bound[("lib",)] == (tmp_path / "a" / "lib.vera").resolve()
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
+    assert rng(got.range) == (1, 0, 1, len("import lib(word);"))
+
+
+def test_repro_cr4_an_unread_module_is_placed_by_the_resolvers_record(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The same tree with `a/lib.vera` not UTF-8: only `a.mid`'s import
+    failed (the resolver records that importer, path and file), and
+    `main`'s `import lib` read the root file, so the E024 is on
+    `import a.mid`."""
+    path, main = _bound_tree(tmp_path, unread=True)
+    a = analysed(path, main)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E024"]
+    assert rng(got.range) == (0, 0, 0, len("import a.mid(w2);"))
+
+
 def test_repro_cr1_an_unread_module_is_placed_by_its_file(
     tmp_path: pathlib.Path,
 ) -> None:

@@ -91,9 +91,11 @@ included) and publishes:
   position on its first line counts it: one UTF-16 unit to the right of
   the column the compiler names.  A
   diagnostic located in an imported module is published on the `import`
-  that names that module's file (the document's own import of it before
-  any; for a module reached only through another, the import of the
-  module that reaches it), its message starting with the module's
+  the resolver bound to that module's file (the document's own import of
+  it before any; for a module reached only through another, the import of
+  the module that reaches it; for a module that could not be read, the
+  import the resolver recorded failing), its message starting with the
+  module's
   location as `vera check` prints it (`In imported module
   /path/lib.vera, line 8, column 3: …`), and, for a client that
   advertises `textDocument.publishDiagnostics.relatedInformation`, a

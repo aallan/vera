@@ -57,7 +57,7 @@ from vera.obligations.session import (
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.parser import source_text
-from vera.resolver import ModuleResolver, ResolvedModule, own_module_path
+from vera.resolver import ResolvedModule, own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -99,6 +99,12 @@ class Analysis:
     #: The modules this analysis resolved, direct and transitive: where a
     #: diagnostic located in one of them is published (#1788).
     modules: list[ResolvedModule] = field(default_factory=list)
+    #: Each import whose file the resolver found and could not read, by
+    #: the importing file and the module path, with the file (its E024
+    #: names it): the binding an unread module has, from the resolver's
+    #: own record (#1788).
+    unread: dict[tuple[str, tuple[str, ...]], str] = field(
+        default_factory=dict)
 
 
 def analyze(
@@ -142,8 +148,13 @@ def analyze(
     # was only survivable while E200/E230 were warnings; as errors they
     # would stop every document that imports anything short of verification
     # and publish a false error on each imported call.
-    resolved, resolver_errors = resolve_document_imports(program, path)
+    resolved, resolver_errors, unread = resolve_document_imports(
+        program, path)
     analysis.modules = list(resolved)
+    analysis.unread = {
+        (str(importer), mod_path): str(found)
+        for (importer, mod_path), found in unread.items()
+    }
     analysis.own_path = own_module_path(program, None, resolved)
     check_diags, artifacts = typecheck_with_artifacts(
         program, source, file=path, resolved_modules=resolved,
@@ -279,28 +290,33 @@ class _Placement:
     #: begins with put back, so its line 0 is counted as the buffer is.
     sources: dict[str, str] = field(default_factory=dict)
     #: Each import of the document, then each import of a resolved module
-    #: in the order the walk reaches it: the file it imports from, the
-    #: module path, and the range of the document's import it is reached
-    #: under.  A module's diagnostic is placed by the file the resolver
-    #: resolves the import to, read or not (an unread module's E024).
-    routes: list[tuple[Path, tuple[str, ...], lsp.Range]] = field(
+    #: in the order the walk reaches it: the importing file, the module
+    #: path, and the range of the document's import it is reached under.
+    routes: list[tuple[str, tuple[str, ...], lsp.Range]] = field(
         default_factory=list)
+    #: A module path → the file the resolver bound it to: the resolved
+    #: modules' own ``file_path``, the file their diagnostics name.  The
+    #: resolver binds a path once, whichever import reaches it first, so
+    #: this is the binding every import of that path has.
+    bound: dict[tuple[str, ...], str] = field(default_factory=dict)
+    #: An import the resolver could not read, by importing file and module
+    #: path → the file it found (``Analysis.unread``).
+    unread: dict[tuple[str, tuple[str, ...]], str] = field(
+        default_factory=dict)
     #: Whether the client takes ``relatedInformation``.
     related: bool = False
 
     def head_for(self, file: str) -> lsp.Range:
         """The range a diagnostic located in *file*, a module, is
         published at: the first import, the document's own before any a
-        module makes, that the resolver resolves to *file*, which is the
-        file the module's diagnostics name; else the document's first
-        token, for a file no import of the document reaches (none is
-        known)."""
-        if self.routes:
-            resolver = ModuleResolver(_root=Path(self.path).parent)
-            for importer, mod_path, head in self.routes:
-                found = resolver._resolve_path(mod_path, importer)
-                if found is not None and str(found) == file:
-                    return head
+        module makes, that the resolver bound to *file*: by the path's
+        binding, or for an import it could not read, by its record of that
+        import; else the document's first token, for a file no import of
+        the document reaches (none is known)."""
+        for importer, mod_path, head in self.routes:
+            if (self.bound.get(mod_path) == file
+                    or self.unread.get((importer, mod_path)) == file):
+                return head
         return location_to_range(SourceLocation(line=1, column=1), self.index)
 
 
@@ -322,9 +338,9 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
         (imp.path, span_to_range(imp.span, analysis.index))
         for imp in analysis.program.imports if imp.span is not None
     ]
-    document = Path(analysis.path)
     # The document's own imports first: a module the document names is
     # published on that import, wherever else the walk meets it.
+    document = str(Path(analysis.path))  # as the resolver was handed it
     place.routes.extend((document, mod_path, head) for mod_path, head in heads)
     for mod_path, head in heads:
         queue, seen = [mod_path], set()
@@ -335,8 +351,10 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
                 continue
             seen.add(current)
             for imp in mod.program.imports:
-                place.routes.append((mod.file_path, imp.path, head))
+                place.routes.append((str(mod.file_path), imp.path, head))
                 queue.append(imp.path)
+    place.bound = {m.path: str(m.file_path) for m in analysis.modules}
+    place.unread = dict(analysis.unread)
     place.sources = {
         str(m.file_path): _with_mark(m.file_path, m.source)
         for m in analysis.modules

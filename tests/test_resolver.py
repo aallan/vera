@@ -600,3 +600,54 @@ class TestResolverErrorCodes:
         )
         with pytest.raises(AttributeError, match="simulated compiler bug"):
             self._errors(tmp_path, main, {"ok.vera": ok_src})
+
+
+class TestUnreadRecord:
+    """The resolver's record of an import whose file it found and could not
+    read (#1788): the language server places that module's E024 by it, as
+    it places a resolved module's diagnostics by its ``file_path``."""
+
+    def test_the_record_names_the_importer_the_path_and_the_file(
+        self, tmp_path: Path,
+    ) -> None:
+        from vera.parser import parse_file
+        from vera.transform import transform
+
+        hdr = "requires(true) ensures(true) effects(pure)"
+        main_file = _write_file(
+            tmp_path, "main.vera",
+            f"import a.mid(w2);\nimport lib(word);\n\n"
+            f"public fn main(@Unit -> @Int) {hdr} {{ 0 }}\n")
+        _write_file(tmp_path, "lib.vera",
+                    f"module lib;\npublic fn word(@Unit -> @Int) {hdr} {{ 1 }}\n")
+        mid = _write_file(
+            tmp_path, "a/mid.vera",
+            f"module a.mid;\nimport lib(word);\n"
+            f"public fn w2(@Unit -> @Int) {hdr} {{ 1 }}\n")
+        bad = tmp_path / "a" / "lib.vera"
+        bad.write_bytes(b"module lib;\n\xe9\n")
+        resolver = ModuleResolver(_root=tmp_path)
+        resolved = resolver.resolve_imports(
+            transform(parse_file(str(main_file))), main_file)
+        # a.mid's `lib` is a/lib.vera, which does not read; main's `lib`
+        # is the root lib.vera, which does.
+        assert resolver.unread == {(mid.resolve(), ("lib",)): bad.resolve()}
+        assert [e.error_code for e in resolver.errors] == ["E024"]
+        assert resolver.errors[0].location.file == str(bad.resolve())
+        assert {m.path: m.file_path for m in resolved}[("lib",)] == (
+            (tmp_path / "lib.vera").resolve())
+
+    def test_a_module_that_reads_leaves_no_record(self, tmp_path: Path) -> None:
+        from vera.parser import parse_file
+        from vera.transform import transform
+
+        hdr = "requires(true) ensures(true) effects(pure)"
+        main_file = _write_file(
+            tmp_path, "main.vera",
+            f"import lib(word);\npublic fn main(@Unit -> @Int) {hdr} {{ 0 }}\n")
+        _write_file(tmp_path, "lib.vera",
+                    f"module lib;\npublic fn word(@Unit -> @Int) {hdr} {{ 1 }}\n")
+        resolver = ModuleResolver(_root=tmp_path)
+        resolver.resolve_imports(transform(parse_file(str(main_file))),
+                                 main_file)
+        assert resolver.unread == {}
