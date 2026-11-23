@@ -144,12 +144,12 @@ The grammar is defined in EBNF notation in Chapter 10 and implemented as a machi
 
 ### 0.5.8 Machine-Readable Output (`--json`)
 
-The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, `vera test`, `vera compile` and `vera run`. The JSON shape is a public API for downstream tooling (CI pipelines, IDE plugins, agent feedback loops), and the field set is governed by the following stability rules:
+The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check` (and its alias `vera typecheck`), `vera verify`, `vera test`, `vera compile`, `vera run`, `vera ast`, `vera builtins`, `vera effects` and `vera errors`, and refused by every other command. The JSON shape is a public API for downstream tooling (CI pipelines, IDE plugins, agent feedback loops), and the field set is governed by the following stability rules:
 
 - **Fields MAY be added** in any release. Consumers MUST tolerate unknown fields.
 - **Fields MUST NOT be removed or renamed** without a major version bump.
 - **Field semantics MUST NOT change** without a major version bump. The numeric value of `summary.failed` means the same thing in every minor release.
-- **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field.
+- **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field. The exception is a command whose output on success is a listing, not a verdict: `vera builtins`, `vera effects` and `vera errors` read no program, and print `schema` and `items`, and `vera ast` prints the program's tree, so none of the four carries `ok` when it succeeds. For these the exit code is the signal, and a failure (a refused command line, or for `vera ast` a source that does not parse) is the envelope, with `ok` false.
 
 The field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite; a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
 

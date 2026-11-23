@@ -506,8 +506,14 @@ class ControlFlowMixin:
         second's), so a pure function beside an `<IO>` one is the `<IO>`
         one in either order, the wider row; and under a subtype it answers
         the onto side where it refuses (`_join_parts`), so *onto* joined
-        onto *ty* is *ty*."""
+        onto *ty* is *ty*.  Where the walk refuses one order it is asked
+        the other, as an `if`'s branches are, so the arms' order is not the
+        walk's: a `fn(Int, P -> Int)` arm beside a `fn(Nat, I -> Int)` one
+        (`P` pure, `I` under `<IO>`) joins to `fn(Nat, P -> Int)` whichever
+        comes first (#1885)."""
         merged = self._join(ty, onto)
+        if merged is None:
+            merged = self._join(onto, ty)
         if merged is None and is_subtype(onto, ty):
             merged = ty
         return merged

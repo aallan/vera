@@ -971,6 +971,21 @@ def holds_function(ty: Type) -> bool:
         holds_function(a) for a in ty.type_args)
 
 
+def _is_nat_written_out(ty: Type) -> bool:
+    """Whether *ty* is `Nat` written as spec §2.2.1 defines it, the
+    refinement `{ @Int | @Int.0 >= 0 }` and no other spelling: one type
+    with `Nat` under the formal relation (`0 <= @Int.0` or `@Int.0 > -1`
+    is another predicate, as any two predicates are)."""
+    from vera import ast as a
+    if not (isinstance(ty, RefinedType) and ty.base == INT):
+        return False
+    p = ty.predicate
+    return (isinstance(p, a.BinaryExpr) and p.op == a.BinOp.GE
+            and isinstance(p.left, a.SlotRef) and p.left.type_name == "Int"
+            and not p.left.type_args and p.left.index == 0
+            and isinstance(p.right, a.IntLit) and p.right.value == 0)
+
+
 def is_formal_subtype(sub: Type, sup: Type) -> bool:
     """`sub <: sup` under spec §2.8's relation alone: reflexivity,
     `Never`, `Nat <: Int`, a refinement to its base, a refinement to one
@@ -989,6 +1004,11 @@ def is_formal_subtype(sub: Type, sup: Type) -> bool:
             sup, (UnknownType, UnresolvedAdtType)):
         return True
     if isinstance(sub, PrimitiveType) and sub.name == "Never":
+        return True
+    # `Nat` is `{ @Int | @Int.0 >= 0 }` (spec §2.2.1): the two spellings are
+    # one type, at a parameter and at a result alike.
+    if ((sub == NAT and _is_nat_written_out(sup))
+            or (_is_nat_written_out(sub) and sup == NAT)):
         return True
     if isinstance(sub, RefinedType):
         if (isinstance(sup, RefinedType) and types_equal(sub, sup)
