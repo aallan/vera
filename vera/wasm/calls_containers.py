@@ -846,17 +846,21 @@ class CallsContainersMixin:
         (:meth:`ObligationTable.guard_type_expr`, the one decision the table
         holds the row guardable by): its predicate reads its binder by the
         base it was written over (`@Count.0` for `type Count = Int`), which a
-        type minted from the resolved base does not name (#1861)."""
+        type minted from the resolved base does not name (#1861).  The
+        local's width is the resolved row target's, as at a closure
+        argument: the written base names the binder, not the representation
+        (`{ @Scalar<Int> | ... }` for `type Scalar<T> = T` is an `Int`, which
+        the written expression's alias chase, followed by name with no
+        argument bound, reads as `T`)."""
         row = self._row(arg, "refine_bind")
         if not self._checked(row):
             return value
         assert row is not None  # noqa: S101 — `_checked`
         te = self.obligations.guard_type_expr(row.target)
-        wasm_ty = (self._refined_component_wasm_type(te, self._alias_env)
-                   if te is not None else None)
+        wasm_ty = self._width_of(row.target)
         if te is None or wasm_ty is None:
             raise CodegenInvariantError(
-                "the obligation table holds a store's refinement guardable, and this lowering writes no scalar type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a store row guardable only over a scalar base guard_type_expr writes
+                "the obligation table holds a store's refinement guardable, and this lowering writes no type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a store row guardable only where guard_type_expr writes its type, over a scalar resolved base, which has a width
             )
         tmp = self.alloc_local(wasm_ty)
         guard = self._emit_bind_refine_guard(
