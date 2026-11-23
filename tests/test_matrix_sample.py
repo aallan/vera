@@ -729,6 +729,7 @@ MARKED_FILES = (
     "test_entry_and_body_1851.py",
     "test_negation_overflow_1875.py",
     "test_narrower_closure_refused_1885.py",
+    "test_binders_held_to_is_subtype_1896.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
