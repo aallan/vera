@@ -156,7 +156,7 @@ Every diagnostic has a stable code grouped by compiler phase. Every `W` code is 
 - **W004**: `vera verify` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
 - **W005**: `vera verify` did not reconcile the runtime checks, because the program holds typed holes and code generation compiles nothing until they are filled (warning, not error)
 - **E001–E009**: Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
-- **E011–E013**: Import errors (circular import, unresolvable import, a module that fails to parse)
+- **E011–E015**: Import errors (circular import, unresolvable import, a module that fails to parse, a module path that names two files, a file imported by two paths)
 - **E020, E021, E023**: Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023; only `{- -}` nests). Each names the delimiter at fault and how to close it.
 - **E024**: A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
 - **E030–E032**: Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)

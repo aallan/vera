@@ -669,9 +669,10 @@ def _branch_tree(
     imports `lib` too, beside it, and `a/lib.vera` is not UTF-8; with
     *first* `lib`, the document imports `lib` itself, and the root
     `lib.vera` is not UTF-8.  Either way the resolver records the first
-    import as unread and caches nothing; `b/lib.vera` reads, is what the
-    path `lib` is bound to, and imports a missing module (E012 in
-    `b/lib.vera`) and `c`, beside it, whose body draws E200."""
+    import as unread and binds the path `lib` to that file, so `b.mid`'s
+    `lib`, the readable `b/lib.vera` (which imports a missing module and
+    `c`, beside it, whose body draws E200), is another file under that
+    path: E014, and it is never read (#1904)."""
     for sub in ("a", "b"):
         (tmp_path / sub).mkdir(exist_ok=True)
         write(tmp_path / sub / "mid.vera",
@@ -694,58 +695,25 @@ def _branch_tree(
 @pytest.mark.parametrize("first", ["a.mid", "lib"])
 @pytest.mark.parametrize(("code", "line"), [
     ("E024", 0),  # the unread file: the first import, by the record
-    ("E012", 1),  # in b/lib.vera, which only b.mid's import read
-    ("E200", 1),  # in b/c.vera, reached through b/lib.vera alone
+    ("E014", 1),  # b.mid's `lib` is another file under the bound path
 ])
 def test_an_unread_import_binds_only_the_file_it_could_not_read(
     code: str, line: int, first: str, tmp_path: pathlib.Path,
 ) -> None:
     """Two branches import one path, and the first branch's import does
-    not read: that import is bound to the file it could not read and to
-    nothing else, and the walk does not pass through it into the module
-    the path is bound to through the second branch (#1904's one path, two
-    files), whether the module or the document made the failed import."""
+    not read.  That import binds the path to the file it could not read, so
+    the second branch's `lib`, another file, is E014 (#1904) and is never
+    read: no module of the program is bound to that path, and the E014 is
+    published on the import of the module that meets the conflict, whether
+    the module or the document made the failed import."""
     path, main = _branch_tree(tmp_path, first)
     a = analysed(path, main)
     want = [d for d in cli(path) if d["error_code"] == code]
     got = [d for d in to_lsp_diagnostics(a) if d.code == code]
     assert want and len(got) == len(want)
+    assert sorted(d["error_code"] for d in cli(path)) == ["E014", "E024"]
     head = lsp_lines(main)[line]
     assert {rng(d.range) for d in got} == {(line, 0, line, utf16(head))}
-
-
-def test_repro_cr5_an_unread_import_does_not_take_the_paths_binding(
-    tmp_path: pathlib.Path,
-) -> None:
-    """The third review's shape: `b/lib.vera`'s E012 was published on
-    `import a.mid`, whose failed import matched the path's binding."""
-    path, main = _branch_tree(tmp_path)
-    a = analysed(path, main)
-    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E012"]
-    assert rng(got.range) == (1, 0, 1, len("import b.mid(wb);"))
-
-
-def test_repro_cr5_the_walk_stops_at_an_unread_import(
-    tmp_path: pathlib.Path,
-) -> None:
-    """And a module reached through `b/lib.vera` (`b/c.vera`) is not
-    reached through `a.mid`'s failed import either."""
-    path, main = _branch_tree(tmp_path)
-    a = analysed(path, main)
-    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
-    assert rng(got.range) == (1, 0, 1, len("import b.mid(wb);"))
-
-
-def test_the_walk_stops_at_the_documents_own_unread_import(
-    tmp_path: pathlib.Path,
-) -> None:
-    """The document's own import of `lib` does not read, and `b.mid`'s
-    does: `b/c.vera`, reached through `b/lib.vera`, is `import b.mid`'s,
-    not reached through the document's failed `import lib`."""
-    path, main = _branch_tree(tmp_path, "lib")
-    a = analysed(path, main)
-    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
-    assert rng(got.range) == (1, 0, 1, len("import b.mid(wb);"))
 
 
 def test_repro_cr1_an_unread_module_is_placed_by_its_file(

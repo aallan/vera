@@ -1064,6 +1064,8 @@ ERROR_CODES: dict[str, str] = {
     "E011": "Circular import detected",
     "E012": "Cannot resolve import (no file found)",
     "E013": "Error parsing imported module",
+    "E014": "Module path names two files in one program",
+    "E015": "File imported by two module paths",
     # E02x — Lexical: comments, source encoding
     "E020": "Unterminated block comment",
     "E021": "Unterminated annotation comment",
