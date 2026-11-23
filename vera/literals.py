@@ -218,7 +218,7 @@ def _z3_node(
             return None
         if value.num_args() == 0:
             return ast.NullaryConstructor(decl.name())
-        fields = [_z3_node(value.arg(i), arrays, budget)
+        fields = [_z3_node(value.arg(i), arrays, budget)  # pragma: no mutate — equivalent as None: no data type's sort holds an `Array` (an `Array` field leaves the type a placeholder integer), so a field never reads one
                   for i in range(value.num_args())]
         if any(f is None for f in fields):
             return None

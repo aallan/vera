@@ -1165,3 +1165,233 @@ public fn f(@Int -> @Int)
 """
     description = _description(source, "E505")
     assert _header(description) is None and "200" in description, description
+
+
+# -- The second mutation run's killers ------------------------------------
+
+
+def test_repro_a_placeholder_input_has_no_literal() -> None:
+    """A data type or an `Array` the context builds no sort for is declared
+    as a placeholder integer: the model's `0` for it is no value of the
+    input, which is named with the note (an `Option` of an `Array`, an
+    `Array` of `Array`s), while an `Array` of a sort the context minted is
+    read."""
+    source = _PRELUDE + """
+public fn f(@Option<Array<Int>>, @Array<Array<Int>>, @Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) == 1 && @Array<Int>.0[0] == 6)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  1
+}
+"""
+    assert _block(_description(source, "E500")) == [
+        "@Array<Array<Int>>.0: its value has no literal form",
+        "@Array<Int>.0 = [6]",
+        "@Option<Array<Int>>.0: its value has no literal form",
+        "@Int.result = 1"]
+
+
+def test_repro_a_reset_context_reapplies_its_timeout_and_forgets_the_result() -> None:
+    """`reset` puts the run's timeout back on the solver, and forgets the
+    term the last function's `@result` stood for: a context reused for a
+    function whose `@result` is declared and never set reads the declared
+    constant."""
+    from vera.smt import SmtContext
+
+    class Recording(z3.Solver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settings: list[tuple[object, ...]] = []
+
+        def set(self, *args: object, **keys: object) -> None:
+            self.settings.append(args)
+            super().set(*args, **keys)
+
+    ctx = SmtContext(timeout_ms=4321)
+    ctx.solver = Recording()
+    ctx.set_result_var(z3.IntVal(5))
+    ctx.reset()
+    assert ctx.solver.settings == [("timeout", 4321)]
+    ctx.declare_int("@result")
+    assert ctx.check_valid(z3.BoolVal(False), []).counterexample.result == "0"
+
+
+def test_repro_an_assert_s_description_quotes_its_predicate() -> None:
+    """E507's whole description: the assertion as written, the function, and
+    the input."""
+    description = _description(_PRELUDE + """
+public fn f(@Int -> @Int)
+  requires(@Int.0 == 3)
+  ensures(true)
+  effects(pure)
+{
+  assert(@Int.0 == 1);
+  0
+}
+""", "E507")
+    assert description == (
+        "Assertion `assert(@Int.0 == 1)` in 'f' is always false.\n"
+        "  Counterexample:\n"
+        "      @Int.0 = 3"), description
+
+
+def test_repro_a_call_in_a_predicate_names_the_type_not_a_function() -> None:
+    """A call's precondition refuted in a refinement predicate is placed in
+    the type (`in 'Odd'`), not in a function of that name."""
+    verified = pipeline.verify(_PRELUDE + """
+type Odd = { @Int | need(@Int.0) > 0 };
+
+public fn f(@Odd -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+""")
+    found = [d for d in verified.diagnostics if d.error_code == "E501"]
+    assert len(found) == 1, verified.diagnostics
+    assert found[0].description.split("\n")[:5] == [
+        "Call to 'need' in 'Odd' may violate the callee's precondition.",
+        "  Precondition: requires(@Int.0 > 0)",
+        "  At this call site: @Int.0 > 0",
+        "  Counterexample:",
+        "      @Int.0 = 0"], found[0].description
+
+
+_BOOL_NARROWS = _PRELUDE + """
+public fn f(%s -> @PosInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Bool.0 then { 0 } else { 1 }
+}
+"""
+
+
+def test_repro_a_true_bool_s_clause_is_its_negation() -> None:
+    """E505's clause from a parameter: a `Bool` the counterexample shows
+    true is required false (`!@Bool.0`), whatever the order of the
+    parameters and with a parameter before or after it whose name no clause
+    is written from (`@Option<Int>`)."""
+    for params in ("@Bool", "@Option<Int>, @Bool", "@Bool, @Option<Int>"):
+        verified = pipeline.verify(_BOOL_NARROWS % params)
+        found = [d for d in verified.diagnostics if d.error_code == "E505"]
+        assert len(found) == 1, (params, verified.diagnostics)
+        assert found[0].fix == (
+            "Add a precondition under which the narrowed value satisfies the "
+            "predicate: `requires(!@Bool.0)`.  Alternatively, guard the "
+            "binding with an `if` whose condition is the predicate — the path "
+            "condition discharges the obligation in the then-branch."), (
+                params, found[0].fix)
+
+
+def test_repro_a_rebound_input_whose_name_holds_a_dot_says_whose_names() -> None:
+    """An input's slot name can hold a `.` of its own (a refinement in a
+    type argument writes its predicate, `@Int.0`): the name is the part
+    before the last `.`, so a `let` of that type is a rebinding."""
+    description = _description(_PRELUDE + """
+public fn f(@Option<PosInt>, @Int -> @Int)
+  requires(@Int.0 == 0 && @Option<PosInt>.0 == None)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<PosInt> = @Option<PosInt>.0;
+  10 / @Int.0
+}
+""", "E526")
+    assert _header(description) == _RENAMED_HEADER, description
+    assert _block(description) == [
+        "@Int.0 = 0", "@Option<{@Int | @Int.0 > 0}>.0 = None"], description
+
+
+#: A generic whose type parameter `T` shadows a module alias `T`: inside it,
+#: `Option<T>` is the type variable's, never `Option<Bool>`.
+_SHADOWED_T = """
+type T = Bool;
+
+public forall<T> fn f(@Option<T>, @Int -> %s)
+  requires(@Int.0 == %d && match @Option<T>.0 { Some(@T) -> false, None -> true })
+  ensures(%s)
+  effects(pure)
+{
+  %s
+}
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = None;
+  %s;
+  0
+}
+"""
+
+
+def test_repro_a_generic_s_names_are_read_in_its_own_scope() -> None:
+    """A generic's result and a body binder are named in the function's
+    scope, where its `T` shadows the module's alias: the result is
+    `@Option<T>.result`, and a `let @Option<T>` rebinds the listed
+    `@Option<T>` input."""
+    ensures = _description(_SHADOWED_T % (
+        "@Option<T>", 2,
+        "match @Option<T>.result { Some(@T) -> true, None -> false }",
+        "@Option<T>.0", "let @Option<Int> = f(@Option<Int>.0, 2)"), "E500")
+    assert _block(ensures) == [
+        "@Int.0 = 2", "@Option<T>.0 = None", "@Option<T>.result = None"], ensures
+    body = _description(_SHADOWED_T % (
+        "@Int", 0, "true",
+        "let @Option<T> = @Option<T>.0;\n  10 / @Int.0",
+        "let @Int = f(@Option<Int>.0, 0)"), "E526")
+    assert _header(body) == _RENAMED_HEADER, body
+    assert _block(body) == ["@Int.0 = 0", "@Option<T>.0 = None"], body
+
+
+def test_repro_a_constructor_cut_at_the_budget_keeps_its_written_fields() -> None:
+    """A constructor whose later field is past the budget writes its earlier
+    fields, then `...`, each separated as the formatter separates arguments."""
+    from vera import literals
+    pair = z3.Datatype("CutPair")
+    pair.declare("w", ("a", z3.IntSort()), ("b", pair))
+    pair.declare("e")
+    sort = pair.create()
+    value = sort.e
+    for i in range(40):
+        value = sort.w(z3.IntVal(i), value)
+    written = literals.z3_text(z3.simplify(value))
+    assert written == (
+        "".join(f"w({i}, " for i in range(39, 7, -1)) + "..." + ")" * 32
+        + " (elided past 64 parts)"), written
+
+
+def test_repro_a_field_with_no_literal_leaves_the_value_with_none() -> None:
+    """A constructor one of whose fields has no literal (a value of an
+    uninterpreted sort) has none, whatever its other fields hold."""
+    from vera import literals
+    opaque = z3.DeclareSort("Opaque")
+    pair = z3.Datatype("OpaquePair")
+    pair.declare("d", ("a", opaque), ("b", z3.IntSort()))
+    sort = pair.create()
+    assert literals.z3_text(sort.d(z3.Const("o", opaque), z3.IntVal(5))) is None
+    assert literals.z3_text(sort.d(z3.Const("o", opaque), z3.IntVal(5)),
+                            lambda _value: None) is None
+
+
+def test_repro_an_array_result_is_read_through_the_model() -> None:
+    """An `Array` result is written from the model's length and elements,
+    as an `Array` input is."""
+    source = _PRELUDE + """
+public fn f(@Int -> @Array<Int>)
+  requires(@Int.0 == 1)
+  ensures(array_length(@Array<Int>.result) == 3)
+  effects(pure)
+{
+  [4, -5]
+}
+"""
+    assert _block(_description(source, "E500")) == [
+        "@Int.0 = 1", "@Array<Int>.result = [4, -5]"]

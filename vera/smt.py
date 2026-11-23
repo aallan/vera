@@ -168,7 +168,7 @@ class Counterexample:
     """A refutation's model, read at the function's inputs (#1871).
 
     Two representations, kept apart: :attr:`values` is the data, the model's
-    value of each input and of ``@result``, which a decision reads
+    value of each input, which a decision reads
     (`ContractVerifier._discharging_clause`); :attr:`shown` and
     :attr:`result` are the display, each value written as the program would
     write it (`vera.literals`), which only a diagnostic prints.  A change to
@@ -5075,7 +5075,6 @@ class SmtContext:
         if declared is not None:
             term = self._result_var if self._result_var is not None else declared
             value = model.evaluate(term, model_completion=True)
-            values["@result"] = value
             result = (literals.z3_text(value, self._array_reader(model))
                       or NO_LITERAL)
         return Counterexample(
@@ -5089,16 +5088,21 @@ class SmtContext:
         (a primitive, a data type, an `Array`) is written from the model;
         any other (a `Map`, a `Set`, a function, a type variable) was
         declared as a placeholder integer or an opaque carrier, and the
-        model's value of that says nothing about the input's."""
+        model's value of that says nothing about the input's.
+
+        A data type or an `Array` whose sort the context could not build
+        (`Option<Array<Int>>`, `Array<Array<Int>>`) was declared as a
+        placeholder integer too, so the sort decides, not the type's name:
+        only a data type's sort and an `Array` sort this context minted are
+        read."""
         base = base_type(ty)
+        sort = value.sort()
         if isinstance(base, PrimitiveType) and base.name in (
                 "Int", "Nat", "Byte", "Bool", "String", "Float64"):
             text = literals.z3_text(value)
-        elif isinstance(base, AdtType) and isinstance(
-                value.sort(), z3.DatatypeSortRef):
-            text = literals.z3_text(value, self._array_reader(model))
-        elif (isinstance(base, AdtType) and base.name == "Array"
-                and str(value.sort()) in self._array_element_sorts):
+        elif isinstance(base, AdtType) and (
+                isinstance(sort, z3.DatatypeSortRef)
+                or str(sort) in self._array_element_sorts):
             text = literals.z3_text(value, self._array_reader(model))
         else:
             text = None
@@ -5130,7 +5134,8 @@ class SmtContext:
             count = length.as_long()
             if index_fn is None:
                 index_fn = z3.Function(
-                    f"index_{sort}", sort, z3.IntSort(), element_sort)
+                    f"index_{sort}",  # pragma: no mutate — equivalent as any other name: minted where no query read an element, so the model is free on it and reads each element as the sort's default, whatever the function is called
+                    sort, z3.IntSort(), element_sort)
             shown = [model.evaluate(index_fn(value, z3.IntVal(i)),
                                     model_completion=True)
                      for i in range(min(count, literals.ARRAY_CAP))]
@@ -5178,7 +5183,8 @@ class SmtContext:
         """
         self.solver.reset()
         # solver.reset() drops assertions but keeps parameters; re-apply
-        # the timeout anyway so reuse never depends on that detail.
+        # the timeout anyway so reuse never depends on that detail
+        # (test_repro_a_reset_context_reapplies_its_timeout_and_forgets_the_result).
         self.solver.set("timeout", self._timeout_ms)
         self._vars.clear()
         self._inputs.clear()

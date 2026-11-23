@@ -3199,7 +3199,7 @@ class ContractVerifier:
         # traversal's first reference, which can be a binder inside the
         # predicate (an arm's `@Int`; #1871).
         binder_name = f"@{base_key or binder_key or 'binder'}.0"  # pragma: no mutate — the fallbacks are unreached: every base a refinement is written over has a slot name; the name is pinned by test_repro_a_predicate_binds_its_binder_under_its_own_key
-        binder = self._declare_value(smt, binder_name, base_ty)
+        binder = self._declare_value(smt, binder_name, base_ty)  # pragma: no mutate — equivalent as None: the constant is reached through slot_env and listed under binder_name by declare_input; nothing reads its solver name in this fresh context
         smt.declare_input(binder_name, binder, base_ty)
         facts = self._declared_type_facts(smt, base_ty, binder)
         if base_ty == BYTE:
@@ -13436,17 +13436,22 @@ class ContractVerifier:
             # change to how a value is written moves no fix (#1871).
             value = (None if counterexample is None  # pragma: no mutate — unreached as None: each caller passes a violated result's counterexample, which check_valid always sets
                      else counterexample.value(name))
-            if ref is None or value is None or not z3.is_expr(var):
+            # A missing value and a non-term need no test: z3's `is_false`,
+            # `is_true`, `is_int_value`, `is_bool` and `is_int` are each
+            # False of `None` and of anything not a term.
+            if ref is None:
                 continue
             if z3.is_bool(var):
                 if z3.is_false(value):
                     flags.append((ref, var))
                 elif z3.is_true(value):
-                    flags.append(
-                        (ast.UnaryExpr(ast.UnaryOp.NOT, ref), z3.Not(var)))
+                    flags.append((
+                        ast.UnaryExpr(ast.UnaryOp.NOT, ref),  # pragma: no mutate — equivalent as None: the node is read only by the canonical formatter, which writes every unary but a negation as `!`, and by `_mentions_a_slot`; the term is `z3.Not(var)` whatever the node's operator
+                        z3.Not(var)))
             elif (z3.is_int(var)
                     and z3.is_int_value(value)  # pragma: no mutate — equivalent: a model value read with model completion is a numeral; the test keeps `as_long` from raising if one ever is not
-                    and value.as_long() < 0):
+                    and cast(z3.IntNumRef, value).as_long() < 0  # pragma: no mutate — equivalent as <= 0 or < 1: the counterexample is a model of the assumptions where the obligation fails, so at a value of 0 it satisfies `>= 0` too, and the solver never proves the obligation under that candidate
+            ):
                 candidates.append(
                     (ast.BinaryExpr(ast.BinOp.GE, ref, ast.IntLit(0)),
                      cast(z3.ArithRef, var) >= 0))
@@ -13580,7 +13585,8 @@ class ContractVerifier:
                     if value is not None else None)
         return self._discharging_clause(
             smt, goal, assumptions, counterexample, site_env=site_env,
-            exprs=(at_value,) if at_value is not None else ())
+            exprs=(at_value,) if at_value is not None else (),  # pragma: no mutate — equivalent as `or True`: a `None` candidate is skipped, as `_entry_expressible(None)` is False
+        )
 
     def _inputs_renamed(
         self, decl: ast.FnDecl, node: ast.Node,
@@ -13598,9 +13604,10 @@ class ContractVerifier:
         start is in the body; spans nest, so it ends there too.  With nothing
         listed, nothing is renamed: ``listed`` is empty."""
         if counterexample is None:
-            return False
+            return False  # pragma: no mutate — equivalent as True: every caller hands the answer to counterexample_text as `renamed`, which writes nothing for no counterexample
         source, env = self._written_source(
-            decl, self._fn_naming_scope(self._current_alias_env, decl))
+            decl, self._fn_naming_scope(self._current_alias_env, decl),  # pragma: no mutate — equivalent as None: the scope is read only for a declaration the program does not write, a refinement predicate's, which has no `forall` variables, so it is the module's env, the default
+        )
         body = None if source.body is None else source.body.span  # pragma: no mutate — equivalent: a clone's body carries its template's spans, so `decl.body` stands where `source.body` does
         site = _site_span(self._evaluation_site(node))
         if body is None or site is None or (
@@ -14377,7 +14384,8 @@ class ContractVerifier:
         # up a same-named module alias's resolution; a clone's by its
         # template's, as its parameters are (#1767).
         source, source_env = self._written_source(
-            fn, self._fn_naming_scope(self._current_alias_env, fn))
+            fn, self._fn_naming_scope(self._current_alias_env, fn),  # pragma: no mutate — equivalent as None, or a None env: the scope is read only for a declaration the program does not write, and a postcondition is never on one
+        )
         result_name = "@{}.result".format(self._type_expr_to_slot_name(
             source.return_type, source_env))
         ce_text = counterexample_text(
