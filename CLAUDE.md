@@ -60,6 +60,13 @@ vera version                      # Print the installed version (also --version,
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
 vera errors [--json]              # List the diagnostic code registry (no file needed)
+vera --help                       # The usage: every command and option (also -h)
+vera check --help                 # One command's usage: the options it takes (any command)
+                                  #   Each command takes only the options it lists (E901
+                                  #   otherwise); one that reads a program takes exactly one
+                                  #   file (E904 for none or a second), and lsp, version and
+                                  #   the registry commands take none; after `--`, `vera run`
+                                  #   passes every token on
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md); each class-instrument matrix runs its sample
 pytest tests/ -v --matrix=full    # The same, with every cell of every class-instrument matrix
