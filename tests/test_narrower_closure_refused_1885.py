@@ -1668,3 +1668,58 @@ def test_repro_each_element_of_an_array_is_reported_once_1885() -> None:
     assert all("where the literal's element type, the join of its "
                "elements, gives it the type fn(Int -> Int) effects(pure)"
                in d.description for d in diagnostics)
+
+
+# =====================================================================
+# A built-in's lost variable beside a function pair (`_fits`, #1688)
+# =====================================================================
+
+#: `first([])` types nothing, so `array_map`'s `B` is lost (#1688): the
+#: fit the join cannot give keeps the verdict `_compatible_modulo_typevars`
+#: gives, whose leaves compare either way.
+_LOST = "array_map([1], first([]))[0]"
+
+#: (the position's function type, the value's function, refused).
+_LOST_PAIRS = (
+    ("fn(Int -> Int)", "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+     True),
+    ("fn(Int -> Nat)", "fn(@Int -> @Int) effects(pure) { @Int.0 }", True),
+    ("fn(Nat -> Int)", "fn(@Int -> @Int) effects(pure) { @Int.0 }", False),
+    ("fn(Int -> Int)", "fn(@Int -> @Nat) effects(pure) { 7 }", False),
+)
+
+_LOST_SITES = {
+    "argument": "take(Tuple({lost}, {value}))",
+    "array-element": ("let @Array<Tuple<Int, F>> = [Tuple(0, {exact}), "
+                      "Tuple({lost}, {value})];\n  0"),
+    "array-join": ("array_length([Tuple(0, {exact}), "
+                   "Tuple({lost}, {value})])"),
+}
+
+
+def _lost_program(site: str, position: str, value: str) -> str:
+    params = position.removeprefix("fn(").split(" -> ")
+    exact = (f"fn(@{params[0]} -> @{params[1].rstrip(')')}) effects(pure) "
+             + ("{ 7 }" if params[1].startswith("Nat") else
+                f"{{ {'nat_to_int(@Nat.0)' if params[0] == 'Nat' else '@Int.0'} }}"))
+    return (f"type F = {position} effects(pure);\n\n"
+            "private forall<T> fn first(@Array<T> -> @T)\n"
+            "  requires(array_length(@Array<T>.0) > 0)\n  ensures(true)\n"
+            "  effects(pure)\n{\n  @Array<T>.0[0]\n}\n\n"
+            + _fn("take(@Tuple<Int, F> -> @Int)", "0")
+            + _fn("main(@Int -> @Int)", _LOST_SITES[site].format(
+                lost=_LOST, value=value, exact=exact), visibility="public"))
+
+
+@pytest.mark.parametrize(("site", "position", "value", "refused"), [
+    pytest.param(site, position, value, refused,
+                 id=f"{site}-{position}-{value.split(' {')[0]}")
+    for site in _LOST_SITES for position, value, refused in _LOST_PAIRS])
+def test_a_lost_builtin_variable_beside_a_function_pair_is_held_to_rule_9(
+        site: str, position: str, value: str, refused: bool) -> None:
+    """`_fits`' built-in branch held a pair whose join failed at a lost
+    variable to `_compatible_modulo_typevars` alone, so a
+    `Tuple<B, fn(Nat -> Int)>` fitted a `Tuple<Int, fn(Int -> Int)>`
+    parameter; it is held to rule 9 as the join's fit is."""
+    codes = _codes(_lost_program(site, position, value))
+    assert codes == (["E190"] if refused else []), codes

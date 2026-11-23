@@ -667,8 +667,14 @@ class CallsMixin:
             # (`_Join` keeps it), so the join fills nothing there, and the
             # pair is read as it stands.
             return unfit_function_value(ty, target) is None
-        return outcome.builtin and _compatible_modulo_typevars(
-            ty, target, frozenset(self.env.type_params))
+        # `_compatible_modulo_typevars` compares a leaf by `is_subtype`
+        # either way too, so the verdict it keeps where a built-in's
+        # variable was lost is held to rule 9 as the join's is: a
+        # `Tuple<B, fn(Nat -> Int)>` beside a `Tuple<Int, fn(Int -> Int)>`.
+        return (outcome.builtin
+                and _compatible_modulo_typevars(
+                    ty, target, frozenset(self.env.type_params))
+                and unfit_function_value(ty, target) is None)
 
     def _rigid_variable(self, ty: Type) -> str | None:
         """The name of the enclosing function's own type parameter *ty* is,
