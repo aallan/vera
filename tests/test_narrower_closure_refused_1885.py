@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -1965,3 +1966,95 @@ def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
         "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
     assert not pipeline.check(source).ok
+
+
+# =====================================================================
+# A join's arms in either order (a `match` joins as an `if` does)
+# =====================================================================
+
+#: Two pure functions whose second parameters are a pure callback and the
+#: same callback under `<IO>`: the join is `fn(Nat, P -> Int)` in every
+#: order, the arm that takes `P` read at its first parameter's narrowing.
+_ARM_A = "fn(@Int, @P -> @Int) effects(pure) { apply_fn(@P.0, @Int.0) }"
+_ARM_B = "fn(@Nat, @I -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+_ARM_TYPES = ("type P = fn(Int -> Int) effects(pure);\n"
+              "type I = fn(Int -> Int) effects(<IO>);\n"
+              "type J = fn(Nat, P -> Int) effects(pure);\n"
+              "type JI = fn(Nat, I -> Int) effects(pure);\n\n")
+
+
+def _joined(form: str, arms: Sequence[str]) -> str:
+    """*arms* joined by an `if` (two) or a `match` on an `Int` (any
+    number), the arm that takes `P` chosen where it stands."""
+    if form == "if":
+        return f"if @Int.0 == 0 then {{ {arms[0]} }} else {{ {arms[1]} }}"
+    cases = [f"    {i} -> {arm}," for i, arm in enumerate(arms[:-1])]
+    return ("match @Int.0 {\n" + "\n".join(cases)
+            + f"\n    _ -> {arms[-1]}\n  }}")
+
+
+def _arm_program(form: str, arms: Sequence[str], callback: str,
+                 bind: str | None = None) -> str:
+    """A pure `pick(@Int, @CB -> @Int)` applies the join of *arms* to `5`
+    and its callback; `main` picks the arm that takes `P`.  *callback* is
+    `pure` or `io`; *bind* is the type a `let` binds the join at."""
+    cb = "P" if callback == "pure" else "I"
+    joined = _joined(form, arms)
+    body = (f"let @{bind} = {joined};\n  apply_fn(@{bind}.0, 5, @{cb}.0)"
+            if bind else f"apply_fn({joined}, 5, @{cb}.0)")
+    value = ("fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }" if cb == "P"
+             else 'fn(@Int -> @Int) effects(<IO>) { IO.print("leak\\n"); '
+                  "@Int.0 }")
+    return (_ARM_TYPES
+            + _fn(f"pick(@Int, @{cb} -> @Int)", body)
+            + "public fn main(@Unit -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n"
+            f"  pick({arms.index(_ARM_A)}, {value})\n}}\n")
+
+
+_ARM_ORDERS = {"A-first": (_ARM_A, _ARM_B), "B-first": (_ARM_B, _ARM_A)}
+
+
+@pytest.mark.parametrize("form", ["if", "match"])
+@pytest.mark.parametrize("order", list(_ARM_ORDERS))
+def test_repro_a_join_s_arms_join_in_either_order_1885(
+        form: str, order: str) -> None:
+    """A `match` folded its arms left to right and asked the join in one
+    walk order, which compares a callback's effect row the failing way
+    round when the `P` arm comes first: E302, where an `if`, which asks
+    both orders, and `main` accepted it.  Now every order is accepted, at
+    `fn(Nat, P -> Int)`, and runs; with an `<IO>` callback the
+    application is refused against that pure parameter (E202)."""
+    arms = _ARM_ORDERS[order]
+    pure = _arm_program(form, arms, "pure")
+    verified = pipeline.verify(pure, reconcile=True)
+    assert verified.ok, [(d.error_code, d.description[:160])
+                         for d in verified.errors]
+    assert pipeline.run(pure, fn="main", args=[]).execution.value == 6
+    io = pipeline.check(_arm_program(form, arms, "io")).errors
+    assert [d.error_code for d in io] == ["E202"], [d.description for d in io]
+    assert "expected fn(Int -> Int) effects(pure)" in io[0].description
+
+
+@pytest.mark.parametrize("odd", [0, 1, 2])
+def test_repro_three_arms_join_whichever_arm_is_odd_1885(odd: int) -> None:
+    """Three `match` arms, the `P` arm first, second or third."""
+    arms = [_ARM_B, _ARM_B, _ARM_B]
+    arms[odd] = _ARM_A
+    source = _arm_program("match", arms, "pure")
+    assert _codes(source) == [], source
+    assert pipeline.run(source, fn="main", args=[]).execution.value == 6
+
+
+@pytest.mark.parametrize("form", ["if", "match"])
+@pytest.mark.parametrize("order", list(_ARM_ORDERS))
+def test_repro_the_join_is_bound_at_its_pure_type_and_no_other_1885(
+        form: str, order: str) -> None:
+    """The joined type is `fn(Nat, P -> Int)`: a `let` binds it there, and
+    at `fn(Nat, I -> Int)` it is refused (E170) in every order, so the
+    `<IO>` callback reaches the `P` arm in none."""
+    arms = _ARM_ORDERS[order]
+    pinned = _arm_program(form, arms, "pure", bind="J")
+    assert _codes(pinned) == [], pinned
+    assert pipeline.run(pinned, fn="main", args=[]).execution.value == 6
+    assert _codes(_arm_program(form, arms, "io", bind="JI")) == ["E170"]
