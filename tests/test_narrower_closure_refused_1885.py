@@ -31,6 +31,7 @@ verifies with reconciliation and runs to the value it should.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 from dataclasses import dataclass
 
@@ -1722,4 +1723,52 @@ def test_a_lost_builtin_variable_beside_a_function_pair_is_held_to_rule_9(
     `Tuple<B, fn(Nat -> Int)>` fitted a `Tuple<Int, fn(Int -> Int)>`
     parameter; it is held to rule 9 as the join's fit is."""
     codes = _codes(_lost_program(site, position, value))
+    assert codes == (["E190"] if refused else []), codes
+
+
+# =====================================================================
+# A module's function, called qualified and bare
+# =====================================================================
+
+_MODULE = (
+    "module w85lib;\n\n"
+    "type F = fn(Int -> Int) effects(pure);\n"
+    "type FN = fn(Int -> Nat) effects(pure);\n"
+    "type GP<T> = fn(T -> Int) effects(pure);\n\n"
+    + _fn("run_f(@F, @Int -> @Int)", "apply_fn(@F.0, @Int.0)",
+          visibility="public")
+    + _fn("run_n(@FN, @Int -> @Nat)", "apply_fn(@FN.0, @Int.0)",
+          visibility="public")
+    + _fn("app(@GP<T>, @T -> @Int)", "apply_fn(@GP<T>.0, @T.0)",
+          visibility="public").replace("public fn", "public forall<T> fn"))
+
+#: (the call `main` makes, refused).
+_MODULE_CALLS = (
+    ("w85lib::run_f(fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }, "
+     "@Int.0)", True),
+    ("run_f(fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }, @Int.0)",
+     True),
+    ("nat_to_int(w85lib::run_n(fn(@Int -> @Int) effects(pure) { @Int.0 }, "
+     "@Int.0))", True),
+    ("w85lib::app(fn(@Pos -> @Int) effects(pure) { @Pos.0 }, @Int.0)", True),
+    ("w85lib::run_f(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0)",
+     False),
+    ("nat_to_int(w85lib::run_n(fn(@Int -> @Nat) effects(pure) { 7 }, "
+     "@Int.0))", False),
+)
+
+
+@pytest.mark.parametrize(("call", "refused"), [
+    pytest.param(call, refused, id=f"call{i}")
+    for i, (call, refused) in enumerate(_MODULE_CALLS)])
+def test_a_module_s_function_meets_a_closure(
+        tmp_path: pathlib.Path, call: str, refused: bool) -> None:
+    """A closure passed to an imported module's function, by its qualified
+    name and by its bare one, a generic one among them: the call's own
+    judge, E190 where it fits only by a narrowing."""
+    (tmp_path / "w85lib.vera").write_text(_MODULE, encoding="utf-8")
+    main = tmp_path / "main.vera"
+    main.write_text("import w85lib;\n\n" + _ALIASES + "\n" + _fn(
+        "main(@Int -> @Int)", call, visibility="public"), encoding="utf-8")
+    codes = [d.error_code for d in pipeline.check(main).errors]
     assert codes == (["E190"] if refused else []), codes
