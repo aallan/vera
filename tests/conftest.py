@@ -29,6 +29,9 @@ Also holds a test to the budget its ``budget(seconds)`` marker names, or to
 that names no budget of its own runs under the test's rather than under the
 120 s default (#1670).
 
+Also provides ``injected_false_proof``, the false proof the ``--distrust``
+tests refute, injected at the check alone (``tests/injected_false_proof.py``).
+
 Also prints the session totals of ``test_distrust_corpus.py`` (proofs
 exercised, refuted, unattributed traps) when it ran.
 """
@@ -95,6 +98,16 @@ def _marked_budget_s(item: pytest.Item) -> float | None:
             f"{item.nodeid}: the budget marker takes one argument, the "
             f"seconds, not {marker.args!r} {marker.kwargs!r}", pytrace=False)
     return float(marker.args[0])
+
+
+@pytest.fixture
+def injected_false_proof() -> Iterator[None]:
+    """The false proof the `--distrust` tests refute, injected at the check
+    alone (``tests/injected_false_proof.py`` says what and why)."""
+    from tests.injected_false_proof import injected_false_proof as inject
+
+    with inject():
+        yield
 
 
 @pytest.fixture(autouse=True)

@@ -68,11 +68,24 @@ class ModuleResolver:
     )
     _in_progress: set[tuple[str, ...]] = field(default_factory=set)
     _errors: list[Diagnostic] = field(default_factory=list)
+    _unread: dict[tuple[Path, tuple[str, ...]], Path] = field(
+        default_factory=dict,
+    )
 
     @property
     def errors(self) -> list[Diagnostic]:
         """Accumulated resolution diagnostics."""
         return list(self._errors)
+
+    @property
+    def unread(self) -> dict[tuple[Path, tuple[str, ...]], Path]:
+        """Each import whose file the resolver found and could not read as
+        UTF-8 (its E024), by the importing file and the module path, with
+        the file it found: the binding a module that resolved has in its
+        ``file_path``, for one that did not.  A module that does not read
+        is not cached, so each importer resolves it again, from its own
+        directory, and has its own entry."""
+        return dict(self._unread)
 
     # -----------------------------------------------------------------
     # Public API
@@ -236,6 +249,7 @@ class ModuleResolver:
             # The module's bytes are not UTF-8: its own E024, located in the
             # module at the byte, not an E013 at the import (#1666).
             self._errors.append(exc.diagnostic)
+            self._unread[(importing_file, mod_path)] = file_path
             return None
         except (ParseError, TransformError, OSError) as exc:
             # Only genuine resolution failures of the imported file become

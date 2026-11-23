@@ -1,51 +1,8 @@
 """Vera command-line interface.
 
-Usage:
-    vera parse     <file.vera>              Parse a file and print the tree
-    vera check     <file.vera>              Parse and type-check a file
-    vera check     --json <file.vera>       Type-check and output JSON diagnostics
-    vera check     --explain-slots <file>   Show slot resolution table (@T.n → parameter)
-    vera typecheck <file.vera>              Same as check (explicit alias)
-    vera verify    <file.vera>              Type-check, verify contracts, and
-                                            reconcile the runtime-check claims
-                                            with the checks the compiled
-                                            module holds
-    vera verify    --json <file.vera>       Verify and output JSON diagnostics
-    vera verify    --no-reconcile <file>    Verify without compiling: no
-                                            reconciliation
-    vera compile   <file.vera>              Compile to .wasm binary
-    vera compile   --wat <file.vera>        Print WAT text to stdout
-    vera compile   -o out.wasm <file.vera>  Specify output path
-    vera compile   --target browser <file>  Emit browser bundle (wasm + JS + HTML)
-    vera compile   --target wasi-p2 <file>  Emit WASI Preview 2 component (experimental)
-    vera compile   --target wasi-p2 --world server <file>  Emit wasi:http server component (wasmtime serve)
-    vera run       <file.vera>              Compile and execute
-    vera run       --fn name <file.vera>    Execute a specific function
-    vera run       <file.vera> -- 5 10      Pass arguments to the function
-    vera run       --target wasi-p2 <file>  Execute under the built-in WASI 0.2 host
-    vera ast       <file.vera>              Parse and print the AST
-    vera ast       --json <file.vera>       Parse and print the AST as JSON
-    vera test      <file.vera>              Test contracts via Z3-guided inputs
-    vera test      --json <file.vera>       Test with JSON output
-    vera test      --trials 50 <file.vera>  Set trial count (default 100)
-    vera test      --distrust <file.vera>   Also run the functions the verifier
-                                            proved; a refuted proof is E703
-    vera verify    --timeout-ms N <file.vera>  Per-query Z3 budget in ms
-                                            (default 10000; also
-                                            VERA_Z3_TIMEOUT_MS)
-    vera test      --fn name <file.vera>    Test a specific function
-    vera serve     <file.vera>              Serve handle(Request -> Response) over HTTP
-    vera serve     --port 8080 <file.vera>  Serve on a specific port (default 8000)
-    vera fmt       <file.vera>              Format to canonical form (stdout)
-    vera fmt       --write <file.vera>      Format in place
-    vera fmt       --check <file.vera>      Check if already canonical
-    vera builtins  [--json]                 List the built-in function registry
-    vera effects   [--json]                 List the effect and ability registry
-    vera errors    [--json]                 List the diagnostic error-code registry
-    vera lsp                                Serve the LSP over stdio (needs [lsp] extra)
-    vera version                            Print the installed version
-    vera --version                          Same as vera version
-    vera -V                                 Same as vera version
+What each command takes is `vera.command_line.COMMANDS`, which the
+command line is read against and the usage text (`USAGE`, `vera
+--help`) and each `vera <command> --help` are rendered from (#1872).
 """
 
 from __future__ import annotations
@@ -58,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
 from lark import Tree
-from vera import command_errors
+from vera import command_errors, command_line
 from vera.codegen.api import ArgumentRefusal, WasmTrapError
 from vera.errors import (
     Diagnostic,
@@ -2029,62 +1986,6 @@ def cmd_fmt(
         return 1
 
 
-USAGE = """\
-Usage: vera <command> [options] <file>
-
-Commands:
-    version              Print the installed Vera version (also --version, -V)
-    parse                Parse a .vera file and print the parse tree
-    check [--json|--quiet|--explain-slots]       Parse and type-check a .vera file
-    typecheck [--json|--quiet|--explain-slots]   Same as check (explicit alias)
-    verify [--json|--quiet|--timeout-ms n|--no-reconcile]   Parse, type-check, and verify contracts
-    test [--json|--distrust]  Test contracts via Z3-guided input generation
-    compile [--wat]      Compile a .vera file to WebAssembly
-    compile --target browser  Emit browser bundle (wasm + JS + HTML)
-    compile --target wasi-p2  Emit a WASI Preview 2 component (experimental)
-    compile --target wasi-p2 --world server  Emit a wasi:http server component (run with wasmtime serve)
-    run [--fn name]      Compile and execute a .vera file
-    run --target wasi-p2  Execute under the built-in WASI 0.2 host
-    serve [--port n]     Serve handle(Request -> Response) over HTTP (default :8000)
-    ast [--json]         Parse a .vera file and print the AST
-    fmt [--write|--check] Format a .vera file to canonical form
-    lsp                  Serve the Language Server Protocol over stdio
-                         (needs the [lsp] extra: pip install -e ".[lsp]")
-    builtins [--json]    List the built-in function registry
-    effects [--json]     List the effect and ability registry
-    errors [--json]      List the diagnostic code registry
-
-Options:
-    --json               Output machine-readable JSON diagnostics
-    --quiet              Suppress success output (errors still printed)
-    --wat                Print WAT text instead of writing .wasm binary
-    --fn <name>          Function to execute or test
-    --trials <n>         Number of test trials (default: 100, for vera test)
-    --distrust           Also run the functions the verifier proved, for vera
-                         test: a trial that fails a proved check refutes the
-                         proof (E703, category "refuted")
-    --timeout-ms <n>     Per-query Z3 budget in ms, accepted by vera verify.
-                         Precedence: this flag, then VERA_Z3_TIMEOUT_MS, then
-                         the 10000 default -- so the variable is also verify's
-                         fallback when the flag is absent, and it is the only
-                         route for vera test and the language server, which
-                         take no such flag
-    --no-reconcile       Skip what vera verify does by default: compile the
-                         program and check every runtime-check claim (Tier 3)
-                         against the checks the compiled module holds (E541
-                         for a claim with no check, W004 for a check with no
-                         record, the compile's own refusal); --reconcile
-                         names the default
-    --port <n>           Port to serve on (default: 8000, for vera serve)
-    --host <h>           Host/interface to bind (default: 127.0.0.1, for vera serve)
-    -o <path>            Output path for .wasm binary (or directory for --target browser)
-    --target <t>         Compilation target: wasm (default), browser, or wasi-p2
-    --world <w>          wasi-p2 world: cli (default) or server (wasi:http/incoming-handler)
-    --write              Format in place (vera fmt)
-    --check              Check if already canonical (vera fmt)
-    --explain-slots      Print slot-resolution tables after a successful check
-    -- <args...>         Arguments to pass to the executed function
-"""
 
 
 def cmd_version() -> int:
@@ -2168,11 +2069,8 @@ def cmd_errors(as_json: bool = False) -> int:
     return _emit_introspection(errors_payload(), as_json, ("code", "phase", "title"))
 
 
-#: The commands that read a source file, which a command line must name.
-_FILE_COMMANDS = frozenset({
-    "parse", "check", "typecheck", "verify", "test", "compile", "serve",
-    "run", "ast", "fmt",
-})
+#: The usage text `vera` prints, rendered from `vera.command_line.COMMANDS`.
+USAGE = command_line.usage()
 
 
 def _refuse_command_line(
@@ -2204,248 +2102,128 @@ def main() -> None:
             _reconfigure(encoding="utf-8")
 
     args = sys.argv[1:]
+    if not args:
+        print(USAGE, file=sys.stderr)
+        sys.exit(1)
+    if args[0] in command_line.HELP_FLAGS:
+        print(USAGE)
+        sys.exit(0)
 
-    # #1350: `--timeout-ms` is verify-only, and the refusal must come BEFORE
-    # the no-file dispatches below.  Placed after them, `vera lsp
-    # --timeout-ms 5000` starts the language server and ignores the flag —
-    # precisely the silent no-op the refusal exists to prevent — and the same
-    # for `version`, `builtins`, `effects` and `errors`, none of which reads
-    # it either.  The flag reaching a command that cannot honour it should
-    # always be an error, whatever the command needs on its command line.
-    if "--timeout-ms" in args and args[0] != "verify":
-        _refuse_command_line(command_errors.option_not_accepted(
-            f"--timeout-ms is only accepted by `vera verify`, not "
-            f"`vera {args[0]}`. Set VERA_Z3_TIMEOUT_MS in the environment "
-            f"to reach `vera test` and the language server."),
-            as_json="--json" in args)
+    # #1872: the command line is read against the one table of what each
+    # command takes (`vera.command_line.COMMANDS`), so an option is taken by
+    # exactly the commands that list it, a command that reads a file takes
+    # exactly one, and the tokens after `--` are the program's alone.  Every
+    # refusal is made there, before any file is read.
+    read = command_line.parse(args)
+    if isinstance(read, command_line.Refusal):
+        _refuse_command_line(read.diagnostic, as_json=read.as_json,
+                             usage=read.usage)
+    if read.help:
+        print(command_line.command_help(read.name))
+        sys.exit(0)
 
-    # `--distrust` is test-only, and refused elsewhere for the same reason:
-    # a command that cannot honour a flag must not ignore it.  Only the
-    # arguments before `--` are this command line's own; the rest belong to
-    # the program `vera run` calls.
-    _own_args = args[:args.index("--")] if "--" in args else args
-    if "--distrust" in _own_args and args[0] != "test":
-        _refuse_command_line(command_errors.option_not_accepted(
-            f"--distrust is only accepted by `vera test`, not "
-            f"`vera {args[0]}`."), as_json="--json" in _own_args)
-    # `--reconcile` and `--no-reconcile` are verify-only for the same reason:
-    # a command that cannot honour one must refuse it rather than ignore it.
-    # `vera verify` reconciles by default, which `--reconcile` states and
-    # `--no-reconcile` turns off, so the two together contradict each other.
-    # As for `--distrust`, only the arguments before `--` are read.
-    _rc_refusal: Diagnostic | None = None
-    for _rc_flag in ("--reconcile", "--no-reconcile"):
-        if _rc_flag in _own_args and args[0] != "verify":
-            _rc_refusal = command_errors.option_not_accepted(
-                f"{_rc_flag} is only accepted by `vera verify`, not "
-                f"`vera {args[0]}`.")
-            break
-    else:
-        if "--reconcile" in _own_args and "--no-reconcile" in _own_args:
-            _rc_refusal = command_errors.contradictory_options(
-                "`vera verify` takes --reconcile or --no-reconcile, not both.")
-    if _rc_refusal is not None:
-        _refuse_command_line(_rc_refusal, as_json="--json" in _own_args)
+    command = read.command.name
+    use_json = read.flag("--json")
 
-    # Handle version before the length check — these need no file argument.
-    if not args or args[0] in ("version", "--version", "-V"):
-        if not args:
-            print(USAGE, file=sys.stderr)
-            sys.exit(1)
+    if command == "version":
         sys.exit(cmd_version())
-
-    # `lsp` also takes no file argument — it serves LSP over stdio
-    # until the client disconnects (#222 Phase C).
-    if args[0] == "lsp":
+    # `lsp` serves LSP over stdio until the client disconnects (#222 Phase C).
+    if command == "lsp":
         sys.exit(cmd_lsp())
+    # `builtins`/`effects`/`errors` enumerate the compiler's own registries
+    # as JSON or a text table (#539).
+    if command == "builtins":
+        sys.exit(cmd_builtins(as_json=use_json))
+    if command == "effects":
+        sys.exit(cmd_effects(as_json=use_json))
+    if command == "errors":
+        sys.exit(cmd_errors(as_json=use_json))
 
-    # `builtins`/`effects`/`errors` take no file argument — they enumerate the
-    # compiler's own registries as JSON or a text table (#539).
-    if args[0] in ("builtins", "effects", "errors"):
-        as_json = "--json" in args
-        if args[0] == "builtins":
-            sys.exit(cmd_builtins(as_json=as_json))
-        if args[0] == "effects":
-            sys.exit(cmd_effects(as_json=as_json))
-        sys.exit(cmd_errors(as_json=as_json))
-
-    if len(args) < 2:
-        _refuse_command_line(command_errors.command_not_understood(
-            f"`vera {args[0]}` names no file: it reads a .vera source file."
-            if args[0] in _FILE_COMMANDS
-            else f"Unknown command: {args[0]}"), as_json=False, usage=True)
-
-    command = args[0]
-    use_json = "--json" in args
-    use_quiet = "--quiet" in args
-    use_wat = "--wat" in args
-    use_write = "--write" in args
-    use_check_fmt = "--check" in args and command == "fmt"
-    use_explain_slots = "--explain-slots" in args
-    use_distrust = command == "test" and "--distrust" in args
-    use_reconcile = "--no-reconcile" not in _own_args
-
-    # Parse --fn <name> option
-    fn_name: str | None = None
-    if "--fn" in args:
-        fn_idx = args.index("--fn")
-        if fn_idx + 1 < len(args):
-            fn_name = args[fn_idx + 1]
-
-    # Parse --trials <n> option
-    trials: int = 100
+    trials = 100
+    raw_trials = read.value("--trials")
+    if raw_trials is not None:
+        try:
+            trials = int(raw_trials)
+        except ValueError:
+            _refuse_command_line(command_errors.invalid_option_value(
+                f"Invalid --trials value: {raw_trials}"), as_json=use_json)
     serve_port = 8000
-    serve_host = "127.0.0.1"
-    if "--port" in args:
-        port_idx = args.index("--port")
-        if port_idx + 1 < len(args):
-            try:
-                serve_port = int(args[port_idx + 1])
-            except ValueError:
-                _refuse_command_line(command_errors.invalid_option_value(
-                    f"--port requires an integer, not "
-                    f"{args[port_idx + 1]!r}."), as_json=use_json)
-    if "--host" in args:
-        host_idx = args.index("--host")
-        if host_idx + 1 < len(args):
-            serve_host = args[host_idx + 1]
+    raw_port = read.value("--port")
+    if raw_port is not None:
+        try:
+            serve_port = int(raw_port)
+        except ValueError:
+            _refuse_command_line(command_errors.invalid_option_value(
+                f"--port requires an integer, not {raw_port!r}."),
+                as_json=use_json)
+    serve_host = read.value("--host") or "127.0.0.1"
+
     from vera.smt import Z3BudgetError, resolve_timeout_ms
 
-    timeout_ms: int | None = None
     # #1350: resolve once, here, so a malformed budget is a clean CLI error
     # rather than a traceback out of the solver's construction seam.  Only
     # the commands that verify consult it — `compile`/`run` never build a
-    # solver, so a stray env var must not fail them.
-    if command in ("verify", "test"):
+    # solver, so a stray env var must not fail them.  The flag comes first
+    # in the budget's precedence, so the environment's value is validated
+    # only where it is the one used (#1872): with `--timeout-ms`, it is
+    # never read.
+    timeout_ms: int | None = None
+    raw_tm = read.value("--timeout-ms")
+    if raw_tm is None and command in ("verify", "test"):
         try:
             resolve_timeout_ms()
         except Z3BudgetError as exc:
             _refuse_command_line(
                 command_errors.invalid_option_value(str(exc)), as_json=use_json)
-
-    if "--timeout-ms" in args:
-        tm_idx = args.index("--timeout-ms")
-        raw_tm = args[tm_idx + 1] if tm_idx + 1 < len(args) else None
+    if raw_tm is not None:
         try:
-            if raw_tm is None:
-                raise Z3BudgetError("--timeout-ms: missing value")
             timeout_ms = resolve_timeout_ms(raw_tm)
         except Z3BudgetError as exc:
             _refuse_command_line(command_errors.invalid_option_value(
                 str(exc).replace("timeout_ms:", "--timeout-ms:")),
                 as_json=use_json)
 
-    if "--trials" in args:
-        trials_idx = args.index("--trials")
-        if trials_idx + 1 < len(args):
-            try:
-                trials = int(args[trials_idx + 1])
-            except ValueError:
-                _refuse_command_line(command_errors.invalid_option_value(
-                    f"Invalid --trials value: {args[trials_idx + 1]}"),
-                    as_json=use_json)
-
-    # Parse --target <target> option
-    target: str = "wasm"
-    if "--target" in args:
-        target_idx = args.index("--target")
-        if target_idx + 1 < len(args):
-            target = args[target_idx + 1]
-            if target not in ("wasm", "browser", "wasi-p2"):
-                _refuse_command_line(command_errors.invalid_option_value(
-                    f"Invalid --target value: {target} "
-                    f"(expected 'wasm', 'browser', or 'wasi-p2')"),
-                    as_json=use_json)
-
-    # Parse --world <world> option (wasi-p2 target only; validated in
-    # cmd_compile/cmd_run so JSON mode gets a proper envelope)
-    world: str = "cli"
-    if "--world" in args:
-        world_idx = args.index("--world")
-        if world_idx + 1 < len(args):
-            world = args[world_idx + 1]
-            if world not in ("cli", "server"):
-                _refuse_command_line(command_errors.invalid_option_value(
-                    f"Invalid --world value: {world} "
-                    f"(expected 'cli' or 'server')"), as_json=use_json)
-
-    # Parse -o <path> option
-    output_path: str | None = None
-    if "-o" in args:
-        o_idx = args.index("-o")
-        if o_idx + 1 < len(args):
-            output_path = args[o_idx + 1]
-
-    # Parse -- <args> for run command (kept as raw strings for type-aware parsing)
-    fn_args: list[int | float] | None = None
-    raw_fn_args: list[str] | None = None
-    if "--" in args:
-        dash_idx = args.index("--")
-        raw_fn_args = list(args[dash_idx + 1:])
-
-    # Remove flags from remaining args to find the filepath
-    skip_flags = {"--json", "--quiet", "--wat", "--write", "--check",
-                  "--explain-slots", "--distrust", "--reconcile",
-                  "--no-reconcile"}
-    skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host",
-                 "--world", "--timeout-ms"}
-    remaining: list[str] = []
-    i = 1  # skip command
-    while i < len(args):
-        if args[i] == "--":
-            break  # everything after -- is function args
-        if args[i] in skip_flags:
-            i += 1
-            continue
-        if args[i] in skip_next:
-            i += 2  # skip flag + value
-            continue
-        remaining.append(args[i])
-        i += 1
-
-    if not remaining:
-        _refuse_command_line(command_errors.command_not_understood(
-            f"`vera {command}` names no file: it reads a .vera source file."
-            if command in _FILE_COMMANDS
-            else f"Unknown command: {command}"),
-            as_json=use_json, usage=True)
-
-    filepath = remaining[0]
+    target = read.value("--target") or "wasm"
+    world = read.value("--world") or "cli"
+    fn_name = read.value("--fn")
+    output_path = read.value("-o")
+    filepath = read.files[0]
 
     if command == "parse":
         sys.exit(cmd_parse(filepath))
     elif command in ("check", "typecheck"):
         sys.exit(cmd_check(
-            filepath, as_json=use_json, quiet=use_quiet,
-            explain_slots=use_explain_slots,
+            filepath, as_json=use_json, quiet=read.flag("--quiet"),
+            explain_slots=read.flag("--explain-slots"),
         ))
     elif command == "verify":
-        sys.exit(cmd_verify(filepath, as_json=use_json, quiet=use_quiet,
-                            timeout_ms=timeout_ms, reconcile=use_reconcile))
+        sys.exit(cmd_verify(filepath, as_json=use_json,
+                            quiet=read.flag("--quiet"), timeout_ms=timeout_ms,
+                            reconcile=not read.flag("--no-reconcile")))
     elif command == "test":
         sys.exit(cmd_test(
             filepath, as_json=use_json, trials=trials, fn_name=fn_name,
-            distrust=use_distrust,
+            distrust=read.flag("--distrust"),
         ))
     elif command == "compile":
         sys.exit(cmd_compile(
-            filepath, as_json=use_json, wat=use_wat, output=output_path,
-            target=target, world=world,
+            filepath, as_json=use_json, wat=read.flag("--wat"),
+            output=output_path, target=target, world=world,
         ))
     elif command == "serve":
         sys.exit(cmd_serve(filepath, port=serve_port, host=serve_host))
     elif command == "run":
         sys.exit(cmd_run(
-            filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args,
-            raw_fn_args=raw_fn_args, target=target, world=world,
+            filepath, as_json=use_json, fn_name=fn_name, fn_args=None,
+            raw_fn_args=read.program_args, target=target, world=world,
         ))
     elif command == "ast":
         sys.exit(cmd_ast(filepath, as_json=use_json))
     elif command == "fmt":
-        sys.exit(cmd_fmt(filepath, write=use_write, check=use_check_fmt))
-    else:
-        _refuse_command_line(command_errors.command_not_understood(
-            f"Unknown command: {command}"), as_json=use_json, usage=True)
+        sys.exit(cmd_fmt(filepath, write=read.flag("--write"),
+                         check=read.flag("--check")))
+    # Every command the table holds is dispatched above.
+    raise AssertionError(f"no dispatch for `vera {command}`")  # pragma: no cover
 
 
 if __name__ == "__main__":  # pragma: no cover

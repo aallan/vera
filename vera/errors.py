@@ -1163,6 +1163,7 @@ ERROR_CODES: dict[str, str] = {
     "E187": "Contract predicate performs an effect",
     "E188": "Missing visibility on a top-level declaration",
     "E189": "old()/new() names an effect with no state",
+    "E190": "Function value whose parameter is narrower, or result wider, than its function type's",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",

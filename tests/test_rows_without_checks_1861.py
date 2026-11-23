@@ -1208,6 +1208,44 @@ def test_repro_a_let_bound_tuple_at_a_closure_argument_has_its_record_1542(
     assert "W004" not in {d.error_code for d in verified.warnings}
 
 
+_REFINED_TUPLE_FORMAL = """\
+type Pos = { @Int | @Int.0 > 0 };
+type RT = { @Tuple<Pos, Int> | match @Tuple<Pos, Int>.0 { Tuple(@Int, @Int) -> @Int.0 < 100 } };
+type F = fn(RT -> Int) effects(pure);
+
+private fn pair(@Float64 -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(float_to_int(@Float64.0), 7)
+}
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F = fn(@Tuple<Int, Int> -> @Int) effects(pure) { 0 };
+  apply_fn(@F.0, pair(@Float64.0))
+}
+"""
+
+
+def test_repro_a_tuple_behind_a_refinement_at_a_closure_argument_is_read_through_it(
+) -> None:
+    """A function type's parameter that refines a tuple holding a refined
+    component: the call reads the component through the refinement's
+    wrapper (`_closure_argument_component`) and checks it.  With the
+    wrapper not read through, code generation stops with an internal
+    error."""
+    assert pipeline.run(_REFINED_TUPLE_FORMAL, fn="go", args=[5.0]).value == 0
+    ran = pipeline.run(_REFINED_TUPLE_FORMAL, fn="go", args=[-3.0])
+    assert ran.trap is not None, ran.value
+    assert ("Refinement violation in closure argument (tuple component)\n"
+            in str(ran.trap)), ran.trap
+
+
 _MODULE_LIB = """\
 type R = { @Int | above(@Int.0) };
 
@@ -1286,7 +1324,12 @@ def variance_program(route: str, relation: str, arg: str) -> str:
                   f"  match @Holder.0 {{ H(@F) -> apply_fn(@F.0, {a}) }}\n"),
         "join_arm": (f"  let @F = if @Bool.0 then {{ {closure} }} "
                      f"else {{ {other} }};\n  apply_fn(@F.0, {a})\n"),
-        "generic": f"  let @F = {closure};\n  app(@F.0, {a})\n",
+        # The narrower closure is passed to `app` directly, beside a value
+        # of declared type, so `app`'s instance (`Int`, from the value) is
+        # the pair judged; bound by a `let` first, the `let` would judge it.
+        "generic": (f"  app({closure}, float_to_int(@Float64.0))\n"
+                    if relation == "narrower"
+                    else f"  let @F = {closure};\n  app(@F.0, {a})\n"),
     }[route]
     helper = {
         "param": ("private fn run_f(@F, @Float64 -> @Int)\n" + PLAIN
@@ -1368,26 +1411,33 @@ public fn main(@Float64 -> @Int)
     assert _AT_THE_CALL in str(ran.trap)
 
 
-OPEN_CELLS = [("narrower", route) for route in ROUTES]
+NARROWER_CELLS = [("narrower", route) for route in ROUTES]
 
 
-@pytest.mark.parametrize(("relation", "route"), OPEN_CELLS,
-                         ids=["-".join(c) for c in OPEN_CELLS])
-@pytest.mark.xfail(strict=True, reason=(
-    "#1885's open line: a closure narrower than the function type it flows "
-    "into (a `fn(Pos -> Int)` at a `fn(Int -> Int)`, by every route, and at "
-    "a generic instance chosen from the argument) is accepted with no row at "
-    "the flow, and its entry check, recorded `verified`, traps on a value "
-    "the function type admits"))
+@pytest.mark.parametrize(("relation", "route"), NARROWER_CELLS,
+                         ids=["-".join(c) for c in NARROWER_CELLS])
 def test_a_closure_narrower_than_its_type_is_refused(
         relation: str, route: str) -> None:
+    """#1885's narrower line: a closure narrower than the function type it
+    flows into (a `fn(Pos -> Int)` at a `fn(Int -> Int)`, by every route,
+    and at a generic instance chosen from the argument) was accepted with
+    no row at the flow, and its entry check, recorded `verified`, trapped
+    on a value the function type admits.  It is refused at check (E190,
+    spec §2.8), the one error."""
     source = variance_program(route, relation, "refuted")
-    verified = pipeline.verify(source, reconcile=True)
-    if not verified.ok:
+    checked = pipeline.check(source)
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        d.description for d in checked.errors]
+    if route != "generic":
         return
-    # Accepted: then the run must not refuse a value the type admits.
-    ran = pipeline.run(source, fn="t", args=[1, 5.0])
-    assert ran.trap is None, str(ran.trap)
+    # At the generic, the one E190 is placed at the closure argument:
+    # `app` judges the pair, at the instance the value argument fixes.
+    closure = "fn(@Pos -> @Int) effects(pure) { 7 }"
+    line = next(n for n, text in enumerate(source.splitlines(), 1)
+                if closure in text)
+    column = source.splitlines()[line - 1].index(closure) + 1
+    location = checked.errors[0].location
+    assert (location.line, location.column) == (line, column), source
 
 
 # =====================================================================

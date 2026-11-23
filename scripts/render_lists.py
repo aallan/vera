@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Write the lists that have one source into the files that show them.
 
-A list has one source and is rendered, never copied.  Five lists are
+A list has one source and is rendered, never copied.  Six lists are
 rendered here, each between a pair of `render_lists` markers in the file
 that shows it:
 
@@ -31,6 +31,9 @@ that shows it:
 - ``reserved-names``: the names no declaration may take (#1469), from
   ``vera.prelude.reserved_function_names()`` and ``reserved_type_names()``,
   into KNOWN_ISSUES.md and SKILL.md.
+- ``command-options``: each command, what it reads and the options it
+  takes, from ``vera.command_line.COMMANDS`` (#1872), the table the command
+  line is read against, into TOOLCHAIN.md.
 
 A marker is a whole line in the file's own comment syntax:
 ``<!-- render_lists:begin NAME -->`` and ``<!-- render_lists:end NAME -->``
@@ -665,6 +668,34 @@ def reserved_blocks(
 
 
 # ---------------------------------------------------------------------------
+# The command line's table
+# ---------------------------------------------------------------------------
+
+#: The file that shows what each command takes (#1872).
+COMMANDS_TARGET = "TOOLCHAIN.md"
+
+
+def command_table() -> str:
+    """The table of commands and their options, from `vera.command_line`,
+    which the command line is read against.  The caller puts the tree's
+    root first on `sys.path`."""
+    from vera.command_line import markdown_table
+
+    return markdown_table()
+
+
+def command_blocks(root: Path, table: str) -> tuple[list[Rendered], list[str]]:
+    """The command-options block as it is and as `table` renders it, and
+    every reason it cannot be rendered."""
+    read = _read(root, COMMANDS_TARGET, {"command-options"})
+    if isinstance(read, str):
+        return [], [read]
+    text, spans = read
+    start, end = spans["command-options"]
+    return [Rendered(COMMANDS_TARGET, "command-options", text[start:end], table)], []
+
+
+# ---------------------------------------------------------------------------
 # The signature tables
 # ---------------------------------------------------------------------------
 
@@ -792,6 +823,7 @@ def _targets(root: Path) -> dict[str, set[str]]:
     targets.setdefault(SPEC, set()).update(SIGNATURE_BLOCKS)
     for path in RESERVED_TARGETS:
         targets.setdefault(path, set()).add("reserved-names")
+    targets.setdefault(COMMANDS_TARGET, set()).add("command-options")
     data = load_limitations(root)
     if not isinstance(data, list):
         for table in data.tables:
@@ -804,11 +836,12 @@ def plan(
     host_rows: Sequence[tuple[str, str, str]] | None = None,
     known_signatures: dict[str | None, dict[str, str]] | None = None,
     reserved: tuple[Sequence[str], Sequence[str]] | None = None,
+    commands: str | None = None,
 ) -> tuple[list[Rendered], list[str]]:
     """Every block in the tree, as it is and as its source renders it, and
     every reason a block cannot be rendered.  `effects`, `host_rows`,
-    `known_signatures` and `reserved` stand in for the registries; by
-    default the tree's own are read."""
+    `known_signatures`, `reserved` and `commands` stand in for the
+    registries; by default the tree's own are read."""
     names = list(effects) if effects is not None else effect_names()
     blocks, errors = effect_blocks(root, names)
     for more, more_errors in (
@@ -818,6 +851,7 @@ def plan(
             root, known_signatures if known_signatures is not None else signatures()),
         reserved_blocks(
             root, reserved if reserved is not None else reserved_names()),
+        command_blocks(root, commands if commands is not None else command_table()),
     ):
         blocks += more
         errors += more_errors
