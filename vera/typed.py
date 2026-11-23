@@ -920,10 +920,11 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
     gives its result a type (a `match` scrutinee, an operand; the type a
     result is expected at fixes such a variable, #1684), so its fix is that
     type, where the result's type holds the variable, or a parameter that
-    carries one.  The result's type is read as the check resolved it where
-    the entry holds the generic (*resolved_return*): an alias can drop a
-    variable its written form names (`type Erased<T> = Int;`), and a
-    binding of that type fixes none."""
+    carries one.  The binding is offered only where the result's type as
+    the check resolved it (*resolved_return*) is to hand and holds every
+    variable: an alias can drop a variable its written form names
+    (`type Erased<T> = Int;`), and a binding of that type fixes none, so
+    the written form is never read for it."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -949,11 +950,12 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
                      f"{', '.join(names)} ({carried}) and pass each a value "
                      f"at a type that {needs}, Int for example.")
         held = (set(_variables_in(resolved_return))
-                if resolved_return is not None else None)
-        if not all(_mentions(root.decl.return_type, frozenset((v,)))
-                   and (held is None or v in held) for v in names):
-            # A variable the result's type does not hold (one only a
-            # `where` constraint names): no binding of the result fixes it.
+                if resolved_return is not None else set())
+        if not all(v in held for v in names):
+            # A variable the result's type, as the check resolved it, does
+            # not hold (one only a `where` constraint names, one an alias
+            # drops), or a result whose resolved type is not to hand: no
+            # binding of the result is known to fix it.
             return f"{head}: {param}"
         # The binding written out, each variable at Int, where the call is
         # (inside a branch too: a sibling's type gives it none, #1866).
@@ -985,8 +987,8 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
 def _resolved_return(template: Template, env: TypeEnv) -> Type | None:
     """The return type the check resolved for the entry's generic
     *template*, its variables as the declaration names them; None for one
-    the entry's environment does not hold (a module's, a `where` helper's),
-    whose written type is read in its place."""
+    the entry's environment does not hold (a module's, a `where`
+    helper's), for which the fix offers no binding."""
     if template.origin is not None:
         return None
     info = env.lookup_function(template.decl.name)

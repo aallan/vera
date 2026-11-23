@@ -1938,25 +1938,23 @@ def test_e613_offers_no_binding_where_the_result_holds_some_variables() -> None:
 
 #: One variable no argument fixes, the result's type written to hold it:
 #: plainly, and through an alias whose body drops it, so its resolved type
-#: holds none (PR 1907 review).
+#: holds none (PR 1907 review).  (The result type, the body.)
 _E613_ONE = {
-    "plain": "@Option<T>",
-    "erased_alias": "@Erased<T>",
+    "plain": ("@Option<T>", "None"),
+    "erased_alias": ("@Erased<T>", "0"),
 }
 
-
-def _e613_one(result: str) -> str:
-    return f"""\
-type Erased<T> = Int;
-
-private forall<T where Ord<T>> fn one_ord(@Unit -> {result})
+_E613_ONE_FN = """\
+{vis}forall<T where Ord<T>> fn one_ord(@Unit -> {result})
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  {"None" if result == "@Option<T>" else "0"}
+  {body}
 }}
+"""
 
+_E613_ONE_MAIN = """\
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -1966,25 +1964,60 @@ public fn main(@Unit -> @Int)
     _ -> 0
   }}
 }}
-"""
+{where}"""
+
+_ERASED = "type Erased<T> = Int;\n\n"
+
+
+def _e613_one(place: str, result: str) -> dict[str, str]:
+    """The program, as its files: the generic in the entry, in an imported
+    module, or a `where` helper of `main`."""
+    ret, body = _E613_ONE[result]
+    if place == "entry":
+        return {"main.vera": _ERASED + _E613_ONE_FN.format(
+            vis="private ", result=ret, body=body)
+            + "\n" + _E613_ONE_MAIN.format(where="")}
+    if place == "module":
+        return {"elib.vera": "module elib;\n\n" + _ERASED + _E613_ONE_FN.format(
+                    vis="public ", result=ret, body=body),
+                "main.vera": "import elib;\n\n" + _ERASED
+                + _E613_ONE_MAIN.format(where="")}
+    helper = "\n".join(f"  {ln}" if ln else ln for ln in _E613_ONE_FN.format(
+        vis="", result=ret, body=body).splitlines())
+    return {"main.vera": _ERASED + _E613_ONE_MAIN.format(
+        where=f"where {{\n{helper}\n}}\n")}
+
+
+def _tree_codes(root: Path, files: dict[str, str]):  # type: ignore[no-untyped-def]
+    return pipeline.check(pipeline.write_tree(root, files))
 
 
 @pytest.mark.parametrize("result", list(_E613_ONE))
+@pytest.mark.parametrize("place", ["entry", "module", "where"])
 def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
-        result: str) -> None:
+        place: str, result: str, tmp_path: Path) -> None:
     """The fix offers the binding it writes out only where the result's
-    type, as the check resolved it, holds the variable, and that binding,
-    pasted where the call is, clears E613; through `Erased<T>`, which
-    resolves to `Int`, it offers the parameter alone, which clears it."""
-    source = _e613_one(_E613_ONE[result])
-    fix = _the("E613", "check", source).fix
+    type, as the check resolved it, is to hand and holds the variable: the
+    entry's own generic with a plain result.  Pasted where the call is, it
+    clears E613.  Through `Erased<T>`, which resolves to `Int`, and for a
+    module's generic or a `where` helper, whose resolved type the fix does
+    not have, it offers the parameter alone, never a binding read off the
+    written type; applied, that clears E613 in every cell."""
+    files = _e613_one(place, result)
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
     offered = re.findall(r"`(let @[^`]+ = one_ord\(\(\)\);)`, then "
-                         r"`(@[^`]+\.0)` in its place", fix)
-    assert bool(offered) == (result == "plain"), fix
+                         r"`(@[^`]+\.0)` in its place", found.fix)
+    assert bool(offered) == (place == "entry" and result == "plain"), found.fix
     for let, slot in offered:
-        bound = source.replace("  match one_ord(()) {",
-                               f"  {let}\n  match {slot} {{")
-        assert "E613" not in _passed_codes("check", bound), bound
-    carried = (source.replace("fn one_ord(@Unit -> ", "fn one_ord(@Unit, @T -> ")
-               .replace("one_ord(())", "one_ord((), 1)"))
-    assert "E613" not in _passed_codes("check", carried), carried
+        bound = {name: text.replace("  match one_ord(()) {",
+                                    f"  {let}\n  match {slot} {{")
+                 for name, text in files.items()}
+        after = _tree_codes(tmp_path / "bound", bound)
+        assert after.ok, [d.format() for d in after.errors]
+    carried = {name: text.replace("fn one_ord(@Unit -> ",
+                                  "fn one_ord(@Unit, @T -> ")
+               .replace("one_ord(())", "one_ord((), 1)")
+               for name, text in files.items()}
+    after = _tree_codes(tmp_path / "carried", carried)
+    assert after.ok, [d.format() for d in after.errors]
