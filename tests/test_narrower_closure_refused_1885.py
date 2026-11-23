@@ -1940,6 +1940,10 @@ def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
         "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
+    assert _codes(source) == ["E202"], source
+
+
+# =====================================================================
 # A join's arms in either order (a `match` joins as an `if` does)
 # =====================================================================
 
@@ -2190,8 +2194,3 @@ def test_repro_a_box_of_a_nat_callback_at_a_box_of_int_is_refused() -> None:
         + _fn("go(@Int -> @Int)", "use_box(make(()), @Int.0)",
               visibility="public"))
     _known(_codes(source), known=[], fixed=lambda g: g != [])
-=======
-    assert _codes(source) == ["E202"], source
-
-
-# ==============================================================
