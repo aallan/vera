@@ -1074,6 +1074,19 @@ WRITTEN_DISCLOSED: dict[tuple[str, str], str] = {
        for s in sites},
 }
 
+#: The cells whose argument the solver refutes at the `apply_fn` (`E505`):
+#: a tuple component, at a scalar refinement, of an unconstrained parameter
+#: (`take`'s), and at the head, a `Float64` or `Bool` parameter passed
+#: directly, which the solver models; every other cell verifies with no
+#: error.
+WRITTEN_REFUTED = frozenset(
+    {(b, "call_tuple") for b in (
+        "prim", "inline", "alias_prim", "alias_alias", "alias_app",
+        "alias_app_alias", "alias_app_nat", "alias_app_f64", "alias_app_bool",
+        "alias_prim_f64", "pred_call", "nested", "generic_unread")}
+    | {(b, s) for b in ("alias_app_f64", "alias_app_bool", "alias_prim_f64")
+       for s in ("call_head", "call_join")})
+
 #: A `Set` element or a `Map` key over an `Array` value: refused at check.
 WRITTEN_REFUSED = {(b, s): "E135"
                    for b in ("alias_array", "param_array", "generic_reads_array")
@@ -1125,10 +1138,16 @@ def test_a_written_base_is_checked_or_disclosed_at_every_site(
         return
     verified = pipeline.verify(source, reconcile=True)
     assert verified.ran, verified.checked.errors
-    # The solver refutes a tuple component of an unconstrained parameter
-    # (`E505`), and the check stands beside the refusal.
-    assert {d.error_code for d in verified.errors} <= {"E505"}, [
-        (d.error_code, d.description[:160]) for d in verified.errors]
+    errors = sorted((d.error_code, d.location.line) for d in verified.errors)
+    if (base, site) in WRITTEN_REFUTED:
+        # The solver refutes the argument at the `apply_fn` (`E505`), and
+        # the check stands beside the refusal.
+        call = next(n for n, text in enumerate(source.splitlines(), 1)
+                    if "apply_fn(" in text)
+        assert errors == [("E505", call)], errors
+    else:
+        assert errors == [], [(d.error_code, d.description[:160])
+                              for d in verified.errors]
     reconciled = verified.reconciled
     assert reconciled is not None and reconciled.reconciliation is not None
     assert reconciled.reconciliation.mismatches == []
