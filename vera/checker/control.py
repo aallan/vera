@@ -50,6 +50,7 @@ from vera.types import (
     UnknownType,
     base_type,
     contains_typevar,
+    holds_function,
     is_pair_represented,
     is_subtype,
     is_unknown_like,
@@ -1168,16 +1169,26 @@ class ControlFlowMixin:
     def _rigid_head_mismatch(self, pat: ast.Pattern, scrut: Type) -> bool:
         """E314 at a constructor or literal pattern over a value whose type
         is the enclosing function's own type variable *scrut* (#1896)."""
-        if isinstance(pat, ast.ConstructorPattern):
-            subject = (f"Pattern '{pat.name}(...)'" if pat.name != "Tuple"
-                       else "Pattern 'Tuple(...)'")
-        elif isinstance(pat, ast.NullaryPattern):
+        matches = "matches a value of another type"
+        if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
             subject = f"Pattern '{pat.name}'"
+            if isinstance(pat, ast.ConstructorPattern) and pat.name == "Tuple":
+                subject, matches = "Pattern 'Tuple(...)'", "matches a tuple"
+            else:
+                ci = self._pattern_ctor_info(pat.name)
+                if ci is not None:
+                    owner = ci.parent_type
+                    if ci.parent_type_params:
+                        owner += f"<{', '.join(ci.parent_type_params)}>"
+                    matches = f"is a constructor of {owner}"
         else:
             subject = f"Pattern literal {_render_literal_pattern(pat)}"
+            literal = _LITERAL_PATTERN_TYPES.get(type(pat))
+            if literal is not None:
+                matches = f"has type {literal[0]}"
         name = pretty_type(scrut)
         return self._pattern_mismatch(
-            pat, subject, "matches a value of one type", scrut,
+            pat, subject, matches, scrut,
             rationale=(
                 f"{name} is a type parameter of the enclosing function, "
                 f"which stands for every type its calls give it, so nothing "
@@ -1420,16 +1431,25 @@ class ControlFlowMixin:
         elif is_subtype(read_open_as_unknown(bound, rigid), seen):
             why = ("A binder claims every value it binds has the type it "
                    "writes, and the body relies on that claim; a value of "
-                   "the scrutinee's type need not have it (a function value "
-                   "may take other arguments, return another type, or "
-                   "perform effects the binder's type does not declare), and "
-                   "no check at run time can tell.")
+                   "the scrutinee's type need not have it, and no check at "
+                   "run time can tell"
+                   + (" (a function value may take other arguments, return "
+                      "another type, or perform effects the binder's type "
+                      "does not declare)." if holds_function(seen) else "."))
         else:
             why = None
+        fix = None
+        if holds_function(seen):
+            # A slot names a function type through an alias, so the
+            # scrutinee's type is given in prose.
+            fix = (f"Bind the value at the scrutinee's type, "
+                   f"{pretty_type(seen)}, named by a type alias, and declare "
+                   f"the effects its functions perform where they are "
+                   f"applied; or match it with a wildcard '_'.")
         self._pattern_mismatch(
             pat, f"Binding pattern '@{pretty_type(bound)}'",
             f"binds a value of type {pretty_type(bound)}", seen,
-            rationale=why)
+            rationale=why, fix=fix)
 
     # -----------------------------------------------------------------
     # A destructuring let, held to its constructor pattern (#1545)

@@ -5,8 +5,7 @@ generation guards.
 Built by :func:`build` after :func:`vera.typed.build` and before
 :func:`vera.verifier.verify` and :func:`vera.codegen.compile`, with neither
 Z3 nor WASM.  A row is one obligation at one node of the typed program:
-its kind (today's :data:`vera.obligations.core.ObligationKind`, plus
-``effect_bind`` for a binder bound at a narrower effect row), the place
+its kind (:data:`vera.obligations.core.ObligationKind`), the place
 inside the value it is about (``path``), the function it belongs to, the
 type it holds the value to, whether a runtime check can be emitted for it
 and, where none can, why (``guard``), and where the check is evaluated
@@ -30,8 +29,7 @@ note, § 2):
   recorded, at the head and at every component path;
 * **binders**: a match binder, a sub-pattern binder, a destructure
   component, a handler clause binder, the ``State`` writes, a closure's
-  parameters and return, and a binder bound at a narrower effect row
-  (#1725, ``effect_bind``);
+  parameters and return;
 * **boundaries**: a refined parameter's entry check as a row of the callee,
   the same for a closure's parameters and for a return.
 
@@ -63,10 +61,8 @@ from vera.types import (
     NAT,
     NEVER,
     AdtType,
-    ConcreteEffectRow,
     FunctionType,
     PrimitiveType,
-    PureEffectRow,
     RefinedType,
     Type,
     base_type,
@@ -132,7 +128,6 @@ REASON_ELEMENT_BELOW_TUPLE = (
 REASON_COMPOSITE_ELEMENT = (
     "a pair-shaped or composite element refinement is not checked by the "
     "element loop")
-REASON_EFFECT_ROW = "an effect row has no runtime check"
 REASON_NOT_REFINED = "the type is no refinement"
 REASON_STRING_SLICE = "string_slice clamps its @Nat argument"
 REASON_UNEVALUATED = "inside a clause no check evaluates"
@@ -453,16 +448,6 @@ def _same_refinement(a: Type | None, b: Type) -> bool:
     if not isinstance(a, RefinedType) or not isinstance(b, RefinedType):
         return False
     return a.predicate == b.predicate and base_type(a) == base_type(b)
-
-
-def _effect_set(row: object) -> frozenset[tuple[str, tuple[str, ...]]] | None:
-    if isinstance(row, PureEffectRow):
-        return frozenset()
-    if isinstance(row, ConcreteEffectRow) and row.row_var is None:
-        return frozenset(
-            (e.name, tuple(pretty_type(a) for a in e.type_args))
-            for e in row.effects)
-    return None
 
 
 def pattern_nodes(pat: ast.Pattern) -> Iterator[ast.Pattern]:
@@ -1798,7 +1783,6 @@ class _Builder:
                     scrutinee, declared, self.effective, self.ftypes,
                     self.ctors, self.narrows_nat):
                 self._tree_rows(tree, pattern, source=source)
-            self._effect_row_rows(pattern, declared, matched, source)
             return
         if not isinstance(pattern, ast.ConstructorPattern):
             return
@@ -1809,7 +1793,6 @@ class _Builder:
             if sub is None:
                 continue
             declared = self.sem(te)
-            matched = self.sem(sub)
             if declared is None:
                 continue
             source = Source(scrutinee, steps.get(id(sub), ()))
@@ -1832,21 +1815,6 @@ class _Builder:
                     sources, i, ctor_name, declared, self.effective, self.sem,
                     self.ftypes, self.ctors, self.narrows_nat):
                 self._tree_rows(tree, sub, source=source)
-            self._effect_row_rows(sub, declared, matched, source)
-
-    def _effect_row_rows(
-        self, binder: ast.Node, declared: Type | None, matched: Type | None,
-        source: Source,
-    ) -> None:
-        """#1725: a binder bound at a function type whose effect row is
-        narrower than the matched value's: a row no check can evaluate."""
-        d, m = _strip(declared), _strip(matched)
-        if isinstance(d, FunctionType) and isinstance(m, FunctionType):
-            de = _effect_set(d.effect)
-            me = _effect_set(m.effect)
-            if de is not None and me is not None and de < me:
-                self.add("effect_bind", binder, target=declared,
-                         guard=unguarded(REASON_EFFECT_ROW), source=source)
 
     @staticmethod
     def _binder_of(

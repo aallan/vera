@@ -127,6 +127,30 @@ def test_repro_a_clause_parameter_is_held_to_the_operation_s_type_1896(
     assert _codes(_CLAUSE) == ["E140", "E342"], _CLAUSE
 
 
+def test_e342_s_fix_applied_as_written_checks() -> None:
+    """E342's fix names the type the operation takes; the clause written at
+    it checks with no E342."""
+    diagnostic = next(d for d in pipeline.check(_CLAUSE).errors
+                      if d.error_code == "E342")
+    assert diagnostic.fix.startswith("Write the parameter as `@Int`"), (
+        diagnostic.fix)
+    fixed = _CLAUSE.replace("throw(@String) -> { @String.0 + 1 }",
+                            "throw(@Int) -> { @Int.0 + 1 }")
+    assert fixed != _CLAUSE
+    assert _codes(fixed) == [], fixed
+
+
+def test_a_function_typed_binder_s_fix_writes_no_slot_of_a_function_type(
+        ) -> None:
+    """A slot names a function type through an alias, so E314's fix gives
+    the scrutinee's type in prose, never as `@fn(...)`."""
+    diagnostic = next(d for d in pipeline.check(_WHOLE_ROW).errors
+                      if d.error_code == "E314")
+    assert "@fn(" not in diagnostic.fix and "@Option<fn(" not in diagnostic.fix, (
+        diagnostic.fix)
+    assert "named by a type alias" in diagnostic.fix, diagnostic.fix
+
+
 _HEAD = _fn("run(@A -> @Int)",
             "match @A.0 {\n    Some(@Int) -> @Int.0 + 1,\n    _ -> 0\n  }"
             ).replace("private fn", "private forall<A> fn") + _fn(
