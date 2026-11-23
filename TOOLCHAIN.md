@@ -32,7 +32,7 @@ also compile. vera lsp keeps check and verify warm.
 
 </details>
 
-Each command takes the options it lists below and refuses any other (E901), and a command that reads a program reads exactly one source file: none, or a second, is E904, so run the command once for each file. A valued option with no value, or a value the command does not take, is E903, and an option given twice is E902. `vera <command> --help` prints that command's usage, and `vera --help` the whole list. Under `vera run`, every argument after `--` is the program's, whatever it looks like (`vera run f.vera --fn min -- -1 -5`). A command-line refusal is the `--json` envelope, on stdout, when `--json` stands before any `--`, and the diagnostic on stderr otherwise; either way the exit code is 1. The table is rendered from the one the command line is read against (`vera/command_line.py`):
+Each command takes the options it lists below and refuses any other (E901), and a command that reads a program reads exactly one source file: none, or a second, is E904, so run the command once for each file; an empty argument or a directory is E900. A valued option takes the next argument as its value, never the `--name=value` form (E901, whose fix writes it with a space), and a value that is missing, outside the option's domain (`--trials` a positive integer, `--port` 0 to 65535, `--timeout-ms` 1 to 4294967295, `--fn` a function's name) or one the command does not take is E903. An option given twice is E902, and so are the pairs a command refuses together: `--check` with `--write` on `vera fmt`, `--reconcile` with `--no-reconcile` on `vera verify`, and `--wat` with `-o` or with `--target browser` on `vera compile`. A file whose name begins with a dash is named `./-name.vera`. `vera <command> --help` prints that command's usage, and `vera --help` the whole list. Under `vera run`, every argument after `--` is the program's, whatever it looks like (`vera run f.vera --fn min -- -1 -5`). A command-line refusal is the `--json` envelope, on stdout, when `--json` stands before any `--`, and the diagnostic on stderr otherwise; either way the exit code is 1. The table is rendered from the one the command line is read against (`vera/command_line.py`):
 
 <!-- render_lists:begin command-options -->
 | Command | Reads | Options |
@@ -48,7 +48,7 @@ Each command takes the options it lists below and refuses any other (E901), and 
 | `vera serve` | one `.vera` file | `--port <n>`, `--host <h>` |
 | `vera ast` | one `.vera` file | `--json` |
 | `vera fmt` | one `.vera` file | `--write`, `--check` |
-| `vera lsp` | no file | none |
+| `vera lsp` | no file | `--stdio` |
 | `vera builtins` | no file | `--json` |
 | `vera effects` | no file | `--json` |
 | `vera errors` | no file | `--json` |

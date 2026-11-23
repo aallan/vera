@@ -803,7 +803,8 @@ _PINS: list[tuple[Any, dict[str, Any]]] = [
          'location': {'line': 0, 'column': 0, 'file': 'dir/missing.vera'},
          'rationale': 'A command reads the Vera source file its command line names, '
                       'and no file exists at that path. A relative path is read from '
-                      'the directory the command runs in.',
+                      'the directory the command runs in; a directory, or an empty '
+                      'argument, is not a source file.',
          'fix': 'Name a .vera file that exists: a path relative to the directory the '
                 'command runs in, or an absolute one.\n'
                 '\n'
@@ -846,10 +847,12 @@ _PINS: list[tuple[Any, dict[str, Any]]] = [
          'location': {'line': 0, 'column': 0},
          'rationale': "An option's value must be one the option takes. The description "
                       'names the option and, where it takes a fixed set, the values.',
-         'fix': 'Give the option a value it takes: `--target` wasm, browser or '
-                'wasi-p2; `--world` cli or server; `--trials` and `--port` an integer; '
-                '`--timeout-ms` and VERA_Z3_TIMEOUT_MS a positive integer number of '
-                'milliseconds.\n'
+         'fix': 'Give the option a value it takes, as the next argument: `--target` '
+                'wasm, browser or wasi-p2 (for `vera run`, wasm or wasi-p2); '
+                '`--world` cli or server; `--trials` a positive integer; `--port` an '
+                "integer from 0 to 65535; `--fn` a function's name; `--timeout-ms` "
+                'and VERA_Z3_TIMEOUT_MS a positive integer number of milliseconds, '
+                'at most 4294967295.\n'
                 '\n'
                 '  vera verify --timeout-ms 60000 program.vera',
          'spec_ref': 'Chapter 0, Section 0.5.1 "Diagnostic Structure"',
@@ -1221,7 +1224,9 @@ FIXES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "E903": (("test", "--trials", "x", "{ok}"), ("test", "--trials", "3", "{ok}")),
     "E904": (("frobnicate", "{ok}"), ("check", "{ok}")),
     "E906": (("run", "--fn", "nope", "{ok}"), ("run", "{ok}", "--fn", "main")),
-    "E908": (("compile", "--wat", "--target", "browser", "{lib}"),
+    # `--wat` with `--target browser` is E902 (#1872): it printed the core
+    # module's text and emitted no bundle, so the cell names the target alone.
+    "E908": (("compile", "--target", "browser", "{lib}"),
              ("compile", "--wat", "{lib}")),
     "E909": (("run", "--fn", "add", "{ok}", "--", "1"),
              ("run", "--fn", "add", "{ok}", "--", "1", "2")),

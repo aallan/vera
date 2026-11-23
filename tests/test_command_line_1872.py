@@ -43,7 +43,7 @@ COMMANDS = ("parse", "check", "typecheck", "verify", "test", "compile",
 FILELESS = frozenset({"lsp", "builtins", "effects", "errors", "version"})
 FLAGS = ("--json", "--quiet", "--wat", "--write", "--check",
          "--explain-slots", "--distrust", "--reconcile", "--no-reconcile",
-         "--help", "-h", "--bogus")
+         "--stdio", "--help", "-h", "--bogus")
 VALUED = ("--fn", "-o", "--trials", "--target", "--port", "--host",
           "--world", "--timeout-ms")
 
@@ -60,7 +60,9 @@ TAKES: dict[str, frozenset[str]] = {
     "serve": frozenset({"--port", "--host"}),
     "ast": frozenset({"--json"}),
     "fmt": frozenset({"--write", "--check"}),
-    "lsp": frozenset(),
+    # Editors pass `--stdio` by habit; stdio is the server's one transport
+    # (LSP_SERVER.md), so the option states what happens.
+    "lsp": frozenset({"--stdio"}),
     "builtins": frozenset({"--json"}),
     "effects": frozenset({"--json"}),
     "errors": frozenset({"--json"}),
@@ -97,8 +99,9 @@ def _honoured(flag: str, value: str | None) -> tuple[str, Any]:
 def _cells() -> list[Any]:
     """Every cell: (command, argv after the command, expected outcome).
 
-    An outcome is ``("honoured", kw, value)``, ``("default",)``,
-    ``("help",)``, ``("program", [args])`` or ``("refused", code)``."""
+    An outcome is ``("honoured", kw, value)``, ``("moved", {kw: value})``,
+    ``("default",)``, ``("help",)``, ``("program", [args])`` or
+    ``("refused", code)``, with the text the refusal must hold after it."""
     cells: list[Any] = []
 
     def add(cmd: str, argv: list[str], outcome: tuple[Any, ...]) -> None:
@@ -113,7 +116,7 @@ def _cells() -> list[Any]:
                 taken: tuple[Any, ...] = ("help",)
             elif flag not in takes:
                 taken = ("refused", "E901")
-            elif flag == "--reconcile":
+            elif flag in ("--reconcile", "--stdio"):
                 taken = ("default",)
             else:
                 taken = ("honoured", *_honoured(flag, toks[-1]))
@@ -147,6 +150,58 @@ def _cells() -> list[Any]:
         add("run", ["a.vera", "--fn", "f", "--", *args], ("program", args))
     # A value `vera run` does not take, though `vera compile` does.
     add("run", ["--target", "browser", "a.vera"], ("refused", "E903"))
+
+    # Each valued option's domain: zero, negative, non-numeric, empty and far
+    # too large, on each command that takes it.  A count of trials has no
+    # ceiling (a large one is slow, not wrong); a port is 0 to 65535 (0 lets
+    # the system pick); a budget is 1 to 2**32 - 1 ms, Z3's unsigned limit,
+    # above which it would wrap; a function's name is an identifier.
+    huge = "1" + "0" * 30
+    ok_any = {"0": True, "-5": True, "abc": True, "": False, huge: True}
+    domains = {
+        "--trials": ({"0": False, "-5": False, "abc": False, "": False, huge: True},
+                     int),
+        "--port": ({"0": True, "-5": False, "abc": False, "": False, huge: False},
+                   int),
+        "--timeout-ms": ({v: False for v in ok_any}, int),
+        "--fn": ({"0": False, "-5": False, "abc": True, "": False, huge: False}, str),
+        "-o": (ok_any, str), "--host": (ok_any, str),
+        "--target": ({v: False for v in ok_any}, str),
+        "--world": ({v: False for v in ok_any}, str),
+    }
+    for cmd in COMMANDS:
+        for flag, (accepts, kind) in domains.items():
+            if flag not in TAKES[cmd] or cmd == "typecheck":
+                continue
+            for value, accepted in accepts.items():
+                kw = _honoured(flag, value)[0]
+                add(cmd, [flag, value, "a.vera"],
+                    ("honoured", kw, kind(value)) if accepted else ("refused", "E903"))
+            # The next token is an option, not a value: a missing value.
+            add(cmd, ["a.vera", flag, "--json"], ("refused", "E903"))
+            # The equals form, refused with a fix that writes it with a space.
+            value = _value(cmd, flag)
+            add(cmd, ["a.vera", f"{flag}={value}"],
+                ("refused", "E901", f"{flag} {value}"))
+    # A flag written with `=` takes no value.
+    add("check", ["a.vera", "--json=1"], ("refused", "E901", "takes no value"))
+    # An option another command takes, written with `=`, names its owners.
+    add("check", ["a.vera", "--trials=5"], ("refused", "E901", "`vera test`"))
+
+    # The pairs a command refuses together, and their nearest neighbours.
+    add("fmt", ["--check", "--write", "a.vera"], ("refused", "E902"))
+    add("fmt", ["--write", "--check", "a.vera"], ("refused", "E902"))
+    add("verify", ["--reconcile", "--no-reconcile", "a.vera"], ("refused", "E902"))
+    add("verify", ["--no-reconcile", "--reconcile", "a.vera"], ("refused", "E902"))
+    add("compile", ["--wat", "-o", "x.wasm", "a.vera"], ("refused", "E902"))
+    add("compile", ["-o", "x.wasm", "--wat", "a.vera"], ("refused", "E902"))
+    add("compile", ["--wat", "--target", "browser", "a.vera"], ("refused", "E902"))
+    add("compile", ["--wat", "--target", "wasi-p2", "a.vera"],
+        ("moved", {"wat": True, "target": "wasi-p2"}))
+    add("compile", ["-o", "x", "--target", "browser", "a.vera"],
+        ("moved", {"output": "x", "target": "browser"}))
+    add("verify", ["--json", "--quiet", "a.vera"],
+        ("moved", {"as_json": True, "quiet": True}))
     return cells
 
 
@@ -209,6 +264,8 @@ class TestMatrix:
             assert calls == [], calls
             assert run.returncode == 1, run
             assert _code(run, "--json" in own) == outcome[1]
+            if len(outcome) > 2:
+                assert outcome[2] in run.stdout + run.stderr, run
             return
         if kind == "help":
             assert calls == [], calls
@@ -227,6 +284,8 @@ class TestMatrix:
             assert moved == {}
         elif kind == "honoured":
             assert moved == {outcome[1]: outcome[2]}
+        elif kind == "moved":
+            assert moved == outcome[1]
         else:
             assert moved == {"raw_fn_args": outcome[1]} or (
                 "--fn" in own and moved == {"raw_fn_args": outcome[1],
@@ -332,6 +391,9 @@ def test_repro_no_arguments_prints_the_usage_and_fails() -> None:
     (("version", "extra"), "E904"),
     (("builtins", "{good}"), "E904"),
     (("lsp", "--json"), "E901"),
+    (("serve", "--port", "70000", "{good}"), "E903"),
+    (("run", "--fn", "0", "{good}"), "E903"),
+    (("test", "--fn", "", "{good}"), "E903"),
 ], ids=lambda v: " ".join(v) if isinstance(v, tuple) else v)
 def test_repro_each_refusal_kind_through_the_entry_point(
         tmp_path: Path, argv: tuple[str, ...], code: str) -> None:
@@ -448,6 +510,134 @@ def test_repro_benchmark_harness_run_fn_without_arguments(tmp_path: Path) -> Non
 
 
 # =====================================================================
+# Values, operands and pairs, through the real entry point
+# =====================================================================
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_repro_a_test_gate_with_no_trials_is_refused(tmp_path: Path, value: str) -> None:
+    """`vera test FILE --trials 0` (or `-5`) printed "Testing:", ran no
+    trial and exited 0: a gate that passes having tested nothing.  A count
+    of trials is a positive integer, and anything else is E903."""
+    f = _files(tmp_path)
+    run = pipeline.cli("test", f["min"], "--trials", value)
+    assert run.returncode == 1 and run.stdout == "", run
+    assert run.stderr.startswith("[E903] "), run.stderr
+    assert (f"Invalid --trials value: {value} (expected a positive integer)"
+            in run.stderr), run.stderr
+
+
+@pytest.mark.parametrize(("env", "argv"), [
+    ({}, ("--timeout-ms", str(2**32))),
+    ({"VERA_Z3_TIMEOUT_MS": str(2**32)}, ()),
+])
+def test_repro_a_budget_past_the_solver_s_limit_is_refused(
+        tmp_path: Path, env: dict[str, str], argv: tuple[str, ...]) -> None:
+    """Z3 takes its budget as a C unsigned int, so 2**32 ms wrapped to 0
+    and a budget of 2**32 + 1 ms to 1 ms, silently.  The flag and the
+    variable share one validator, which refuses past 2**32 - 1 (E903)."""
+    f = _files(tmp_path)
+    run = pipeline.cli("verify", *argv, f["good"], env=env)
+    assert run.returncode == 1, run
+    assert "[E903]" in run.stderr and "the solver's limit" in run.stderr, run.stderr
+
+
+@pytest.mark.parametrize("operand", ["sub", ""], ids=["directory", "empty"])
+@pytest.mark.parametrize("command", ["check", "verify", "fmt", "run"])
+def test_repro_an_operand_that_is_no_file_is_e900_not_e699(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operand: str,
+        command: str) -> None:
+    """`vera check sub` (a directory) and `vera check ''` were E699, the
+    internal-error code, for a user's mistake.  Each is E900, with its fix."""
+    (tmp_path / "sub").mkdir()
+    monkeypatch.chdir(tmp_path)
+    run = pipeline.cli(command, operand)
+    assert run.returncode == 1, run
+    assert run.stderr.startswith("[E900] "), run.stderr
+    assert "E699" not in run.stderr
+    assert ("is a directory" if operand else "an empty argument") in run.stderr
+    run = pipeline.cli(command, "--json", operand) if command != "fmt" else None
+    if run is not None:
+        envelope = json.loads(run.stdout)
+        assert envelope["diagnostics"][0]["error_code"] == "E900", envelope
+
+
+def test_repro_a_file_whose_name_begins_with_a_dash(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`vera check -dash.vera` read the file at base; now a dash-led token
+    is an option, so the refusal says how to name the file: `./-dash.vera`,
+    which checks.  After `--` the same holds."""
+    (tmp_path / "-dash.vera").write_text(GOOD, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    for argv in (("check", "-dash.vera"), ("check", "--", "-dash.vera")):
+        run = pipeline.cli(*argv)
+        assert run.returncode == 1 and run.stderr.startswith("[E901] "), run
+        assert "vera check ./-dash.vera" in run.stderr, run.stderr
+    run = pipeline.cli("check", "./-dash.vera")
+    assert (run.returncode, run.stdout) == (0, "OK: ./-dash.vera\n"), run
+
+
+@pytest.mark.parametrize(("argv", "fix"), [
+    (("run", "{min}", "--fn=min_of_two", "--", "1", "2"),
+     "vera run --fn min_of_two program.vera"),
+    (("test", "{min}", "--trials=5"), "vera test --trials 5 program.vera"),
+    (("verify", "--timeout-ms=5000", "{good}"), "vera verify --timeout-ms 5000 program.vera"),
+    (("compile", "{good}", "--target=browser"), "vera compile --target browser program.vera"),
+])
+def test_repro_the_equals_form_says_how_to_write_it(
+        tmp_path: Path, argv: tuple[str, ...], fix: str) -> None:
+    """`--fn=add` and its kind are refused (E901), at base two were ignored;
+    the fix writes the option and its value as two arguments."""
+    f = _files(tmp_path)
+    run = pipeline.cli(*[a.format(**f) for a in argv])
+    assert run.returncode == 1 and run.stderr.startswith("[E901] "), run
+    assert fix in run.stderr, run.stderr
+
+
+def test_repro_an_option_where_a_value_is_due_is_a_missing_value(
+        tmp_path: Path) -> None:
+    """`vera run FILE --fn --json` was E906, "function not found" for a
+    function called `--json`.  The value is missing: E903, and the `--json`
+    the command line holds makes the refusal the envelope."""
+    f = _files(tmp_path)
+    run = pipeline.cli("run", f["min"], "--fn", "--json")
+    assert run.returncode == 1 and run.stderr == "", run
+    (diag,) = json.loads(run.stdout)["diagnostics"]
+    assert (diag["error_code"], diag["description"]) == ("E903", "--fn: missing value")
+    run = pipeline.cli("run", f["min"], "--fn", "--quiet")
+    assert run.returncode == 1 and run.stderr.startswith("[E903] "), run
+    assert "--fn: missing value" in run.stderr
+
+
+@pytest.mark.parametrize("argv", [
+    ("fmt", "--check", "--write", "{ugly}"),
+    ("compile", "--wat", "-o", "{out}", "{good}"),
+    ("compile", "--wat", "--target", "browser", "{good}"),
+])
+def test_repro_options_that_contradict_each_other(
+        tmp_path: Path, argv: tuple[str, ...]) -> None:
+    """`vera fmt --check --write FILE` exited 0 and only checked;
+    `--wat -o` printed the WAT and wrote nothing; `--wat --target browser`
+    printed the core module's WAT and emitted no bundle.  Each is E902, as
+    `--reconcile --no-reconcile` was already, and nothing is written."""
+    f = _files(tmp_path)
+    before = Path(f["ugly"]).read_text(encoding="utf-8")
+    out = tmp_path / "x.wasm"
+    run = pipeline.cli(*[a.format(out=out.as_posix(), **f) for a in argv])
+    assert run.returncode == 1 and run.stderr.startswith("[E902] "), run
+    assert ", not both." in run.stderr
+    assert Path(f["ugly"]).read_text(encoding="utf-8") == before
+    assert not out.exists()
+
+
+def test_repro_lsp_lists_stdio() -> None:
+    """`vera lsp --stdio`, the flag editors pass by habit, is an option the
+    server lists: stdio is its one transport.  Its help names it."""
+    run = pipeline.cli("lsp", "--help")
+    assert run.returncode == 0 and "--stdio" in run.stdout, run
+
+
+# =====================================================================
 # The documents: every command line they show, read by the table
 # =====================================================================
 
@@ -526,6 +716,9 @@ def test_every_documented_command_line_is_one_the_table_takes() -> None:
             if not isinstance(read, Refusal):
                 continue
             if read.diagnostic.description.endswith(": missing value"):
+                continue
+            # Whether the file exists is the tree's, not the table's.
+            if read.diagnostic.error_code == "E900":
                 continue
             refused.append(f"{path.relative_to(ROOT).as_posix()}:{line}: vera "
                            f"{' '.join(tokens)}: {read.diagnostic.description}")

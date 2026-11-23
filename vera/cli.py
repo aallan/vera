@@ -2125,12 +2125,6 @@ def main() -> None:
 
     command = read.command.name
     use_json = read.flag("--json")
-    # `vera verify` reconciles by default, which `--reconcile` states and
-    # `--no-reconcile` turns off, so the two together contradict each other.
-    if read.flag("--reconcile") and read.flag("--no-reconcile"):
-        _refuse_command_line(command_errors.contradictory_options(
-            "`vera verify` takes --reconcile or --no-reconcile, not both."),
-            as_json=use_json)
 
     if command == "version":
         sys.exit(cmd_version())
