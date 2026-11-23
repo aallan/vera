@@ -225,9 +225,9 @@ def _char_forms(char: str) -> list[list[str]]:
     return forms
 
 
-@functools.lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=32)
 def _key_patterns(
-    api_key: str,
+    key: str,
 ) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
     r"""The configured key as patterns over the text a message quotes: the
     key whole; a form of its first character; and the start of the key at
@@ -258,7 +258,7 @@ def _key_patterns(
     key's own `\` and `&`: the work a text can cause is bounded by the
     configured key, which the text does not choose.
     """
-    forms = [_char_forms(c) for c in api_key]
+    forms = [_char_forms(c) for c in key]
     whole = "".join(
         "(?:" + "|".join("".join(f) for f in fs) + ")" for fs in forms)
 
@@ -278,13 +278,28 @@ def _key_patterns(
             re.compile(f"(?:{tail})\\Z"))
 
 
-def _key_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
-    """The spans of *text* that hold the configured key, in any of its
+@dataclass(frozen=True)
+class HeldKeys:
+    """The keys the host holds (#1854), which every redaction removes:
+    built by :func:`_held_keys` alone, once per call of the host function.
+    No redaction takes a single key, so no redaction chooses which of the
+    host's keys a text may carry; the selected provider's key is passed on
+    its own only where it is sent (the request's header)."""
+
+    keys: tuple[str, ...] = ()
+
+
+#: The held set of a host that holds no key.
+NO_KEYS = HeldKeys()
+
+
+def _key_spans(text: str, key: str, *, cut: bool) -> list[tuple[int, int]]:
+    """The spans of *text* that hold *key*, one key the host holds, in any of its
     forms (:func:`_key_patterns`): every whole occurrence, and, at the end
     of a text a cut ended, the key's start."""
-    if not api_key:
+    if not key:
         return []
-    whole, first, at_cut = _key_patterns(api_key)
+    whole, first, at_cut = _key_patterns(key)
     spans = [m.span() for m in whole.finditer(text)]
     if cut:
         # The start of the key at the end of the text begins with a form
@@ -292,7 +307,7 @@ def _key_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
         # the key can be written (fewer than its length in characters,
         # each in its longest form): each such place is tried, leftmost
         # (longest) first.
-        window = max(0, len(text) - len(api_key) * _LONGEST_FORM)
+        window = max(0, len(text) - len(key) * _LONGEST_FORM)
         for begin in first.finditer(text, window):  # pragma: no mutate — equivalent: the cut pattern is anchored at the text's end, so no place before the window can begin a match; the window bounds the places tried
             m = at_cut.match(text, begin.start())
             if m is not None:
@@ -325,18 +340,22 @@ def _credential_tail(text: str) -> tuple[int, int] | None:
     return None if prefix is None else (prefix.start(), len(text))
 
 
-def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
+def _secret_spans(
+    text: str, *, held: HeldKeys, cut: bool,
+) -> list[tuple[int, int]]:
     """Where a secret stands in *text*, each rule's spans found on *text*
     as it is (#1854).
 
     Every rule reads the original text, so no rule reads what another has
-    already replaced, and none can stop another from running: the
-    configured key whole, in any of its forms (`_key_spans`); a
+    already replaced, and none can stop another from running: each key
+    the host holds whole, in any of its forms (`_key_spans`); a
     credential-shaped token; and, at the end of a text a cut ended (*cut*),
-    the key's start in any of its forms and a credential-shaped token's
-    start, since the cut may have taken the rest of either.
+    each held key's start in any of its forms and a credential-shaped
+    token's start, since the cut may have taken the rest of either.
     """
-    spans = _key_spans(text, api_key, cut=cut)
+    spans: list[tuple[int, int]] = []
+    for key in held.keys:
+        spans.extend(_key_spans(text, key, cut=cut))
     spans.extend(m.span() for m in _CREDENTIAL_RE.finditer(text))
     if cut:
         tail = _credential_tail(text)
@@ -364,7 +383,7 @@ def _replace_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return "".join(out)
 
 
-def _redact(text: str, api_key: str) -> str:
+def _redact(text: str, *, held: HeldKeys) -> str:
     """*text* with the configured key and credential-shaped tokens removed.
 
     Two rules, because neither covers the other: the configured key is
@@ -373,14 +392,16 @@ def _redact(text: str, api_key: str) -> str:
     never given — a proxy quoting a DIFFERENT tenant's credential, or the
     same key in a form the exact match cannot see.
     """
-    return _replace_spans(text, _secret_spans(text, api_key, cut=False))  # pragma: no mutate — equivalent: `cut` is read only as a truth value, and `None` is false
+    return _replace_spans(text, _secret_spans(text, held=held, cut=False))  # pragma: no mutate — equivalent: `cut` is read only as a truth value, and `None` is false
 
 
-def _held_keys(env: Mapping[str, str]) -> tuple[str, ...]:
-    """Every key the host holds: the value of each provider's key variable
-    that is set, whichever provider is selected, and each as the host reads
-    the provider variable (lower-cased), since a key written there is
-    quoted back in that form (#1854)."""
+def _held_keys(env: Mapping[str, str]) -> HeldKeys:
+    """Every key the host holds, the one source of :class:`HeldKeys`: the
+    value of each provider's key variable that is set, whichever provider
+    is selected, and each as the host reads the provider variable
+    (lower-cased), since a key written there is quoted back in that form
+    (#1854).  The host computes it once per call, and every redaction,
+    cut or not, takes it."""
     held: list[str] = []
     for cfg in _PROVIDERS.values():
         key = env.get(cfg.env_key)
@@ -389,21 +410,10 @@ def _held_keys(env: Mapping[str, str]) -> tuple[str, ...]:
         for form in (key, key.lower()):
             if form not in held:
                 held.append(form)
-    return tuple(held)
+    return HeldKeys(tuple(held))
 
 
-def _redact_held(text: str, keys: tuple[str, ...]) -> str:
-    """*text* with every key in *keys* and every credential-shaped token
-    removed, each rule's spans found on *text* as it is (`_secret_spans`).
-    The text is whole: no cut ended it, so no rule reads its end as the
-    start of a secret."""
-    spans = [m.span() for m in _CREDENTIAL_RE.finditer(text)]
-    for key in keys:
-        spans.extend(_key_spans(text, key, cut=False))
-    return _replace_spans(text, spans)
-
-
-def _redact_cut(text: str, api_key: str) -> str:
+def _redact_cut(text: str, *, held: HeldKeys) -> str:
     """*text*, which a cut ended, redacted so the cut leaves no part of a
     secret (#1854).
 
@@ -418,7 +428,7 @@ def _redact_cut(text: str, api_key: str) -> str:
     way, so what this drops is at most part of a word the cut had already
     split.
     """
-    return _replace_spans(text, _secret_spans(text, api_key, cut=True))
+    return _replace_spans(text, _secret_spans(text, held=held, cut=True))
 
 
 def _or_blank(rendered: str) -> str:
@@ -433,7 +443,7 @@ def _or_blank(rendered: str) -> str:
     return rendered or "(blank)"
 
 
-def _safe(text: str, api_key: str) -> str:
+def _safe(text: str, *, held: HeldKeys) -> str:
     """Provider-supplied text, made fit for a Vera value: redacted, then bounded.
 
     Both, in that order, at every point where text we did not write enters
@@ -443,10 +453,10 @@ def _safe(text: str, api_key: str) -> str:
     provider text and does NOT go through here is a leak, which is how
     the six paths beyond the reported one were found.
     """
-    return _truncate(_redact(text, api_key))
+    return _truncate(_redact(text, held=held))
 
 
-def _describe_keys(value: object, api_key: str = "") -> str:
+def _describe_keys(value: object, *, held: HeldKeys) -> str:
     """The keys of *value* if it is an object, else what it actually is.
 
     Used only inside error messages: when a response does not have the
@@ -463,13 +473,13 @@ def _describe_keys(value: object, api_key: str = "") -> str:
         if not value:
             return "(no keys)"
         return (
-            _safe(", ".join(str(k) for k in value), api_key)
+            _safe(", ".join(str(k) for k in value), held=held)
             or "(keys are blank)"
         )
     return f"(not an object: {type(value).__name__})"
 
 
-def _describe_types(items: list[object], api_key: str = "") -> str:
+def _describe_types(items: list[object], *, held: HeldKeys) -> str:
     """The distinct `type` discriminators in *items*, in first-seen order.
 
     This is what turns #1333's failure into a self-explaining one: an
@@ -490,10 +500,12 @@ def _describe_types(items: list[object], api_key: str = "") -> str:
     # that they rendered as nothing.
     if not seen:
         return "(none)"
-    return _safe(", ".join(seen), api_key) or "(types are blank)"
+    return _safe(", ".join(seen), held=held) or "(types are blank)"
 
 
-def _reason_clause(container: object, field: str, api_key: str = "") -> str:
+def _reason_clause(
+    container: object, field: str, *, held: HeldKeys,
+) -> str:
     """`; <field>=<value>` when *container* carries one, else "".
 
     `stop_reason` (Anthropic) and `finish_reason` (OpenAI-style) are what
@@ -514,7 +526,7 @@ def _reason_clause(container: object, field: str, api_key: str = "") -> str:
     # Rendered first: a whitespace-only value is PRESENT, so the clause
     # stays and says the value was blank, rather than being dropped (which
     # would read as absent) or left dangling as `; stop_reason=`.
-    return f"; {field}={_or_blank(_safe(str(value), api_key))}"
+    return f"; {field}={_or_blank(_safe(str(value), held=held))}"
 
 
 #: Reason values under which an EMPTY completion is a failure rather than a
@@ -533,7 +545,8 @@ def _empty_completion_error(
     field: str,
     provider: str,
     model: str,
-    api_key: str,
+    *,
+    held: HeldKeys,
 ) -> InferenceError | None:
     """The error for an empty completion the provider itself explained, or None.
 
@@ -564,7 +577,7 @@ def _empty_completion_error(
         return None
     return InferenceError(
         f"Inference provider '{provider}' ({model}) returned an empty "
-        f"completion{_reason_clause(container, field, api_key)}.",
+        f"completion{_reason_clause(container, field, held=held)}.",
     )
 
 
@@ -573,7 +586,8 @@ def _missing_or_wrong(
     field: str,
     expected: str,
     where: str = "response",
-    api_key: str = "",
+    *,
+    held: HeldKeys,
 ) -> str:
     """Why *field* is unusable on *container*: absent, or the wrong type.
 
@@ -593,7 +607,7 @@ def _missing_or_wrong(
     if field not in container:
         return (
             f"no '{field}' {expected} in the {where}; "
-            f"{where} keys: {_describe_keys(container, api_key)}"
+            f"{where} keys: {_describe_keys(container, held=held)}"
         )
     article = "an" if expected[:1].lower() in "aeiou" else "a"
     return (
@@ -616,7 +630,8 @@ def _text_fragments(
     model: str,
     kind: str,
     discriminators: tuple[str, ...] = ("text",),
-    api_key: str = "",
+    *,
+    held: HeldKeys,
 ) -> list[str]:
     """Every text entry's text, in order, as strings.
 
@@ -643,7 +658,7 @@ def _text_fragments(
             raise InferenceError(
                 f"Inference provider '{provider}' ({model}) returned a "
                 f"{kind} with no 'text' field "
-                f"(keys: {_describe_keys(item, api_key)}).",
+                f"(keys: {_describe_keys(item, held=held)}).",
             )
         value = item["text"]
         if not isinstance(value, str):
@@ -656,7 +671,7 @@ def _text_fragments(
     return fragments
 
 
-def _error_body_detail(raw: bytes, api_key: str = "") -> str:
+def _error_body_detail(raw: bytes, *, held: HeldKeys) -> str:
     """The provider's own message out of an HTTP error body.
 
     Anthropic and every OpenAI-compatible provider spell a rejection as
@@ -679,16 +694,16 @@ def _error_body_detail(raw: bytes, api_key: str = "") -> str:
     try:
         parsed = _json.loads(text)
     except ValueError:
-        return _safe(text, api_key)
+        return _safe(text, held=held)
     if isinstance(parsed, dict):
         err = parsed.get("error")
         if isinstance(err, dict) and isinstance(err.get("message"), str):
-            return _safe(str(err["message"]), api_key)
+            return _safe(str(err["message"]), held=held)
         if isinstance(err, str) and err:
-            return _safe(err, api_key)
+            return _safe(err, held=held)
         if isinstance(parsed.get("message"), str):
-            return _safe(str(parsed["message"]), api_key)
-    return _safe(text, api_key)
+            return _safe(str(parsed["message"]), held=held)
+    return _safe(text, held=held)
 
 
 def _character_cut(raw: bytes, cap: int) -> int:
@@ -722,7 +737,7 @@ def _character_cut(raw: bytes, cap: int) -> int:
     return lead if lead + length > cap else cap
 
 
-def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
+def _read_error_body(http_err: HTTPError, *, held: HeldKeys) -> str:
     """The provider's error detail, read under a cap and never fatally.
 
     A bare `http_err.read()` pulls the WHOLE body into memory before
@@ -765,9 +780,9 @@ def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
         # stripping.  `_truncate` marks on length alone, so a short envelope
         # padded past the cap with whitespace strips back under the bound
         # and would be reported as if complete.
-        redacted = _redact_cut(head, api_key).strip()
+        redacted = _redact_cut(head, held=held).strip()
         return redacted[:_ERROR_BODY_CHARS] + "... (truncated)"
-    return _error_body_detail(raw, api_key)
+    return _error_body_detail(raw, held=held)
 
 
 def _refuse_unsendable_key(
@@ -797,6 +812,8 @@ def _call_inference_provider(
     prompt: str,
     model: str,
     api_key: str,
+    *,
+    held: HeldKeys,
 ) -> str:
     """Dispatch a completion request to the configured LLM provider.
 
@@ -866,7 +883,7 @@ def _call_inference_provider(
         # provider that rejected the request nor the reason it gave.
         # The status line is the least useful half of what the API
         # actually sent back.
-        detail = _read_error_body(http_err, api_key)
+        detail = _read_error_body(http_err, held=held)
         raise InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) rejected "
             f"the request: HTTP {http_err.code}: {detail}",
@@ -883,7 +900,7 @@ def _call_inference_provider(
         raise InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) returned a "
             f"response body that is not JSON: "
-            f"{_or_blank(_safe(decoded, api_key))}",
+            f"{_or_blank(_safe(decoded, held=held))}",
         ) from None
 
     # #1333 — select the completion by SHAPE, never by position.  The
@@ -904,25 +921,25 @@ def _call_inference_provider(
             # field that explained it.
             raise InferenceError(
                 f"Inference provider '{provider}' ({chosen_model}) returned "
-                f"no text block ({_missing_or_wrong(data, 'content', 'list', api_key=api_key)}"
-                f"{_reason_clause(data, 'stop_reason', api_key)}).",
+                f"no text block ({_missing_or_wrong(data, 'content', 'list', held=held)}"
+                f"{_reason_clause(data, 'stop_reason', held=held)}).",
             )
         texts = _text_fragments(
-            content, provider, chosen_model, "text block", api_key=api_key,
+            content, provider, chosen_model, "text block", held=held,
         )
         if not texts:
             raise InferenceError(
                 f"Inference provider '{provider}' ({chosen_model}) returned "
                 f"no text block (content block types: "
-                f"{_describe_types(content, api_key)}"
-                f"{_reason_clause(data, 'stop_reason', api_key)}).",
+                f"{_describe_types(content, held=held)}"
+                f"{_reason_clause(data, 'stop_reason', held=held)}).",
             )
         # Joined without a separator: consecutive text blocks are
         # fragments of one message, so concatenation reconstructs
         # exactly what the model emitted.
         joined = "".join(texts)
         empty_error = _empty_completion_error(
-            joined, data, "stop_reason", provider, chosen_model, api_key,
+            joined, data, "stop_reason", provider, chosen_model, held=held,
         )
         if empty_error is not None:
             raise empty_error
@@ -934,7 +951,7 @@ def _call_inference_provider(
         detail = (
             "the 'choices' list is empty"
             if isinstance(choices, list)
-            else _missing_or_wrong(data, "choices", "list", api_key=api_key)
+            else _missing_or_wrong(data, "choices", "list", held=held)
         )
         raise InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) returned no "
@@ -945,7 +962,7 @@ def _call_inference_provider(
     # Read off the choice, not the response: `finish_reason` is the
     # OpenAI-style analogue of `stop_reason`, and it is what says a reply
     # was cut at the token budget rather than withheld.
-    finish = _reason_clause(first, "finish_reason", api_key)
+    finish = _reason_clause(first, "finish_reason", held=held)
     if not isinstance(first, dict):
         raise InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) returned no "
@@ -957,7 +974,7 @@ def _call_inference_provider(
         raise InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) returned no "
             f"completion text ("
-            f"{_missing_or_wrong(first, 'message', 'object', 'choice', api_key)}"
+            f"{_missing_or_wrong(first, 'message', 'object', 'choice', held=held)}"
             f"{finish}).",
         )
 
@@ -973,7 +990,7 @@ def _call_inference_provider(
         if isinstance(refusal, str) and refusal.strip():
             return InferenceError(
                 f"Inference provider '{provider}' ({chosen_model}) refused "
-                f"the request: {_safe(refusal, api_key)}{finish}",
+                f"the request: {_safe(refusal, held=held)}{finish}",
             )
         return InferenceError(
             f"Inference provider '{provider}' ({chosen_model}) returned no "
@@ -998,7 +1015,7 @@ def _call_inference_provider(
         # `finish_reason` is the other half of the same rule, and lives on
         # the CHOICE rather than the message.
         empty_error = _empty_completion_error(
-            text, first, "finish_reason", provider, chosen_model, api_key,
+            text, first, "finish_reason", provider, chosen_model, held=held,
         )
         if empty_error is not None:
             raise empty_error
@@ -1025,7 +1042,7 @@ def _call_inference_provider(
         for _discriminator in _OPENAI_TEXT_TYPES:
             parts = _text_fragments(
                 content, provider, chosen_model, "text part",
-                (_discriminator,), api_key,
+                (_discriminator,), held=held,
             )
             if parts and first_result is None:
                 first_result = "".join(parts)
@@ -1048,11 +1065,11 @@ def _call_inference_provider(
             return _completion_or_refusal(first_result)
         raise _refusal_or(
             f"no text parts in the message content; "
-            f"part types: {_describe_types(content, api_key)}"
+            f"part types: {_describe_types(content, held=held)}"
         )
     raise _refusal_or(
         _missing_or_wrong(
-            message, "content", "string or list of parts", "message", api_key,
+            message, "content", "string or list of parts", "message", held=held,
         )
     )
 
@@ -1085,7 +1102,7 @@ def register_inference(
                 no longer reads as the key here, and this catches a text
                 that never passed a cut."""
                 return _alloc_result_err_string(
-                    caller, _redact_held(text, held))
+                    caller, _redact(text, held=held))
 
             provider = _env.get("VERA_INFERENCE_PROVIDER", "").lower()
 
@@ -1126,7 +1143,7 @@ def register_inference(
             resolved_model = model or (cfg.default_model if cfg else "unknown")
             try:
                 completion = _call_inference_provider(
-                    provider, prompt, model, api_key,
+                    provider, prompt, model, api_key, held=held,
                 )
                 return _alloc_result_ok_string(caller, completion)
             except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
@@ -1160,7 +1177,7 @@ def register_inference(
                 return _err(
                     f"Inference provider '{provider}' ({resolved_model}) "
                     f"failed: "
-                    f"{_safe(f'{type(exc).__name__}: {exc}', api_key)}",
+                    f"{_safe(f'{type(exc).__name__}: {exc}', held=held)}",
                 )
 
         linker.define_func(

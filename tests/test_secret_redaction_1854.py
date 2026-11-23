@@ -77,7 +77,7 @@ def _message(provider: str, key: str, *, raises: BaseException | None = None,
         transport = MagicMock(return_value=resp)
     with patch("urllib.request.urlopen", transport):
         try:
-            return inference._call_inference_provider(provider, "hi", "", key)
+            return inference._call_inference_provider(provider, "hi", "", key, held=inference.HeldKeys((key,)))
         except InferenceError as exc:
             return str(exc)
 
@@ -416,18 +416,18 @@ def test_every_form_of_every_printable_character() -> None:
         key = "Qz" + char + "Zq"
         for form in char_forms(char):
             text = f" Qz{form}Zq "
-            assert inference._redact(text, key) == " [redacted] ", (form, key)
+            assert inference._redact(text, held=inference.HeldKeys((key,))) == " [redacted] ", (form, key)
 
 
 def test_repro_a_mixed_solidus_escape() -> None:
     """One solidus escaped and the next not, as JSON allows."""
     key = "Opaque/First/Second"
-    assert inference._redact("x Opaque\\/First/Second y", key) == (
+    assert inference._redact("x Opaque\\/First/Second y", held=inference.HeldKeys((key,))) == (
         "x [redacted] y")
 
 
 def test_repro_a_unicode_escape_of_a_printable_character() -> None:
-    assert inference._redact("x Opaque\\u0026Second y", "Opaque&Second") == (
+    assert inference._redact("x Opaque\\u0026Second y", held=inference.HeldKeys(("Opaque&Second",))) == (
         "x [redacted] y")
 
 
@@ -435,7 +435,7 @@ def test_repro_a_unicode_escape_of_the_first_character_at_a_cut() -> None:
     """`\\u004F` for the key's first `O`, `\\"` for its quote, cut after
     `Credential`."""
     key = 'Opaque"CredentialRemainder'
-    assert inference._redact_cut(' \\u004Fpaque\\"Credential', key) == (
+    assert inference._redact_cut(' \\u004Fpaque\\"Credential', held=inference.HeldKeys((key,))) == (
         " [redacted]")
 
 
@@ -443,12 +443,12 @@ def test_repro_a_cut_inside_a_character_s_escape() -> None:
     """The cut ends inside the next character's form: `\\u002` goes with
     the prefix before it, and so does a form of the first character alone."""
     key = "Opaque&Second"
-    assert inference._redact_cut(" Opaque\\u002", key) == " [redacted]"
-    assert inference._redact_cut(" \\u00", key) == " [redacted]"
-    assert inference._redact_cut(" Opaque&am", key) == " [redacted]"
+    assert inference._redact_cut(" Opaque\\u002", held=inference.HeldKeys((key,))) == " [redacted]"
+    assert inference._redact_cut(" \\u00", held=inference.HeldKeys((key,))) == " [redacted]"
+    assert inference._redact_cut(" Opaque&am", held=inference.HeldKeys((key,))) == " [redacted]"
     # Negative space: a form that is no start of the first character's
     # (`O` is `O`, never `\u01..`).
-    assert inference._redact_cut(" plain end\\u01", key) == (
+    assert inference._redact_cut(" plain end\\u01", held=inference.HeldKeys((key,))) == (
         " plain end\\u01")
 
 
@@ -467,7 +467,7 @@ def test_the_cost_is_bounded_by_the_text_and_the_key() -> None:
               (escaped * (n // len(escaped) + 1))[:n]]
     for body in bodies:
         started = time.perf_counter()
-        inference._redact_cut(body, key)
+        inference._redact_cut(body, held=inference.HeldKeys((key,)))
         assert time.perf_counter() - started < 0.5, body[:20]
 
 
@@ -476,7 +476,7 @@ def test_repro_a_key_holding_a_credential_shaped_part_cut_inside_it() -> None:
     found no prefix of the key: `OpaqueCredentialPrefix-` was quoted."""
     key = "OpaqueCredentialPrefix-sk-12345678-END"
     text = key[:key.index("12345678") + 8]
-    assert inference._redact_cut(" " + text, key) == " [redacted]"
+    assert inference._redact_cut(" " + text, held=inference.HeldKeys((key,))) == " [redacted]"
 
 
 def test_repro_an_escaped_key_cut_inside_it() -> None:
@@ -485,20 +485,20 @@ def test_repro_an_escaped_key_cut_inside_it() -> None:
     key = r"OpaquePrefix\RemainderSecret"
     escaped = repr(key)[1:-1]
     text = escaped[:escaped.index("Remainder") + len("Remainder")]
-    assert inference._redact_cut(" " + text, key) == " [redacted]"
+    assert inference._redact_cut(" " + text, held=inference.HeldKeys((key,))) == " [redacted]"
 
 
 def test_repro_a_token_cut_where_the_key_s_first_character_ends_it() -> None:
     """The key-prefix rule matched the last `A` and returned before the
     credential-tail rule ran, leaving `sk-123456`."""
-    assert inference._redact_cut("x sk-123456A", "ABCDEFGH") == "x [redacted]"
+    assert inference._redact_cut("x sk-123456A", held=inference.HeldKeys(("ABCDEFGH",))) == "x [redacted]"
 
 
 def test_spans_that_touch_are_one_redaction() -> None:
     """Two secrets side by side are replaced once, and text between two
     secrets stays."""
-    assert inference._redact("ABCDEFGHABCDEFGH", "ABCDEFGH") == "[redacted]"
-    assert inference._redact("ABCDEFGH ABCDEFGH", "ABCDEFGH") == (
+    assert inference._redact("ABCDEFGHABCDEFGH", held=inference.HeldKeys(("ABCDEFGH",))) == "[redacted]"
+    assert inference._redact("ABCDEFGH ABCDEFGH", held=inference.HeldKeys(("ABCDEFGH",))) == (
         "[redacted] [redacted]")
 
 
@@ -506,7 +506,7 @@ def test_repro_1854_a_key_across_the_cap_leaves_nothing() -> None:
     """The issue's case: 20 of 40 characters before the cap."""
     key = "K" * 40
     body = b" " * (_ERROR_BODY_CAP - 20) + b"K" * 40 + b"tail"
-    detail = inference._read_error_body(_http_error(body), key)
+    detail = inference._read_error_body(_http_error(body), held=inference.HeldKeys((key,)))
     assert "K" not in detail.replace("... (truncated)", ""), detail
 
 
@@ -530,37 +530,37 @@ _ESCAPED = repr(_BACKSLASH_KEY)[1:-1]
 
 
 def test_repro_the_key_whole_is_replaced_once() -> None:
-    assert inference._redact(f"x {KEY} y", KEY) == "x [redacted] y"
-    assert inference._redact(f"x {_ESCAPED} y", _BACKSLASH_KEY) == (
+    assert inference._redact(f"x {KEY} y", held=inference.HeldKeys((KEY,))) == "x [redacted] y"
+    assert inference._redact(f"x {_ESCAPED} y", held=inference.HeldKeys((_BACKSLASH_KEY,))) == (
         "x [redacted] y")
-    assert inference._redact(f"x {_BACKSLASH_KEY} y", _BACKSLASH_KEY) == (
+    assert inference._redact(f"x {_BACKSLASH_KEY} y", held=inference.HeldKeys((_BACKSLASH_KEY,))) == (
         "x [redacted] y")
 
 
 def test_repro_a_credential_shaped_token_is_replaced() -> None:
-    assert inference._redact("x sk-ABCDEFGH y", "") == "x [redacted] y"
+    assert inference._redact("x sk-ABCDEFGH y", held=inference.HeldKeys(("",))) == "x [redacted] y"
 
 
 def test_repro_no_key_redacts_nothing_but_tokens() -> None:
-    assert inference._redact("plain text sk", "") == "plain text sk"
-    assert inference._redact_cut("plain text", "") == "plain text"
+    assert inference._redact("plain text sk", held=inference.HeldKeys(("",))) == "plain text sk"
+    assert inference._redact_cut("plain text", held=inference.HeldKeys(("",))) == "plain text"
 
 
 def test_repro_every_proper_prefix_of_the_key_at_the_cut() -> None:
     """The longest (all but one character) and the shortest (one) prefix,
     in each spelling."""
-    assert inference._redact_cut(" " + KEY[:-1], KEY) == " [redacted]"
-    assert inference._redact_cut(" " + KEY[:1], KEY) == " [redacted]"
-    assert inference._redact_cut(" " + KEY[:2], KEY) == " [redacted]"
-    assert inference._redact_cut(" " + _ESCAPED[:-1], _BACKSLASH_KEY) == (
+    assert inference._redact_cut(" " + KEY[:-1], held=inference.HeldKeys((KEY,))) == " [redacted]"
+    assert inference._redact_cut(" " + KEY[:1], held=inference.HeldKeys((KEY,))) == " [redacted]"
+    assert inference._redact_cut(" " + KEY[:2], held=inference.HeldKeys((KEY,))) == " [redacted]"
+    assert inference._redact_cut(" " + _ESCAPED[:-1], held=inference.HeldKeys((_BACKSLASH_KEY,))) == (
         " [redacted]")
-    assert inference._redact_cut(" " + _ESCAPED[:17], _BACKSLASH_KEY) == (
+    assert inference._redact_cut(" " + _ESCAPED[:17], held=inference.HeldKeys((_BACKSLASH_KEY,))) == (
         " [redacted]")
 
 
 def test_repro_a_token_s_start_at_the_cut() -> None:
-    assert inference._redact_cut(" ask-12", "") == " a[redacted]"
-    assert inference._redact("x sk-12", "") == "x sk-12"
+    assert inference._redact_cut(" ask-12", held=inference.HeldKeys(("",))) == " a[redacted]"
+    assert inference._redact("x sk-12", held=inference.HeldKeys(("",))) == "x sk-12"
 
 
 @pytest.mark.usefixtures("local_endpoints")
@@ -571,7 +571,7 @@ def test_repro_the_refusal_s_bounds() -> None:
         with patch("urllib.request.urlopen",
                    MagicMock(side_effect=urllib.error.URLError("sent"))):
             with pytest.raises(urllib.error.URLError):
-                inference._call_inference_provider("anthropic", "hi", "", key)
+                inference._call_inference_provider("anthropic", "hi", "", key, held=inference.HeldKeys((key,)))
     assert "cannot carry" in _message("anthropic", KEY + "\x7f")
 
 
@@ -579,7 +579,7 @@ def test_a_cut_text_with_no_secret_at_its_end_keeps_its_end() -> None:
     """Negative space: the end is redacted only where it could begin the
     key or a credential-shaped token."""
     body = b" " * (_ERROR_BODY_CAP - 9) + b"plain end" + b" tail"
-    detail = inference._read_error_body(_http_error(body), KEY)
+    detail = inference._read_error_body(_http_error(body), held=inference.HeldKeys((KEY,)))
     assert detail == "plain end... (truncated)", detail
 
 
@@ -593,7 +593,7 @@ def test_a_key_of_printable_ascii_is_sent() -> None:
 
     with patch("urllib.request.urlopen", side_effect=capture):
         with pytest.raises(urllib.error.URLError):
-            inference._call_inference_provider("anthropic", "hi", "", KEY)
+            inference._call_inference_provider("anthropic", "hi", "", KEY, held=inference.HeldKeys((KEY,)))
     assert len(seen) == 1
 
 
@@ -601,15 +601,15 @@ def test_repro_a_json_quoted_key_cut_inside_it() -> None:
     """A key holding a double quote is `\\"` in a JSON error body, which
     neither the key as it is nor its `repr` spells."""
     key = 'Opaque"CredentialRemainder'
-    assert inference._redact_cut(' Opaque\\"Credential', key) == " [redacted]"
-    assert inference._redact(f'x {json.dumps(key)[1:-1]} y', key) == (
+    assert inference._redact_cut(' Opaque\\"Credential', held=inference.HeldKeys((key,))) == " [redacted]"
+    assert inference._redact(f'x {json.dumps(key)[1:-1]} y', held=inference.HeldKeys((key,))) == (
         "x [redacted] y")
 
 
 def test_repro_an_html_quoted_key_cut_inside_it() -> None:
     key = "Opaque<Credential>Remainder"
-    assert inference._redact_cut(" Opaque&lt;Crede", key) == " [redacted]"
-    assert inference._redact_cut(" Opaque&l", key) == " [redacted]"
+    assert inference._redact_cut(" Opaque&lt;Crede", held=inference.HeldKeys((key,))) == " [redacted]"
+    assert inference._redact_cut(" Opaque&l", held=inference.HeldKeys((key,))) == " [redacted]"
 
 
 # --- Which input carries the key, by which message route --------------------
@@ -721,8 +721,8 @@ def test_repro_a_held_key_of_a_provider_not_selected() -> None:
     var = inference._PROVIDERS["openai"].env_key
     held = inference._held_keys({var: mixed,
                                  "VERA_INFERENCE_PROVIDER": "anthropic"})
-    assert held == (mixed, mixed.lower())
-    assert inference._redact_held(f"x {mixed.lower()} y", held) == (
+    assert held.keys == (mixed, mixed.lower())
+    assert inference._redact(f"x {mixed.lower()} y", held=held) == (
         "x [redacted] y")
 
 
@@ -752,8 +752,54 @@ def test_every_err_text_leaves_through_the_one_exit() -> None:
     """The `Err` of `Inference.complete` is built in one function, which
     redacts; a cut is made in one function, which redacts first."""
     assert _calls_by_function("_alloc_result_err_string") == {"_err"}
-    assert _calls_by_function("_redact_held") == {"_err"}
+    assert "_err" in _calls_by_function("_redact")
     assert _calls_by_function("_truncate") == {"_safe"}
+
+
+#: The functions that remove a secret from a text, or render a text that
+#: may hold one: each takes the held set, and nothing else, as `held`.
+REDACTIONS = frozenset({
+    "_secret_spans", "_redact", "_redact_cut", "_safe", "_describe_keys",
+    "_describe_types", "_reason_clause", "_empty_completion_error",
+    "_missing_or_wrong", "_text_fragments", "_error_body_detail",
+    "_read_error_body", "_call_inference_provider",
+})
+
+
+def test_every_redaction_takes_the_one_held_set() -> None:
+    """One notion of the host's secrets (#1854): `_held_keys` builds it,
+    once, in the host function; every redaction, cut or not, takes it as
+    its keyword-only `held`, and no call passes anything but the name
+    `held`.  The selected key is a parameter only where it is sent
+    (`_call_inference_provider`, `_refuse_unsendable_key`) and of the one
+    key's matcher (`_key_spans`, `_key_patterns`)."""
+    import ast as pyast
+    import inspect
+
+    tree = pyast.parse(inspect.getsource(inference))
+    defs = {n.name: n for n in pyast.walk(tree)
+            if isinstance(n, pyast.FunctionDef)}
+    assert REDACTIONS <= set(defs), REDACTIONS - set(defs)
+    for name in REDACTIONS:
+        args = defs[name].args
+        held = [a for a in args.kwonlyargs if a.arg == "held"]
+        assert held, name
+        assert pyast.unparse(held[0].annotation) == "HeldKeys", name
+        params = {a.arg for a in [*args.posonlyargs, *args.args]}
+        assert not params & {"held", "key", "keys"}, (name, params)
+    single_key = {name for name, node in defs.items()
+                  if {"api_key", "key"} & {a.arg for a in [
+                      *node.args.args, *node.args.kwonlyargs]}}
+    assert single_key == {"_key_patterns", "_key_spans",
+                          "_refuse_unsendable_key",
+                          "_call_inference_provider"}, single_key
+    for node in pyast.walk(tree):
+        if (isinstance(node, pyast.Call) and isinstance(node.func, pyast.Name)
+                and node.func.id in REDACTIONS):
+            (kw,) = [k for k in node.keywords if k.arg == "held"]
+            assert isinstance(kw.value, pyast.Name), pyast.unparse(node)
+            assert kw.value.id == "held", pyast.unparse(node)
+    assert _calls_by_function("_held_keys") == {"host_inference_complete"}
 
 
 # --- The cost of every rule over a provider's text, by its worst body -------
@@ -805,12 +851,24 @@ def test_every_rule_is_linear_in_the_body(body: str, cut: bool) -> None:
     import time
 
     text = _bodies_worst_for_each_rule(KEY)[body]
+    held = _largest_held_set()
     started = time.perf_counter()
     if cut:
-        inference._redact_cut(text, KEY)
+        inference._redact_cut(text, held=held)
     else:
-        inference._redact(text, KEY)
+        inference._redact(text, held=held)
     assert time.perf_counter() - started < COST_BOUND_S, body
+
+
+def _largest_held_set() -> inference.HeldKeys:
+    """Every provider's key set, each a mixed-case variant of `KEY` (the
+    key the worst bodies are built from, first among them), so the held
+    set is two forms of each: the largest set the host can hold."""
+    env = {cfg.env_key: (KEY if i == 0 else KEY[i:] + KEY[:i])
+           for i, cfg in enumerate(inference._PROVIDERS.values())}
+    held = inference._held_keys(env)
+    assert len(held.keys) == 2 * len(inference._PROVIDERS), held
+    return held
 
 
 def test_repro_the_credential_tail_over_a_body_at_the_cap() -> None:
@@ -820,7 +878,7 @@ def test_repro_the_credential_tail_over_a_body_at_the_cap() -> None:
 
     text = ("key-" * (_ERROR_BODY_CAP // 4)) + " "
     started = time.perf_counter()
-    assert inference._redact_cut(text, "") == text.replace(
+    assert inference._redact_cut(text, held=inference.HeldKeys(("",))) == text.replace(
         text[:-1], "[redacted]")
     assert time.perf_counter() - started < COST_BOUND_S
 
@@ -828,16 +886,16 @@ def test_repro_the_credential_tail_over_a_body_at_the_cap() -> None:
 def test_repro_the_credential_tail_is_the_trailing_run_s_leftmost_token() -> None:
     """The tail is found in the run of token characters at the text's end,
     and from its leftmost prefix: what precedes the run is kept."""
-    assert inference._redact_cut("a b-sk-key-12", "") == "a b-[redacted]"
-    assert inference._redact_cut("a sk-12 b", "") == "a sk-12 b"
-    assert inference._redact_cut("tokens", "") == "tokens"
-    assert inference._redact_cut("x xai_", "") == "x [redacted]"
+    assert inference._redact_cut("a b-sk-key-12", held=inference.HeldKeys(("",))) == "a b-[redacted]"
+    assert inference._redact_cut("a sk-12 b", held=inference.HeldKeys(("",))) == "a sk-12 b"
+    assert inference._redact_cut("tokens", held=inference.HeldKeys(("",))) == "tokens"
+    assert inference._redact_cut("x xai_", held=inference.HeldKeys(("",))) == "x [redacted]"
 
 
 def test_repro_a_key_at_the_start_of_a_short_cut_text() -> None:
     """A cut text that is only the key's start: the cut rule tries the
     text's first place too."""
-    assert inference._redact_cut("AB", "ABCD") == "[redacted]"
+    assert inference._redact_cut("AB", held=inference.HeldKeys(("ABCD",))) == "[redacted]"
 
 
 def test_repro_a_key_start_in_its_longest_forms_at_the_cut() -> None:
@@ -845,25 +903,148 @@ def test_repro_a_key_start_in_its_longest_forms_at_the_cut() -> None:
     each in its longest form, and a cut inside the next one's: `A` as a
     hex entity with six leading zeros, then `B`'s form cut short."""
     text = "&#x00000041;&#x00000042"
-    assert inference._redact_cut(text, "AB") == "[redacted]"
+    assert inference._redact_cut(text, held=inference.HeldKeys(("AB",))) == "[redacted]"
 
 
 def test_repro_a_held_key_s_control_character_as_a_hex_entity() -> None:
     """A held key may hold a line end (the key refusal's case, and the
     exit redacts the model name that repeats it): its line end in HTML's
     hex entity, one digit wide, is a form of it."""
-    assert inference._redact("x k&#xA;y z", "k\ny") == "x [redacted] z"
+    assert inference._redact("x k&#xA;y z", held=inference.HeldKeys(("k\ny",))) == "x [redacted] z"
 
 
 def test_repro_the_exit_reads_a_whole_text() -> None:
     """The exit's text is whole: its end is not read as a key's start, and
     a token's start at its end is not a token."""
-    assert inference._redact_held("x A", ("AB",)) == "x A"
-    assert inference._redact_held("x sk-1", ("AB",)) == "x sk-1"
-    assert inference._redact_held("sk-12345678 AB.", ("AB",)) == (
+    assert inference._redact("x A", held=inference.HeldKeys(tuple(("AB",)))) == "x A"
+    assert inference._redact("x sk-1", held=inference.HeldKeys(tuple(("AB",)))) == "x sk-1"
+    assert inference._redact("sk-12345678 AB.", held=inference.HeldKeys(tuple(("AB",)))) == (
         "[redacted] [redacted].")
 
 
 def test_repro_a_credential_tail_that_is_the_whole_text() -> None:
-    assert inference._redact_cut("sk-1", "") == "[redacted]"
-    assert inference._redact_cut("a-sk-1", "") == "a-[redacted]"
+    assert inference._redact_cut("sk-1", held=inference.HeldKeys(("",))) == "[redacted]"
+    assert inference._redact_cut("a-sk-1", held=inference.HeldKeys(("",))) == "a-[redacted]"
+
+
+# --- Which held key a text carries, by where a cut falls in it --------------
+#
+# The host holds every provider's key that is set, the selected one and the
+# others, and every redaction takes that one held set (`HeldKeys`), at the
+# exit and at each cut.  A redaction that knew the selected key alone left
+# the start of another held key wherever a cut split it: the exit matches
+# a held key whole, and the cut matched only the selected one.  The matrix
+# carries the selected key, an unselected held key, or both, on each route
+# a text takes, with no cut, and across the 200-character cut and the
+# 64 KiB cut with the key ending one character past the cut, half past,
+# and all but one character past.
+
+#: The selected key and another held key, built at run time from disjoint
+#: alphabets so a surviving run is the key's own.
+SELECTED = "".join(_RNG.choice("ABCDEFGHJKLMN") for _ in range(40))
+UNSELECTED = "".join(_RNG.choice("pqrstuvwxyz") for _ in range(40))
+CARRIED = {
+    "selected": (SELECTED,),
+    "unselected": (UNSELECTED,),
+    "both": (SELECTED, UNSELECTED),
+}
+
+
+def _two_key_env() -> dict[str, str]:
+    return {inference._PROVIDERS["anthropic"].env_key: SELECTED,
+            inference._PROVIDERS["openai"].env_key: UNSELECTED,
+            "VERA_INFERENCE_PROVIDER": "anthropic"}
+
+
+def _carrying(which: str, before_cut: int | None, width: int,
+              fill: str = "x", *, redacted_first: bool = True) -> str:
+    """A text carrying the keys *which* names; with *before_cut*, the last
+    key has that many characters before position *width* (a cut there),
+    any other wholly before it.  The 200-character cut is made after the
+    redaction (*redacted_first*), where a key before the last one already
+    reads `[redacted]`; the 64 KiB cut is made on the bytes as read.
+    *fill* leads up to them: spaces where the text is stripped after the
+    cut (the 64 KiB cut), so the cut's head reaches the message."""
+    keys = CARRIED[which]
+    text = " ".join(keys)
+    if before_cut is None:
+        return "a " + text + " b"
+    others = len(keys) - 1
+    ahead = (others * (len("[redacted]") + 1) if redacted_first
+             else len(text) - len(keys[-1]))
+    lead = width - ahead - before_cut
+    return fill * lead + text + " tail"
+
+
+#: What the fallback writes before an exception's text, inside the 200
+#: characters `_safe` keeps.
+_EXCEPTION_PREFIX = "ValueError: "
+
+
+SPLITS = {"one-past": 39, "half-past": 20, "all-but-one-past": 1}
+
+
+def _cut_cells() -> Iterator[tuple[str, str, str, int | None]]:
+    for which in CARRIED:
+        for route in ("not-json", "http-error", "exception"):
+            yield which, route, "no-cut", None
+            for split, before in SPLITS.items():
+                yield which, route, f"200-{split}", before
+        for split, before in SPLITS.items():
+            yield which, "http-error", f"64k-{split}", before
+
+
+HELD_CUT_CELLS = [
+    pytest.param(which, route, where, before,
+                 id=f"{which}-{route}-{where}")
+    for which, route, where, before in _cut_cells()
+]
+
+
+def _held_transport(route: str, where: str, text: str) -> MagicMock:
+    if route == "exception":
+        return MagicMock(side_effect=ValueError(text))
+    if route == "http-error":
+        return MagicMock(side_effect=_http_error(text.encode()))
+    resp = MagicMock()
+    resp.read.return_value = text.encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return MagicMock(return_value=resp)
+
+
+@pytest.mark.usefixtures("local_endpoints")
+@pytest.mark.parametrize(("which", "route", "where", "before"), HELD_CUT_CELLS)
+def test_every_held_key_at_every_cut(
+    which: str, route: str, where: str, before: int | None,
+) -> None:
+    if where.startswith("64k"):
+        text = _carrying(which, before, _ERROR_BODY_CAP, fill=" ",
+                         redacted_first=False)
+    else:
+        width = 200 - (len(_EXCEPTION_PREFIX) if route == "exception" else 0)
+        text = _carrying(which, before, width)
+    with patch("urllib.request.urlopen", _held_transport(route, where, text)):
+        ran = pipeline.run(_compile_ok(_SOURCE), env_vars=_two_key_env(),
+                           capture_stderr=False)
+    assert ran.ok, ran.trap
+    assert ran.stdout, ran.stdout
+    for key in CARRIED[which]:
+        assert_no_part_of(key, ran.stdout)
+
+
+@pytest.mark.usefixtures("local_endpoints")
+def test_repro_an_unselected_held_key_split_by_each_cut() -> None:
+    """The fifth review's instance: another provider's key, held, across
+    the 200-character cut of a body that is not JSON, and across the
+    64 KiB cut of an error body, left its first half in the `Err`."""
+    for route, width, fill in (("not-json", 200, "x"),
+                               ("http-error", _ERROR_BODY_CAP, " ")):
+        text = _carrying("unselected", 20, width, fill,
+                         redacted_first=width == 200)
+        with patch("urllib.request.urlopen",
+                   _held_transport(route, "cut", text)):
+            ran = pipeline.run(_compile_ok(_SOURCE),
+                               env_vars=_two_key_env(), capture_stderr=False)
+        assert ran.ok, ran.trap
+        assert_no_part_of(UNSELECTED, ran.stdout)

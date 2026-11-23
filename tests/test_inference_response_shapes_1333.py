@@ -56,6 +56,8 @@ import pytest
 from vera.codegen import execute
 from vera.runtime.inference import (
     _ERROR_BODY_CAP,
+    NO_KEYS,
+    HeldKeys,
     _ERROR_BODY_CHARS,
     _PROVIDERS,
     _call_inference_provider,
@@ -187,7 +189,7 @@ _THINKING_FIRST = _anthropic_body(
 def _call(provider: str, body: str, model: str = "") -> str:
     """Drive `_call_inference_provider` with a mocked transport."""
     with patch("urllib.request.urlopen", MagicMock(return_value=_mock_response(body))):
-        return _call_inference_provider(provider, "prompt", model, "sk-test")
+        return _call_inference_provider(provider, "prompt", model, "sk-test", held=HeldKeys(("sk-test",)))
 
 
 def _call_raising(
@@ -199,7 +201,7 @@ def _call_raising(
     the exact-match rule and the pattern rule have to be separable.
     """
     with patch("urllib.request.urlopen", MagicMock(side_effect=exc)):
-        return _call_inference_provider(provider, "prompt", model, key)
+        return _call_inference_provider(provider, "prompt", model, key, held=HeldKeys((key,)))
 
 
 def _run_with_transport(
@@ -1061,7 +1063,7 @@ class TestHttpRejectionMessages1333:
             "urllib.request.urlopen",
             MagicMock(return_value=_mock_response_bytes(b"hello \xff\xfe world")),
         ), pytest.raises(InferenceError) as excinfo:
-            _call_inference_provider("anthropic", "prompt", "", "sk-test")
+            _call_inference_provider("anthropic", "prompt", "", "sk-test", held=HeldKeys(("sk-test",)))
         message = str(excinfo.value)
         assert "anthropic" in message
         assert "not valid UTF-8" in message
@@ -1504,11 +1506,11 @@ class TestMessageBounds1333:
         """
         from vera.runtime.inference import _describe_keys, _describe_types
 
-        assert _describe_keys({" " * 900 + "realkey": 1}) == "realkey"
-        assert _describe_keys({}) == "(no keys)"
-        assert _describe_keys({" " * 900: 1}) == "(keys are blank)"
-        assert _describe_types([]) == "(none)"
-        assert _describe_types([{"type": " " * 900}]) == "(types are blank)"
+        assert _describe_keys({" " * 900 + "realkey": 1}, held=NO_KEYS) == "realkey"
+        assert _describe_keys({}, held=NO_KEYS) == "(no keys)"
+        assert _describe_keys({" " * 900: 1}, held=NO_KEYS) == "(keys are blank)"
+        assert _describe_types([], held=NO_KEYS) == "(none)"
+        assert _describe_types([{"type": " " * 900}], held=NO_KEYS) == "(types are blank)"
 
     def test_blank_reason_and_body_say_blank(self) -> None:
         """A present-but-blank value must not render as dangling text.
@@ -1676,7 +1678,9 @@ class TestCredentialRedaction1333:
         "_reason_clause", "_missing_or_wrong", "_text_fragments",
     )
 
-    #: How many call sites hand `api_key` to one of those helpers today.
+    #: How many call sites hand the held set (`held`, which replaced the one
+    #: `api_key` in #1854's fifth round: every key the host holds) to one of
+    #: those helpers today.
     #: A literal, so ADDING a render site fails this cell and forces the
     #: author to decide whether it needs a route row above.  Measured by
     #: the AST walk below: 23 at 157ae167 and 24 here, the difference
@@ -1721,15 +1725,14 @@ class TestCredentialRedaction1333:
         ).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
-        api_key_index: dict[str, int] = {}
+        takes_held: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name in self._RENDERERS:
-                names = [a.arg for a in node.args.args]
-                if "api_key" in names:
-                    api_key_index[node.name] = names.index("api_key")
-        assert set(api_key_index) == set(self._RENDERERS), (
-            f"renderers without an `api_key` parameter: "
-            f"{sorted(set(self._RENDERERS) - set(api_key_index))} — the "
+                if "held" in [a.arg for a in node.args.kwonlyargs]:
+                    takes_held.add(node.name)
+        assert takes_held == set(self._RENDERERS), (
+            f"renderers without a keyword-only `held` parameter: "
+            f"{sorted(set(self._RENDERERS) - takes_held)} — the "
             f"list is stale, or a helper stopped taking the key"
         )
 
@@ -1739,15 +1742,13 @@ class TestCredentialRedaction1333:
                 continue
             func = node.func
             name = func.id if isinstance(func, ast.Name) else None
-            if name not in api_key_index:
+            if name not in takes_held:
                 continue
-            if any(kw.arg == "api_key" for kw in node.keywords) or (
-                len(node.args) > api_key_index[name]
-            ):
+            if any(kw.arg == "held" for kw in node.keywords):
                 sites += 1
 
         assert sites == self._API_KEY_RENDER_SITES, (
-            f"{sites} render sites take `api_key`, expected "
+            f"{sites} render sites take `held`, expected "
             f"{self._API_KEY_RENDER_SITES}. A site was added or removed: "
             f"decide whether it needs a row in _LEAK_ROUTES (which has "
             f"{len(self._LEAK_ROUTES)}), then update this count."
@@ -1781,7 +1782,7 @@ class TestCredentialRedaction1333:
             "urllib.request.urlopen",
             MagicMock(return_value=_mock_response_bytes(body.encode("utf-8"))),
         ), pytest.raises(InferenceError) as excinfo:
-            _call_inference_provider(provider, "prompt", "", self._KEY)
+            _call_inference_provider(provider, "prompt", "", self._KEY, held=HeldKeys((self._KEY,)))
         message = str(excinfo.value)
         assert self._KEY not in message, f"{label} leaked the configured key"
         # A prefix is most of what makes a leaked key useful, so the
@@ -1802,7 +1803,7 @@ class TestCredentialRedaction1333:
             "urllib.request.urlopen",
             MagicMock(return_value=_mock_response_bytes(body.encode("utf-8"))),
         ), pytest.raises(InferenceError) as excinfo:
-            _call_inference_provider("anthropic", "prompt", "", self._KEY)
+            _call_inference_provider("anthropic", "prompt", "", self._KEY, held=HeldKeys((self._KEY,)))
         message = str(excinfo.value)
         assert self._KEY not in message
         assert self._KEY[:20] not in message
@@ -1962,7 +1963,7 @@ class TestProviderAndModelNaming1333:
             "urllib.request.urlopen",
             MagicMock(return_value=_mock_response_bytes(b"hi \xff\xfe there")),
         ), pytest.raises(InferenceError) as excinfo:
-            _call_inference_provider("anthropic", "prompt", "", "sk-test")
+            _call_inference_provider("anthropic", "prompt", "", "sk-test", held=HeldKeys(("sk-test",)))
         assert self._NAMED.search(str(excinfo.value))
 
     def test_http_rejection_names_both_in_order(self) -> None:

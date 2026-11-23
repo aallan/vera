@@ -22,6 +22,8 @@ import pytest
 
 from vera.runtime.inference import (
     _ERROR_BODY_CAP,
+    NO_KEYS,
+    HeldKeys,
     _character_cut,
     _read_error_body,
 )
@@ -53,7 +55,7 @@ CELLS = [(w, j) for w in CHARACTERS for j in range(1, w + 1)]
 def test_the_cut_never_leaves_half_a_character(cell: tuple[int, int]) -> None:
     width, before = cell
     char = CHARACTERS[width]
-    detail = _read_error_body(_error(_body(char, before, b"tail" * 4)))
+    detail = _read_error_body(_error(_body(char, before, b"tail" * 4)), held=NO_KEYS)
     assert "�" not in detail, detail
     assert detail.endswith(MARKER), detail
     # The character is quoted when all of its bytes fit under the cap and
@@ -64,7 +66,7 @@ def test_the_cut_never_leaves_half_a_character(cell: tuple[int, int]) -> None:
 
 
 def test_repro_a_two_byte_character_straddling_the_cap() -> None:
-    detail = _read_error_body(_error(_body("é", 1, b"abc")))
+    detail = _read_error_body(_error(_body("é", 1, b"abc")), held=NO_KEYS)
     assert "�" not in detail, detail
 
 
@@ -72,7 +74,7 @@ def test_a_body_exactly_at_the_cap_is_whole() -> None:
     """Negative space: nothing is cut, so nothing is backed up."""
     body = _body("é", 2)
     assert len(body) == _ERROR_BODY_CAP
-    detail = _read_error_body(_error(body))
+    detail = _read_error_body(_error(body), held=NO_KEYS)
     assert detail == "xyzé", detail
 
 
@@ -85,7 +87,7 @@ def test_a_configured_key_before_the_cut_stays_redacted(
     quoted detail holds no `xyz`."""
     width, before = cell
     body = _body(CHARACTERS[width], before, b"tail" * 4)
-    detail = _read_error_body(_error(body), "xyz")
+    detail = _read_error_body(_error(body), held=HeldKeys(("xyz",)))
     assert "xyz" not in detail, detail
     assert detail.endswith(MARKER), detail
 
@@ -94,7 +96,7 @@ def test_no_key_configured_redacts_nothing() -> None:
     """The default `api_key` is empty: a capped body that holds `XXXX` is
     quoted as it is."""
     body = b"XXXX abc" + b" " * _ERROR_BODY_CAP + b"tail"
-    detail = _read_error_body(_error(body))
+    detail = _read_error_body(_error(body), held=NO_KEYS)
     assert detail == "XXXX abc" + MARKER, detail
 
 
@@ -106,14 +108,14 @@ def test_an_unreadable_body_is_stated() -> None:
     err = urllib.error.HTTPError(
         url="https://example.invalid", code=500, msg="x",
         hdrs=email.message.Message(), fp=Unreadable(b""))
-    assert _read_error_body(err) == "(unreadable response body)"
+    assert _read_error_body(err, held=NO_KEYS) == "(unreadable response body)"
 
 
 def test_a_byte_that_is_not_utf_8_is_still_replaced() -> None:
     """Negative space: the back-up moves the cut, it does not change what
     the decoder does with bytes that are not UTF-8."""
     body = b"\xff abc" + b" " * _ERROR_BODY_CAP + b"tail"
-    detail = _read_error_body(_error(body))
+    detail = _read_error_body(_error(body), held=NO_KEYS)
     assert detail.startswith("� abc"), detail
     assert detail.endswith(MARKER), detail
 
@@ -179,7 +181,7 @@ def test_a_byte_that_begins_no_sequence_is_not_a_lead(byte: int) -> None:
 def test_a_stray_run_of_continuation_bytes_stays_at_the_cap() -> None:
     body = _at_cap(b"xyz" + b"\x80" * 4, b"\x80\x80tail")
     assert _character_cut(body, CAP) == CAP
-    detail = _read_error_body(_error(body))
+    detail = _read_error_body(_error(body), held=NO_KEYS)
     assert detail.startswith("xyz�"), detail
 
 
@@ -199,20 +201,20 @@ def test_a_key_before_a_stray_continuation_byte_is_redacted_whole() -> None:
     reaches the message (the cut dropped its last character before)."""
     body = _at_cap(KEY.encode("utf-8"), b"\x80tail")
     assert _kept(body).endswith(KEY.encode("utf-8"))
-    detail = _read_error_body(_error(body), KEY)
+    detail = _read_error_body(_error(body), held=HeldKeys((KEY,)))
     assert "AAAA" not in detail, detail
 
 
 def test_a_complete_character_before_a_stray_byte_is_kept() -> None:
     body = _at_cap("xyzé".encode("utf-8"), b"\x80tail")
     assert _kept(body).endswith("é".encode("utf-8"))
-    assert _read_error_body(_error(body)) == "xyzé" + MARKER
+    assert _read_error_body(_error(body), held=NO_KEYS) == "xyzé" + MARKER
 
 
 def test_a_key_ending_in_a_character_at_the_cap_is_redacted_whole() -> None:
     key = "kéy-é"
     body = _at_cap(("xyz" + key).encode("utf-8"), b"\x80tail")
-    detail = _read_error_body(_error(body), key)
+    detail = _read_error_body(_error(body), held=HeldKeys((key,)))
     assert key not in detail and "é" not in detail, detail
     assert detail.startswith("xyz"), detail
 
@@ -238,5 +240,5 @@ def test_a_key_straddling_the_cap_leaves_nothing() -> None:
     tests/test_secret_redaction_1854.py holds every split)."""
     key = "K" * 40
     body = _at_cap(b"K" * 20, b"K" * 20 + b"tail")
-    detail = _read_error_body(_error(body), key)
+    detail = _read_error_body(_error(body), held=HeldKeys((key,)))
     assert "K" not in detail.replace(MARKER, ""), detail
