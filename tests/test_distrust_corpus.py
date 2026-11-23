@@ -212,9 +212,10 @@ def test_no_proof_is_refuted(
 # Premises: the instrument can fail, and it reaches proofs
 # =====================================================================
 
-# The function-type coercion on #1695's line: proved at Tier 1, refuted by
-# its one run.  `mo` raises no obligation of its own, so the false proof
-# brings no proved check with it (tests/test_tester_distrust.py's `_MO`).
+# A false proof, injected at the check (`tests/injected_false_proof.py`):
+# proved at Tier 1, refuted by its one run.  `mo` raises no obligation of
+# its own, so the false proof brings no proved check with it
+# (tests/test_tester_distrust.py's `_MO`).
 _FALSE_PROOF = """\
 public fn main(-> @Int)
   requires(true)
@@ -279,6 +280,18 @@ def test_an_undistrusted_function_carries_no_attribution_in_either_mode() -> Non
         _assert_undistrusted(attributed, attributed)
 
 
+def test_repro_the_false_proof_is_refused_without_the_injection() -> None:
+    """The control on the injection: checked with nothing injected, the
+    false proof's program is refused (E190, its closure's result wider than
+    `apply_nat`'s parameter states), so it is the injection, and nothing
+    else, that admits it in the tests that refute it."""
+    checked = pipeline.check(_FALSE_PROOF, file="false_proof.vera")
+    errors = [d for d in checked.diagnostics if d.severity == "error"]
+    assert [d.error_code for d in errors] == ["E190"], errors
+    assert "parameter 0 of 'apply_nat'" in errors[0].description, errors
+
+
+@pytest.mark.usefixtures("injected_false_proof")
 def test_the_instrument_fails_on_a_false_proof(tmp_path: Path) -> None:
     """A green corpus means something only if a refuted program goes red."""
     path = tmp_path / "false_proof.vera"

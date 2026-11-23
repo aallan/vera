@@ -55,6 +55,7 @@ from vera.types import (
     TO_STRING_BUILTINS,
     Type,
     types_equal,
+    unfit_function_value,
     TypeVar,
     UNIT,
     UnknownType,
@@ -1152,7 +1153,11 @@ class ExpressionsMixin:
 
         if val_type and not isinstance(val_type, UnknownType):
             if not isinstance(declared_type, UnknownType):
-                if not is_subtype(val_type, declared_type):
+                if (not is_subtype(val_type, declared_type)
+                        and not self._refuse_unfit_function_value(
+                            stmt.value, val_type, declared_type,
+                            "the `let` binding",
+                            "declare the binding at")):
                     self._error(
                         stmt.value,
                         f"Let binding expects {pretty_type(declared_type)}, "
@@ -1424,7 +1429,11 @@ class ExpressionsMixin:
             self._effect_ops_used |= performed
 
         if body_type and not isinstance(body_type, UnknownType):
-            if not is_subtype(body_type, ret_type):
+            if (not is_subtype(body_type, ret_type)
+                    and not self._refuse_unfit_function_value(
+                        expr.body.expr, body_type, ret_type,
+                        "the closure's declared return type",
+                        "declare the closure's return type at")):
                 self._error(
                     expr.body,
                     f"Anonymous function body has type "
@@ -1643,14 +1652,15 @@ class ExpressionsMixin:
                         break
                     joined = step
                 else:
-                    element_type = self._value_join(joined, typed)
+                    element_type = self._value_join(joined, typed,
+                                                    report=False)
         elif typed and any(t is not None and not isinstance(t, UnknownType)
                            and self._leaves_open(t) for t in elem_types):
             # The structure may hold a fact only an element a call left open
             # states (its refinement, `NeArr<..>` beside a plain array): the
             # elements do not share it, so the element type states only the
             # facts the elements that took part state (#1684, rule J).
-            element_type = self._value_join(structure, typed)
+            element_type = self._value_join(structure, typed, report=False)
         held = element_type
         if ctx is not None and (contains_fresh_typevar(element_type)
                                 or contains_unknown(element_type)):
@@ -1744,6 +1754,15 @@ class ExpressionsMixin:
             if (i == first_at and not judge_first) or (
                     i not in conflicting and self._fits(ty, element_type)):
                 self._record_element_target(elem, ty, element_type)
+                continue
+            # A function value that fits the element type only by a
+            # narrowing is E190 (#1885, #1819), in place of E162: one
+            # report an element.  Its rewrite moves the join of the
+            # elements, so the fix is prose.
+            if self._refuse_unfit_function_value(
+                    elem, ty, element_type,
+                    "the literal's element type, the join of its elements,",
+                    "declare every element at", value_node=False):
                 continue
             shown = pretty_inferred_type(element_type)
             self._error(
@@ -2507,7 +2526,12 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
     # fixes `T`, is not taken as a `Two<Int, String>`, nor `Two<A, A>` in
     # a `forall<A>` body as a `Two<Int, Int>`: the call keeps its type,
     # and the site's own judgement refuses it.  A built-in's variable a
-    # failed substitution lost keeps the adoption it had (#1688).
+    # failed substitution lost keeps the adoption it had (#1688).  Neither
+    # adopts a type whose function value the result fits only by a
+    # narrowing (#1885, #1819): the join compares a leaf either way, so
+    # `first([Tuple(b, fn(@Nat -> @Int) ...)])` would be taken at a
+    # `Tuple<Int, fn(Int -> Int)>`, and the site compares the expected type
+    # with itself.  The call keeps its type, and the site refuses it.
     if (result is not None
             and expected is not None
             and contains_typevar(result)
@@ -2517,7 +2541,8 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
             and result.name == expected.name
             and len(result.type_args) == len(expected.type_args)):
         outcome = ctx._join_parts(result, expected)
-        if outcome.joined is not None or outcome.builtin:
+        if ((outcome.joined is not None or outcome.builtin)
+                and unfit_function_value(result, expected) is None):
             return expected
     return result
 

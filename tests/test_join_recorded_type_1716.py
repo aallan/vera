@@ -241,7 +241,7 @@ JOINS = [
     ("@PosInt", "@Int", "0", "@PosInt.0", "Int"),
     ("@Option<PosInt>", "@Option<PosInt>", "None", "@Option<PosInt>.0",
      "Option<{Int|PosInt}>"),
-    ("@PosFn, @IntFn", "@IntFn", "@PosFn.0", "@IntFn.0",
+    ("@PosFn, @IntFn", "@PosFn", "@PosFn.0", "@IntFn.0",
      "fn({Int|PosInt} -> Int)"),
     ("@IntFn, @IntToPos", "@IntFn", "@IntFn.0", "@IntToPos.0",
      "fn(Int -> Int)"),
@@ -448,24 +448,18 @@ def test_a_parameter_refinement_one_arm_states_is_what_the_join_accepts(
         swap: bool) -> None:
     """`fn(PosInt -> Int)` beside `fn(Int -> Int)` is recorded
     `fn(PosInt -> Int)` in either order, what both closures accept.
-    Returned as an `fn(Int -> Int)` it is the relaxation `is_subtype`
-    already admits (rule 9 with rule 7), the closure's entry check holding
-    its parameter, so the run at 0 through the `PosInt` closure traps
-    there."""
+    Returned as an `fn(Int -> Int)` it is refused (E190, #1885): a
+    function type's parameter takes no narrowing, and the join takes no
+    `Int` its `PosInt` arm would trap on."""
     first, second = (_INT_PARAM, _POS_PARAM) if swap else (
         _POS_PARAM, _INT_PARAM)
     source = _FN_PROGRAM.format(first=first, second=second)
-    assert _recorded(source, ast.IfExpr) == ["fn({Int|PosInt} -> Int)"]
-    verified = pipeline.verify(source, file=FILE)
-    assert verified.ok, [(d.error_code, d.description[:80])
-                         for d in verified.errors]
-    assert ("pick", "refine_bind") in {(o.fn_name, o.kind)
-                                       for o in verified.obligations}
-    ran = pipeline.run(source, "t", [0 if swap else 1, 0], file=FILE)
-    assert ran.trap is not None
-    assert "Refinement violation in fn(@PosInt -> @Int)" in str(ran.trap)
-    held = pipeline.run(source, "t", [1 if swap else 0, 0], file=FILE)
-    assert held.value == 1
+    returned = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in returned.errors] == ["E190"], [
+        (d.error_code, d.description[:80]) for d in returned.errors]
+    recorded = source.replace("type IF = fn(Int -> Int)",
+                              "type IF = fn(PosInt -> Int)")
+    assert _recorded(recorded, ast.IfExpr) == ["fn({Int|PosInt} -> Int)"]
 
 
 _POS_RETURN = "fn(@Int -> @PosInt) effects(pure) {\n      5\n    }"
@@ -1693,14 +1687,9 @@ _FN_POLARITY = [
     # nested refinements: the longest chain, one arm's own
     ("fn(Small -> Int)", "fn(Tiny -> Int)", "fn(Tiny -> Int)",
      "fn({{Int|Small}|Tiny} -> Int)"),
-    # a `Nat` beside a refined `Int`: a plain `Nat`, no chain moved onto
-    # another base
-    ("fn(Small -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)"),
     # a refinement over `Nat` beside an `Int`: its own chain, on the `Nat`
     ("fn(SmallNat -> Int)", "fn(Int -> Int)", "fn(SmallNat -> Int)",
      "fn({Nat|SmallNat} -> Int)"),
-    # two predicates at one level: no new chain, the base
-    ("fn(Small -> Int)", "fn(Pos -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
 ]
 
 
@@ -1717,13 +1706,32 @@ def _fn_join(form: str, row: tuple[str, str, str, str], swap: bool) -> str:
 @pytest.mark.parametrize("form", list(_FN_FORMS))
 @pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
 @pytest.mark.parametrize("row", _FN_POLARITY, ids=[
-    "param", "nested", "data", "return", "refined", "chain", "mixed",
-    "smallnat", "not-nested"])
+    "param", "nested", "data", "return", "refined", "chain", "smallnat"])
 def test_a_function_join_reads_a_parameter_as_accepting(
         form: str, swap: bool, row: tuple[str, str, str, str]) -> None:
     kind = {"if": ast.IfExpr, "match": ast.MatchExpr,
             "handler": ast.HandleExpr}[form]
     assert _recorded(_fn_join(form, row, swap), kind) == [row[3]]
+
+
+#: Arms no one type accepts: a `Nat` beside a refined `Int` (two bases),
+#: and two predicates at one level.  The join keeps what both state, a plain
+#: `Nat` or the base `Int`, which neither arm takes all of under rule 9's
+#: formal relation, so the arm is refused at the join (E190, #1885).
+_FN_NO_SHARED = [
+    ("fn(Small -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)", ""),
+    ("fn(Small -> Int)", "fn(Pos -> Int)", "fn(Int -> Int)", ""),
+]
+
+
+@pytest.mark.parametrize("form", list(_FN_FORMS))
+@pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
+@pytest.mark.parametrize("row", _FN_NO_SHARED, ids=["mixed", "not-nested"])
+def test_a_function_join_no_type_accepts_is_refused(
+        form: str, swap: bool, row: tuple[str, str, str, str]) -> None:
+    checked = pipeline.check(_fn_join(form, row, swap), file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        (d.error_code, d.description[:80]) for d in checked.errors]
 
 
 def test_repro_1716_the_join_s_parameter_polarity_every_cell() -> None:
@@ -1822,24 +1830,18 @@ public fn f(@Bool, @Int -> @Int)
 @pytest.mark.parametrize("swap", [False, True], ids=["small first", "nat first"])
 def test_repro_1716_a_nat_parameter_beside_a_refined_int_is_a_plain_nat(
         swap: bool) -> None:
-    """`fn(Small -> Int)` beside `fn(Nat -> Int)`: the parameter is a plain
-    `Nat` (no chain moved onto another base), so an unconstrained `@Int`
-    argument is refused (E503) in either order; under `requires(@Int.0 >=
-    0)` it verifies, and 50 handed to the `Small` closure traps in its
-    entry check."""
+    """`fn(Small -> Int)` beside `fn(Nat -> Int)`: the join's parameter is
+    a plain `Nat` (no chain moved onto another base), which the `Small`
+    closure does not take all of, so the join is refused at that arm
+    (E190, #1885) in either order, guard or none.  It used to verify, and
+    50 handed to the `Small` closure trapped in its entry check."""
     first, second = (("@NatToInt.0", "@SmallToInt.0") if swap
                      else ("@SmallToInt.0", "@NatToInt.0"))
-    open_ = pipeline.verify(_MIXED.format(guard="true", first=first,
-                                          second=second), file=FILE)
-    assert [d.error_code for d in open_.errors] == ["E503"], [
-        (d.error_code, d.description[:80]) for d in open_.errors]
-    guarded = _MIXED.format(guard="@Int.0 >= 0", first=first, second=second)
-    verified = pipeline.verify(guarded, file=FILE)
-    assert verified.errors == (), [(d.error_code, d.description[:80])
-                                   for d in verified.errors]
-    ran = pipeline.run(guarded, "f", [0 if swap else 1, 50], file=FILE)
-    assert ran.trap is not None, ran
-    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+    for guard in ("true", "@Int.0 >= 0"):
+        checked = pipeline.check(_MIXED.format(
+            guard=guard, first=first, second=second), file=FILE)
+        assert [d.error_code for d in checked.errors] == ["E190"], [
+            (d.error_code, d.description[:80]) for d in checked.errors]
 
 
 _OVERFLOW_PREDICATE = """\
@@ -1891,23 +1893,17 @@ def test_repro_1716_a_refined_parameter_join_reconciles_clean(
 def test_repro_1716_two_parameter_predicates_build_no_new_chain(
         swap: bool) -> None:
     """`fn(Small -> Int)` beside `fn(Pos -> Int)`: the predicates differ at
-    one level, so the join's parameter is the base `Int`, no row is listed
-    at the argument, and each closure's entry check holds its own
-    predicate: 50 handed to the `Small` closure traps there (issue #1819
-    revisits this remainder)."""
+    one level, so the join's parameter is the base `Int`, which neither
+    closure takes all of: the join is refused at an arm (E190, #1885).  It
+    used to verify with no row at the argument, and 50 handed to the
+    `Small` closure trapped at its entry."""
     source = _refined_accepting("Small", "true", swap).replace(
         "type IntToInt = fn(Int -> Int)", "type IntToInt = fn(Pos -> Int)"
     ).replace("fn(@Int -> @Int) effects(pure) { @Int.0 }",
               "fn(@Pos -> @Int) effects(pure) { @Pos.0 }")
-    verified = pipeline.verify(source, file=FILE)
-    assert verified.errors == (), [(d.error_code, d.description[:80])
-                                   for d in verified.errors]
-    rows = [(o.kind, o.status) for o in verified.obligations
-            if o.fn_name == "pick" and o.kind == "refine_bind"]
-    assert rows == [], rows
-    ran = pipeline.run(source, "f", [1 if swap else 0, 50], file=FILE)
-    assert ran.trap is not None, ran
-    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+    checked = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        (d.error_code, d.description[:80]) for d in checked.errors]
 
 
 _ROW_JOIN = """\
@@ -2159,21 +2155,21 @@ def test_repro_1716_a_refined_callback_result_is_recorded_at_the_arm(
         swap: bool) -> None:
     """`fn(IntF -> Int)` beside `fn(PosF -> Int)` is recorded
     `fn(PosF -> Int)` in either order: the join states what both accept.
-    The run still hands the `PosF` arm an `Int`-returning closure and
-    prints -5 into its `@PosInt`, because the formal `PosF` admits a
-    `fn(Int -> Int)` argument (rule 9 with rule 7): issue #1819's
-    relaxation, which the same call made directly also takes."""
+    The `fn(Int -> Int)` closure applied to it is refused (E190, #1819): a
+    closure declared `-> @Int` guarantees no `PosInt`.  It used to be
+    taken by rule 9 with rule 7, and the run printed -5 into the `PosF`
+    arm's `@PosInt`."""
     first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
     source = _CALLBACK_RESULT.format(first=first, second=second)
     checked = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        (d.error_code, d.description[:80]) for d in checked.errors]
     _learn_predicates(checked)
     types = checked.artifacts.node_semantic_types
     (pick,) = [getattr(tl, "decl", tl) for tl in checked.program.declarations
                if getattr(getattr(tl, "decl", tl), "name", "") == "pick"]
     (join,) = [n for n in fold.walk(pick.body) if isinstance(n, ast.IfExpr)]
     assert _show(types.get(join.node_id)) == "fn(fn(Int -> {Int|PosInt}) -> Int)"
-    ran = pipeline.run(source, "f", [1 if swap else 0, 0], file=FILE)
-    assert ran.trap is None and ran.value == -5, ran
 
 
 _NON_EMPTY_JOIN = """\
@@ -2256,20 +2252,12 @@ def test_repro_1716_a_mixed_base_callback_result_is_held_by_no_check(
         swap: bool) -> None:
     """`fn(NatF -> Int)` beside `fn(PosF -> Int)`: the callback's result is
     a `Nat` beside a refined `Int`, a mixed base, so no chain is kept and
-    the join records the `NatF` callback in either order.  A
-    `Nat`-returning callback then reaches the arm that binds its result at
-    `@PosInt`, and the run returns 0 from it: no entry check holds a
-    callback's result.  The same call made directly is as silent, at
-    f71c401c too: issue #1819's relaxation at the formal."""
+    the join's callback is a `NatF`, which the `PosF` arm, trusting a
+    `PosInt` result, does not take: the arm is refused at the join (E190,
+    #1819).  It used to check, and a `Nat`-returning callback reached the
+    arm that binds its result at `@PosInt`: the run returned 0 from it."""
     first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
     source = _MIXED_CALLBACK_RESULT.format(first=first, second=second)
     checked = pipeline.check(source, file=FILE)
-    assert checked.ok, [(d.error_code, d.description[:80])
-                        for d in checked.errors]
-    types = checked.artifacts.node_semantic_types
-    (pick,) = [getattr(tl, "decl", tl) for tl in checked.program.declarations
-               if getattr(getattr(tl, "decl", tl), "name", "") == "pick"]
-    (join,) = [n for n in fold.walk(pick.body) if isinstance(n, ast.IfExpr)]
-    assert _show(types.get(join.node_id)) == "fn(fn(Int -> Nat) -> Int)"
-    ran = pipeline.run(source, "f", [1 if swap else 0, 0], file=FILE)
-    assert ran.trap is None and ran.value == 0, ran
+    assert [d.error_code for d in checked.errors] == ["E190"], [
+        (d.error_code, d.description[:80]) for d in checked.errors]

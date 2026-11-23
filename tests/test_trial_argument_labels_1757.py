@@ -32,7 +32,11 @@ import pytest
 
 from tests import pipeline
 
-pytestmark = pytest.mark.matrix(decides=["vera/tester.py"])
+pytestmark = [
+    pytest.mark.matrix(decides=["vera/tester.py"]),
+    # `_REFUTED`'s false proof is injected at the check.
+    pytest.mark.usefixtures("injected_false_proof"),
+]
 
 #: Each shape's parameters in order: the type, the name the source gives
 #: the parameter (its index counts the later parameters of its type), and
@@ -76,15 +80,11 @@ public fn f({params} -> @Int)
 }}
 """
 
-#: The function-type coercion on #1695's line, which the verifier proves and
-#: every run refutes (E703): a closure returning -7 passed at a
-#: `fn(Int -> Nat)` formal is obligated nowhere and walked by no guard, so
-#: `mo`'s `@Nat` result is -7 and `mo(7) >= 0`, proved from its type, runs
-#: false; `{premise}` is a statement at the head of the body.  It replaced
-#: the composite coercion of an `Option<Int>` into an `@Option<Nat>` when
-#: that was guarded (#1542), which had replaced #1555's address comparison
-#: (#1525); when #1695 records the function-type coercion, the refutation
-#: cells and the premise repro need another refuted proof.
+#: A false proof injected at the check (`tests/injected_false_proof.py`),
+#: which the verifier proves and every run refutes (E703): a closure
+#: returning -7 is admitted at a `fn(Int -> Nat)` formal, so `mo`'s `@Nat`
+#: result is -7 and `mo(7) >= 0`, proved from its type, runs false;
+#: `{premise}` is a statement at the head of the body.
 _REFUTED = """\
 type Cnt = Nat;
 
