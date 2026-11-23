@@ -160,25 +160,23 @@ def execute_wasi_p2(
     entry instead and ``value`` is ``None``.
 
     Raises ``ValueError`` (from the emitter's family gate) when the
-    program uses a host family the target does not support, and
-    ``WasmTrapError`` on a runtime trap.
+    program uses a host family the target does not support,
+    ``CodegenInvariantError`` when the component it builds does not
+    validate (#1900), and ``WasmTrapError`` on a runtime trap.
     """
     import wasmtime
-    from wasmtime.component import Component, Linker
+    from wasmtime.component import Linker
+
+    from vera.codegen.validation import build_component
 
     wat = emit_wasi_component(result)
-    # Assembled here rather than inside `Component`, so a trap's backtrace
-    # offset can be read against the same bytes (#1479).
-    binary = bytes(wasmtime.wat2wasm(wat))
-
-    # Same engine feature set as the core-path execute(): handle[Exn]
-    # compiles to the WASM exception-handling proposal, which wasmtime
-    # gates off by default — without it an EH program's component
-    # fails to PARSE (caught by the dual-target conformance sweep).
-    engine_config = wasmtime.Config()
-    engine_config.wasm_exceptions = True
-    engine = wasmtime.Engine(engine_config)
-    component = Component(engine, binary)
+    # Assembled before `Component` is constructed, so a trap's backtrace
+    # offset can be read against the same bytes (#1479); constructing it is
+    # the component's check (#1900), which raises `CodegenInvariantError`
+    # for one that does not validate.  The engine enables the exception
+    # proposal, as the core-path execute()'s does: handle[Exn] lowers to it,
+    # and without it an EH program's component fails to PARSE.
+    binary, engine, component = build_component(wat)
     linker = Linker(engine)
     linker.add_wasip2()
     store = wasmtime.Store(engine)

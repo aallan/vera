@@ -964,8 +964,11 @@ def cmd_compile(
         # families the target does not support, and that must surface as
         # a clean diagnostic (never a silent fallback to the core target).
         component_wat: str | None = None
+        component: bytes | None = None
         if target == "wasi-p2":
             from vera.codegen.wasi import emit_wasi_component
+            from vera.codegen.validation import assembly_error, build_component
+            from vera.skip import CodegenInvariantError
 
             try:
                 component_wat = emit_wasi_component(result, world=world)
@@ -973,6 +976,15 @@ def cmd_compile(
                 return _report_compile_failure(
                     path, command_errors.target_requirement(
                         path, f"--target wasi-p2: {exc}"),
+                    all_warnings, as_json=as_json,
+                )
+            # #1900: the component is the artifact this target writes, so it
+            # is checked where it is built, before any success is reported.
+            try:
+                component, _engine, _built = build_component(component_wat)
+            except CodegenInvariantError as exc:
+                return _report_compile_failure(
+                    path, assembly_error(exc.msg, path),
                     all_warnings, as_json=as_json,
                 )
 
@@ -995,11 +1007,8 @@ def cmd_compile(
         # accepts component text (probed live against wasmtime-py 45),
         # so the artifact is a genuine binary component that stock
         # `wasmtime run` executes with no Vera host bindings.
-        if component_wat is not None:
-            import wasmtime
-
+        if component is not None:
             out_path = Path(output) if output else p.with_suffix(".wasm")
-            component = wasmtime.wat2wasm(component_wat)
             try:
                 out_path.write_bytes(component)
             except OSError as err:

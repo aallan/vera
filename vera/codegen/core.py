@@ -58,6 +58,7 @@ from vera.wasm.helpers import CellNames
 from vera.wasm.inference import _N
 from vera.codegen.modules import CrossModuleMixin
 from vera.codegen.registration import RegistrationMixin
+from vera.codegen.validation import assembly_error, validate_module
 from vera.codegen.monomorphize import MonomorphizationMixin
 from vera.codegen.functions import FunctionCompilationMixin
 from vera.codegen.closures import ClosureLiftingMixin
@@ -239,6 +240,10 @@ class CodeGenerator(
         #: descent decided needs no guard (`_record_unguarded_return_leaves`).
         self._unguarded_return_leaves: list[
             tuple[str | None, tuple[int, int, int, int]]] = []
+        #: The module's host contract asks for its memory (a memory effect
+        #: in a row, a host import whose row says so), whatever its code
+        #: holds.  An instruction needs no flag: assembly reads the
+        #: module's text for them (#1900).
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -1095,7 +1100,6 @@ class CodeGenerator(
             hamt.register(name, self._collection_helpers, request_eq, self._host_imports_used)
             self._collection_exports.add(name)
         self._needs_alloc = True
-        self._needs_memory = True
 
     def _drop_dangling_callers(
         self, functions_wat: list[str], exports: list[str],
@@ -2506,7 +2510,6 @@ class CodeGenerator(
             sig = self._fn_sigs.get(export_name)
             if sig and any(t == "i32_pair" for t in sig[0] if t is not None):
                 self._needs_alloc = True
-                self._needs_memory = True
                 break
 
         # #1676: `vera serve` and the WASI server world build a `Request`'s
@@ -2532,29 +2535,13 @@ class CodeGenerator(
             # author never wrote.
             self._assert_unique_func_names(wat)
             wasm_bytes = wasmtime.wat2wasm(wat)
+            # #1900: assembly checks names, not the module; the module is
+            # validated once, here, so no module that does not load leaves
+            # the compiler (`vera/codegen/validation.py`).
+            validate_module(wasm_bytes)
         except Exception as exc:  # noqa: BLE001 — a backend failure becomes a codegen diagnostic
             if isinstance(exc, CodegenInvariantError):
-                self.diagnostics.append(Diagnostic(
-                    description=(
-                        f"Internal compiler error while assembling the "
-                        f"module: {exc.msg}"
-                    ),
-                    location=SourceLocation(file=self.file),
-                    rationale=(
-                        "Code generation produced a module WebAssembly "
-                        "cannot load. That is a bug in the compiler, not "
-                        "something to change in the program: a program the "
-                        "checker should have refused was not, or a valid "
-                        "one was compiled under a clashing name."
-                    ),
-                    fix=(
-                        "Please file a bug report with the offending "
-                        "program at https://github.com/aallan/vera/issues"
-                    ),
-                    spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-                    severity="error",
-                    error_code="E699",
-                ))
+                self.diagnostics.append(assembly_error(exc.msg, self.file))
             else:
                 self.diagnostics.append(Diagnostic(
                     description=f"WAT compilation failed: {exc}",

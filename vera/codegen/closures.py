@@ -279,7 +279,6 @@ class ClosureLiftingMixin:
             if new_closure_fns_wat:
                 self._needs_table = True
                 self._needs_alloc = True
-                self._needs_memory = True
 
         # #1245: hand the id counter back to the context.  A closure this
         # function registers LATER — while `_compile_postconditions` lowers

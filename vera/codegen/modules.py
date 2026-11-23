@@ -407,7 +407,6 @@ class CrossModuleMixin:
                             # alongside the per-owner copy above (#1436)
                             temp._ctor_adt_tp_indices[_ctor_name])
                 self._needs_alloc = True
-                self._needs_memory = True
 
             # The alias-namespace capture (#1111) that used to sit here now
             # runs immediately after `temp._register_all` above, where the

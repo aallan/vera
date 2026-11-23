@@ -1257,7 +1257,9 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # that did (#1444), and `_compile_program` reports the #1433
     # backstop: a module binding one function identifier twice.
     # `_is_compilable` reports the `vera.lowering` rule 6 backstop: a row
-    # entry the checker refuses (E340).
+    # entry the checker refuses (E340).  `assembly_error` reports an
+    # artifact assembly or validation refuses (#1433's backstop, and a
+    # module or wasi-p2 component that does not validate, #1900).
     "E699": frozenset({
         ("vera/cli.py", "_internal_error_envelope"),
         ("vera/codegen/compilability.py", "CompilabilityMixin._is_compilable"),
@@ -1265,6 +1267,7 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),
+        ("vera/codegen/validation.py", "assembly_error"),
         ("vera/lsp/features.py", "analysis_failure"),
     }),
 }
