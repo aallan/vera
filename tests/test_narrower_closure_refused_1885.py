@@ -1543,15 +1543,17 @@ def test_every_rewrite_a_refused_cell_prints_checks_pasted(
     source = _source_of(matrix, cell)
     own = (_FORM_OWN_CODES.get(str(cell[0]), set()) if matrix == "binding"
            else set())
-    refused = [d for d in pipeline.check(source).errors
-               if d.error_code == "E190"]
+    errors = pipeline.check(source).errors
+    refused = [d for d in errors if d.error_code == "E190"]
     # Every refused cell is E190 before anything is replayed, bar the
     # forms whose binder no judge compares (#1896), the user operation's
     # behind its E340 among them.
     unjudged = matrix == "binding" and cell[0] in (
         *_CLAUSE_FORMS, "user-op-clause-param")
     if matrix == "flows" and _order_cell(*cell):  # type: ignore[arg-type]
-        _known(["E190"] * bool(refused), known=[],
+        # The whole verdict, not the E190s alone: an unrelated error
+        # is no xfail.
+        _known([d.error_code for d in errors], known=[],
                fixed=lambda g: g == ["E190"])
     assert bool(refused) != unjudged, (matrix, cell)
     for diagnostic in refused:
