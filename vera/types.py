@@ -1042,6 +1042,16 @@ def _narrowing_erased(ty: Type) -> Type:
     return ty
 
 
+def fits_narrowing_aside(sub: Type, sup: Type) -> bool:
+    """Whether *sub* fits *sup* once every narrowing in either is set
+    aside (`_narrowing_erased`): a refinement taken to its base, a `Nat` to
+    `Int`.  Where a function value fits its position only by a narrowing
+    (`unfit_function_value`), the rest of the pair may still differ (a
+    `String` beside a `Bool` component): E190 is reported only where it
+    does not, and the flow's own mismatch otherwise."""
+    return is_subtype(_narrowing_erased(sub), _narrowing_erased(sup))
+
+
 def unfit_function_value(sub: Type, sup: Type) -> UnfitFunctionValue | None:
     """The function type in *sub* that meets its place in *sup* only by a
     narrowing (`Int` at `Nat`, a type at a refinement of it, a refinement
