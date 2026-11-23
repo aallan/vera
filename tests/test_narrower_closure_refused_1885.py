@@ -2131,3 +2131,42 @@ def test_repro_a_generic_call_reports_each_argument_once_1885() -> None:
              for d in pipeline.check(source).errors]
     assert found == [("E190", line, text.index("@FP.0") + 1),
                      ("E190", line, text.index("@FB.0") + 1)], found
+
+
+# =====================================================================
+# `Nat` and its written form are one type inside a function type
+# =====================================================================
+
+_NAT_SPELLINGS = ("type NN = { @Int | @Int.0 >= 0 };\n"
+                  "type LE = { @Int | 0 <= @Int.0 };\n"
+                  "type GT = { @Int | @Int.0 > -1 };\n")
+
+#: (the position, the closure's parameter, its result, accepted).  `Nat`
+#: is `{ @Int | @Int.0 >= 0 }` (spec §2.2.1): written exactly so, the two
+#: are one type both ways, at a parameter and at a result; any other
+#: spelling is another refinement, and `Int` fits neither.
+_NAT_CELLS = {
+    "result-nat-at-written": ("fn(Int -> NN)", "Int", "Nat", True),
+    "result-written-at-nat": ("fn(Int -> Nat)", "Int", "NN", True),
+    "parameter-nat-at-written": ("fn(NN -> Int)", "Nat", "Int", True),
+    "parameter-written-at-nat": ("fn(Nat -> Int)", "NN", "Int", True),
+    "result-nat-at-inline": ("fn(Int -> { @Int | @Int.0 >= 0 })", "Int",
+                             "Nat", True),
+    "result-nat-at-le": ("fn(Int -> LE)", "Int", "Nat", False),
+    "result-nat-at-gt": ("fn(Int -> GT)", "Int", "Nat", False),
+    "parameter-le-at-nat": ("fn(Nat -> Int)", "LE", "Int", False),
+    "result-int-at-written": ("fn(Int -> NN)", "Int", "Int", False),
+    "parameter-written-at-int": ("fn(Int -> Int)", "NN", "Int", False),
+}
+
+
+@pytest.mark.parametrize("cell", list(_NAT_CELLS))
+def test_nat_and_its_written_form_are_one_type_in_a_function_type(
+        cell: str) -> None:
+    position, param, result, accepted = _NAT_CELLS[cell]
+    body = "7" if result != "Int" else "0"
+    source = (_NAT_SPELLINGS + f"type F = {position} effects(pure);\n\n"
+              + _fn("main(@Nat -> @Int)",
+                    f"let @F = fn(@{param} -> @{result}) effects(pure) "
+                    f"{{ {body} }};\n  0", visibility="public"))
+    assert _codes(source) == ([] if accepted else ["E190"]), source
