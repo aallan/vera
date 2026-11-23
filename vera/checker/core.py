@@ -1087,9 +1087,16 @@ class TypeChecker(
         if isinstance(node, ast.TypeExpr):
             # A clause parameter's type (#1896): the value is the one the
             # operation is performed with, at the handled effect's type,
-            # which no rewrite of a closure changes; the parameter is what
-            # the program rewrites.
-            fix = f"{other[:1].upper()}{other[1:]}."
+            # which no rewrite of a closure changes, so the parameter is
+            # what the program rewrites, and the one type that admits the
+            # value whichever of its parts are unfit is that type itself.
+            # The part reported is the reason.
+            part = (f"inside it, a function type's {where} is `{vp}`"
+                    if nested else f"its {where} is `{vp}`")
+            fix = (f"{declare[:1].upper()}{declare[1:]}, "
+                   f"`{self._shown(value_ty)}`, named by a type alias where "
+                   f"it holds a function type: {part}, where the "
+                   f"parameter's type states `{pp}`.")
         self._error(
             node,
             (f"A function value of type {self._shown(found.value)}"

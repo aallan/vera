@@ -510,8 +510,10 @@ _E190_CLAUSE_DESCRIPTION = (
 #: The parameter is the one rewrite: the value is the operation's, at the
 #: handled effect's type, which no rewrite of a closure changes.
 _E190_CLAUSE_FIX = (
-    "Write the clause's parameter at a function type whose result is "
-    "`Int`.")
+    "Write the parameter at the type 'throw' takes, "
+    "`fn(Int -> Int) effects(pure)`, named by a type alias where it holds "
+    "a function type: its result is `Int`, where the parameter's type "
+    "states `Nat`.")
 
 
 def test_repro_a_clause_parameter_narrower_by_a_result_is_e190_read_whole(
@@ -549,5 +551,74 @@ def test_repro_a_function_typed_clause_parameter_s_e342_fix_is_prose(
         "at another type with a `let` in the clause body where it fits "
         "there."), diagnostic.fix
     fixed = source.replace("throw(@G) ->", "throw(@IOF) ->")
+    assert fixed != source
+    assert _codes(fixed) == [], fixed
+
+
+#: (the operation's type, the parameter's, the value thrown, the whole fix):
+#: the fix is the one instruction that clears E190 whichever parts are
+#: unfit, the type the operation takes, with the first unfit part as its
+#: reason.  Each cell's clause written at that type checks.
+_CLAUSE_PART_TYPES = (
+    "type G = fn(Int -> Int) effects(pure);\n"
+    "type F = fn(Int -> Nat) effects(pure);\n"
+    "type P = fn(Nat -> Int) effects(pure);\n"
+    "type H = fn(G -> Int) effects(pure);\n"
+    "type HF = fn(F -> Int) effects(pure);\n\n")
+_TAKES = ("Write the parameter at the type 'throw' takes, `{ty}`, named by a "
+          "type alias where it holds a function type: {why}.")
+_CLAUSE_PARTS = {
+    "result-unfit": ("G", "F", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+                     _TAKES.format(
+                         ty="fn(Int -> Int) effects(pure)",
+                         why="its result is `Int`, where the parameter's "
+                             "type states `Nat`")),
+    "parameter-unfit": ("P", "G", "fn(@Nat -> @Int) effects(pure) { 0 }",
+                        _TAKES.format(
+                            ty="fn(Nat -> Int) effects(pure)",
+                            why="its parameter 0 is `Nat`, where the "
+                                "parameter's type states `Int`")),
+    "both-unfit": ("P", "F", "fn(@Nat -> @Int) effects(pure) { 0 }",
+                   _TAKES.format(
+                       ty="fn(Nat -> Int) effects(pure)",
+                       why="its parameter 0 is `Nat`, where the parameter's "
+                           "type states `Int`")),
+    "nested": ("Option<G>", "Option<F>",
+               "Some(fn(@Int -> @Int) effects(pure) { @Int.0 })",
+               _TAKES.format(
+                   ty="Option<fn(Int -> Int) effects(pure)>",
+                   why="inside it, a function type's result is `Int`, where "
+                       "the parameter's type states `Nat`")),
+    "function-typed-parameter": (
+        "HF", "H", "fn(@F -> @Int) effects(pure) { 0 }",
+        _TAKES.format(
+            ty="fn(fn(Int -> Nat) effects(pure) -> Int) effects(pure)",
+            why="its parameter 0 is `fn(Int -> Nat) effects(pure)`, where "
+                "the parameter's type states `fn(Int -> Int) "
+                "effects(pure)`")),
+}
+
+
+def _clause_part(op_ty: str, written: str, value: str) -> str:
+    return _CLAUSE_PART_TYPES + _fn(
+        "go(@Int -> @Int)",
+        f"let @{op_ty} = {value};\n"
+        f"  handle[Exn<{op_ty}>] {{\n    throw(@{written}) -> {{ 0 }}\n"
+        f"  }} in {{\n    throw(@{op_ty}.0)\n  }}", visibility="public")
+
+
+@pytest.mark.parametrize("cell", list(_CLAUSE_PARTS))
+def test_repro_a_clause_parameter_s_e190_fix_clears_it_whichever_part(
+        cell: str) -> None:
+    """The fix named only the part reported: with the parameter and the
+    result both unfit, written as it said (`fn(Nat -> Nat)`) the clause was
+    E190 again, for the result.  The type the operation takes clears it in
+    every cell."""
+    op_ty, written, value, fix = _CLAUSE_PARTS[cell]
+    source = _clause_part(op_ty, written, value)
+    (diagnostic,) = pipeline.check(source).errors
+    assert diagnostic.error_code == "E190", diagnostic.description
+    assert diagnostic.fix == fix, diagnostic.fix
+    fixed = source.replace(f"throw(@{written}) ->", f"throw(@{op_ty}) ->")
     assert fixed != source
     assert _codes(fixed) == [], fixed

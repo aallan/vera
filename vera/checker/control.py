@@ -1999,7 +1999,7 @@ class ControlFlowMixin:
         if self._refuse_unfit_function_value(
                 param_te, op_ty, written,
                 f"the parameter of the '{clause.op_name}' clause",
-                "write the clause's parameter at"):
+                f"write the parameter at the type '{clause.op_name}' takes"):
             return
         # A slot names a function type through an alias, so its type is
         # given in prose.
