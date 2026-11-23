@@ -208,6 +208,9 @@ class ExpressionsMixin:
         type) is the context's whatever object it is
         (`tests/test_sibling_provenance_1866.py` holds every site to it).
         """
+        # Read before a pattern's type stands in for a missing one: that
+        # type is the context's.
+        from_sibling = from_sibling and expected is not None
         if (expected is None and self._pattern_arg_targets
                 and isinstance(expr, (ast.ConstructorCall, ast.ArrayLit))):
             # #1503: a pattern that binds this construction at a composite
@@ -216,7 +219,7 @@ class ExpressionsMixin:
             if pattern_key is not None:
                 expected = self._pattern_arg_targets.get(pattern_key)
         outer = self._expected_from_sibling
-        self._expected_from_sibling = from_sibling and expected is not None
+        self._expected_from_sibling = from_sibling
         try:
             result = self._synth_expr_impl(expr, expected=expected)
         finally:

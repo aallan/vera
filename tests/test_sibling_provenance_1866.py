@@ -47,6 +47,8 @@ ROOT = Path(__file__).resolve().parent.parent
 _PRELUDE = """\
 type PosInt = { @Int | @Int.0 > 0 };
 
+type UF = fn(Unit -> Int) effects(pure);
+
 private data Q<A, B> { MkQ(Option<A>, B, B) }
 
 private forall<T> fn idg(@T -> @T)
@@ -100,6 +102,9 @@ _FAMILIES = {
     "option": "Option<Int>",
     "array": "Array<Int>",
     "q": "Q<Int, Int>",
+    "q_bool": "Q<Int, Bool>",
+    "q_unit": "Q<Int, Unit>",
+    "q_fn": "Q<Int, UF>",
 }
 
 
@@ -207,6 +212,32 @@ FORMS: dict[str, Form] = {
                          "Tuple(Some(1), idg(0 - 3))", (), "verify"),
 }
 
+#: Each site that hands down a type of its own, in a constructor's field
+#: whose type is a part of the sibling's: the site's own synthesis then
+#: carries the sibling's origin (a `Tuple`'s component is synthesized with
+#: no expected type, so it carries none), and the type the site hands
+#: down must not.  (The value, the second field's argument, the family.)
+_IN_FIELD = {
+    "callee_param": ("take(head_ord([]))", "5", "q"),
+    "generic_callee_param": ("pick(head_ord([]), 5)", "5", "q"),
+    "apply_fn_param": ("apply_fn(fn(@Int -> @Int) effects(pure) "
+                       "{ @Int.0 }, head_ord([]))", "5", "q"),
+    "op_param": ("IO.print(head_ord([]))", "()", "q_unit"),
+    "state_init": (_STATE.format(init="head_ord([])", upd="",
+                                 body="get(())"), "5", "q"),
+    "state_update": (_STATE.format(init="0", upd=" with @Int = head_ord([])",
+                                   body="put(1); get(())"), "5", "q"),
+    "eq_right_operand": ("Some(1) == Some(head_ord([]))", "true", "q_bool"),
+    "eq_left_operand": ("Some(head_ord([])) == Some(1)", "true", "q_bool"),
+    "let": ("{ let @Int = head_ord([]); @Int.0 }", "5", "q"),
+    "lambda_return": ("fn(@Unit -> @Int) effects(pure) { head_ord([]) }",
+                      "fn(@Unit -> @Int) effects(pure) { 1 }", "q_fn"),
+}
+for _name, (_value, _other, _family) in _IN_FIELD.items():
+    FORMS[f"{_name}_in_field"] = Form(
+        _family, f"MkQ(None, {_value}, {_other})",
+        f"MkQ(Some(1), {_value}, {_other})", ())
+
 
 class Site(NamedTuple):
     module: str
@@ -254,30 +285,32 @@ SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
           "from_sibling"): (
         1, ("index_refined", "index_component", "index_element")),
     _site("calls.py", "_check_fn_call_with_info", _S, "exp", "False"): (
-        1, ("callee_param",)),
+        1, ("callee_param", "callee_param_in_field")),
     _site("calls.py", "_check_fn_call_with_info", _S, "param_ty",
-          "False"): (4, ("generic_callee_param",)),
+          "False"): (4, ("generic_callee_param",
+                         "generic_callee_param_in_field")),
     _site("calls.py", "_check_apply_fn", _S, "exp", "False"): (
-        1, ("apply_fn_param",)),
+        1, ("apply_fn_param", "apply_fn_param_in_field")),
     _site("calls.py", "_check_apply_fn", _S, "param_ty", "False"): (
         2, ("apply_fn_param", "lambda_return")),
     _site("calls.py", "_check_op_call", _S, "exp", "False"): (
-        1, ("op_param",)),
+        1, ("op_param", "op_param_in_field")),
     _site("calls.py", "_check_ability_op_call", _S, "param_ty", "False"): (
         1, ("ability_op_param",)),
     _site("control.py", "_check_handle", _S, "state_type", "False"): (
-        2, ("state_init", "state_update")),
+        2, ("state_init", "state_update", "state_init_in_field",
+            "state_update_in_field")),
     _site("expressions.py", "_resynth_eq_ctor_operand", _S, "left_ty",
-          "False"): (1, ("eq_right_operand",)),
+          "False"): (1, ("eq_right_operand", "eq_right_operand_in_field")),
     _site("expressions.py", "_resynth_eq_ctor_operand", _S, "right_ty",
-          "False"): (1, ("eq_left_operand",)),
+          "False"): (1, ("eq_left_operand", "eq_left_operand_in_field")),
     _site("expressions.py", "_check_let", _S, "declared_type", "False"): (
-        1, ("let",)),
+        1, ("let", "let_in_field")),
     _site("expressions.py", "_check_let_destruct", _L,
           "AdtType('Tuple', tuple(resolved_types))", "False"): (
         1, ("let_destructure",)),
     _site("expressions.py", "_check_anon_fn", _S, "ret_type", "False"): (
-        1, ("lambda_return",)),
+        1, ("lambda_return", "lambda_return_in_field")),
     _site("core.py", "_check_fn", _S, "return_type", "False"): (
         1, "a function's body is a declaration's, never a branch's"),
     _site("expressions.py", "_check_binary", _S, "BYTE", "False"): (
