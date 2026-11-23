@@ -456,7 +456,7 @@ class ControlFlowMixin:
             node = expr.expr if isinstance(expr, ast.Block) else expr
             if self._refuse_unfit_function_value(
                     node, ty, shared, "the join with its sibling arms",
-                    "declare every arm at"):
+                    "declare every arm at", value_node=False):
                 break
         return shared
 

@@ -948,8 +948,10 @@ class TypeChecker(
         *declare* the declaration the second rewrite changes.  *call* is the
         called function, the argument's index and the arguments' types, for
         a generic instance chosen from another argument, whose fix names
-        that argument.  *value_node* is False where *node* is not the value
-        of type *value_ty* but a value holding it (a destructured one).
+        that argument.  *value_node* is False where a rewrite of *node*
+        would not fix the flow pasted where it stands: a destructured value
+        holding the function, and a join's arm, whose rewrite moves the
+        join's type with it.
 
         The fix prints code only in the shapes the read-back generators
         paste: the pair at the value's root, met where *node* is that value

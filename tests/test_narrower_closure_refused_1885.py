@@ -1451,3 +1451,198 @@ def test_every_rewrite_e190_prints_checks_and_runs_pasted(
                                  wrapper[0])) == expected, wrapper[0]
         pasted += 1
     assert pasted >= 1
+
+
+# =====================================================================
+# Every rewrite every refused cell prints, pasted where the value is
+# =====================================================================
+
+def _refused_cells() -> list[object]:
+    """Every refused cell of the three matrices above: the program, the
+    closure the cell writes (whose body a rewrite's `...` stands for), and
+    the type the closure's own narrowed parameter is read by there."""
+    cells: list[object] = []
+    for flow in FLOWS:
+        for kind in ("parameter", "result"):
+            for form in FORMS:
+                for p, c in PAIRS:
+                    if expected_refused(flow, kind, form, p, c):
+                        cells.append(pytest.param(
+                            "flows", (flow, kind, form, p, c), c,
+                            id="-".join(("flows", flow, kind, form, p, c))))
+    for flow in GENERIC_FLOWS:
+        for p, c, r, cr in GENERIC_RELATIONS:
+            if not (_le(p, c) and _le(cr, r)):
+                cells.append(pytest.param(
+                    "generic", (flow, p, c, r, cr), c,
+                    id="-".join(("generic", flow, p, c, r, cr))))
+    for form in BINDING_FORMS:
+        for generic in (False, True):
+            for kind, p, c in BINDING_RELATIONS:
+                if not (_le(p, c) if kind == "parameter" else _le(c, p)):
+                    cells.append(pytest.param(
+                        "binding", (form, kind, p, c, generic), c,
+                        id="-".join(("binding", form,
+                                     "generic" if generic else "plain",
+                                     kind, p, c))))
+    return cells
+
+
+def _source_of(matrix: str, cell: tuple[object, ...]) -> str:
+    if matrix == "flows":
+        return program(*cell)  # type: ignore[arg-type]
+    if matrix == "generic":
+        return generic_program(*cell)  # type: ignore[arg-type]
+    return binding_form_program(*cell)  # type: ignore[arg-type]
+
+
+def _span_at(source: str, start: int) -> tuple[int, int]:
+    """The span of the value at *start*: a closure, to the brace that
+    closes its body, or a slot reference."""
+    if source.startswith("fn(", start):
+        depth = 0
+        for at in range(source.index("{", start), len(source)):
+            depth += {"{": 1, "}": -1}.get(source[at], 0)
+            if depth == 0:
+                return start, at + 1
+    found = re.match(r"@[\w<>, ]+\.\d+", source[start:])
+    assert found is not None, source[start:start + 40]
+    return start, start + found.end()
+
+
+def _closure_of(source: str, value: str) -> str:
+    """The closure *value* is: itself, or the one its slot is bound to."""
+    if value.startswith("fn("):
+        return value
+    bound = source.index(f"let {value[:value.rindex('.')]} = ") + len(
+        f"let {value[:value.rindex('.')]} = ")
+    start, end = _span_at(source, bound)
+    return source[start:end]
+
+
+@pytest.mark.parametrize(("matrix", "cell", "declared"), _refused_cells())
+def test_every_rewrite_a_refused_cell_prints_checks_pasted(
+        matrix: str, cell: tuple[object, ...], declared: str) -> None:
+    """Every rewrite written as code in the fix of every refused cell of
+    the matrices above (a closure header with its narrowing or its result,
+    and a wrapper), pasted in place of the value E190 is placed at, checks
+    with no error but the form's own and the other sites' E190.  The
+    `...` of a header is the
+    closure's own body, its narrowed parameter read by the narrowing's
+    slot.  A cell whose fix prints no code is prose, which pastes
+    nothing."""
+    source = _source_of(matrix, cell)
+    own = (_FORM_OWN_CODES.get(str(cell[0]), set()) if matrix == "binding"
+           else set())
+    refused = [d for d in pipeline.check(source).errors
+               if d.error_code == "E190"]
+    for diagnostic in refused:
+        rewrites = re.findall(r"`(fn\([^`]*\})`", diagnostic.fix)
+        if not rewrites:
+            continue
+        line, column = diagnostic.location.line, diagnostic.location.column
+        assert line is not None and column is not None
+        start, end = _span_at(source, sum(
+            len(text) + 1 for text in source.split("\n")[:line - 1])
+            + column - 1)
+        closure = _closure_of(source, source[start:end])
+        for rewrite in rewrites:
+            if " ... }" in rewrite:
+                body = closure[closure.index("{ ") + 2:closure.rindex(" }")]
+                narrowing = re.search(
+                    r"let @(\{ @(\w+) \|[^}]*\}|[\w<>]+) = ", rewrite)
+                if narrowing is not None:
+                    body = body.replace(
+                        f"@{declared}.0",
+                        f"@{narrowing.group(2) or narrowing.group(1)}.0")
+                rewrite = rewrite.replace(" ... }", f" {body} }}")
+            pasted = source[:start] + rewrite + source[end:]
+            # The value's E190 is gone, and nothing else is reported: a
+            # form that meets the value at two sites keeps the other's.
+            left = [code for code in _codes(pasted) if code not in own]
+            assert left == ["E190"] * (len(refused) - 1), (rewrite, pasted)
+
+
+#: The three shapes whose rewrite no generator pastes, each given its fix
+#: in prose: a component of a destructured value, a function-typed part,
+#: and a pair below the root of the value's type.
+_DESTRUCTURED = (
+    "type F = fn(Int -> Nat) effects(pure);\n"
+    "type G = fn(Int -> Int) effects(pure);\n\n"
+    + _fn("main(@Int -> @Int)",
+          "let @G = fn(@Int -> @Int) effects(pure) { @Int.0 };\n"
+          "  let @Tuple<G, Bool> = Tuple(@G.0, true);\n"
+          "  let Tuple<@F, @Bool> = @Tuple<G, Bool>.0;\n"
+          "  nat_to_int(apply_fn(@F.0, @Int.0))", visibility="public"))
+
+_FUNCTION_TYPED_PART = (
+    "type Strict = fn(Int -> Nat) effects(pure);\n"
+    "type Loose = fn(Int -> Int) effects(pure);\n"
+    "type F = fn(Loose -> Int) effects(pure);\n\n"
+    + _fn("main(@Int -> @Int)",
+          "let @F = fn(@Strict -> @Int) effects(pure) "
+          "{ nat_to_int(apply_fn(@Strict.0, 1)) };\n"
+          "  apply_fn(@F.0, fn(@Int -> @Int) effects(pure) { @Int.0 })",
+          visibility="public"))
+
+_NESTED_IN_A_GENERIC = (
+    "type In = fn(Int -> Int) effects(pure);\n"
+    "type NIn = fn(Nat -> Int) effects(pure);\n"
+    "type Cb<T> = fn(T -> In) effects(pure);\n\n"
+    + _fn("use(@Cb<T>, @T -> @Int)",
+          "apply_fn(apply_fn(@Cb<T>.0, @T.0), -5)").replace(
+              "private fn use", "private forall<T> fn use")
+    + _fn("main(@Int -> @Int)",
+          "use(fn(@Int -> @NIn) effects(pure) "
+          "{ fn(@Nat -> @Int) effects(pure) { @Nat.0 } }, @Int.0)",
+          visibility="public"))
+
+
+def test_repro_a_destructured_component_is_given_no_wrapper_1885() -> None:
+    """The wrapper was written around the destructured tuple's slot,
+    `apply_fn(@Tuple<G, Bool>.0, @Int.0)`, which pasted is E202: the
+    value E190 is placed at holds the function, and is not it."""
+    fix = str(_only_diagnostic(_DESTRUCTURED)["fix"])
+    assert "apply_fn" not in fix and "`fn(" not in fix, fix
+    assert fix == (
+        "Declare the closure's result as `@Nat`, the type the position "
+        "states; the closure's own return is then proved or checked, where "
+        "the value is.  Or write binding 1 at a function type whose result "
+        "is `Int`.")
+
+
+def test_repro_a_function_typed_part_is_adapted_in_prose_1885() -> None:
+    """The header spliced the position's function type in place of the
+    closure's `@Strict` and narrowed it by `let @Strict = ...`, which is
+    the narrowing of a function value E190 refuses: the fix says to apply
+    the function value inside and narrow what it returns."""
+    fix = str(_only_diagnostic(_FUNCTION_TYPED_PART)["fix"])
+    assert "`fn(" not in fix.replace("`fn(Int -> Int) effects(pure)`", "")
+    assert "let @" not in fix, fix
+    assert fix == (
+        "Declare the closure's parameter 0 at `fn(Int -> Int) effects(pure)`"
+        ", the type the position hands it.  A function value is narrowed "
+        "nowhere: where the closure needs more of it than that type states, "
+        "apply it inside and narrow what it returns, where there is a value "
+        "to check.  Or declare the binding at a function type whose "
+        "parameter 0 is `Strict`.")
+
+
+def test_repro_a_nested_pair_names_no_outer_variable_1885() -> None:
+    """The nested pair's parameter index named the outer generic's `T`
+    (`pass argument 1 as Nat`, which pasted is E190 again), and its header
+    replaced the outer closure (E202).  The description names the value
+    the pair sits in, and the fix is prose."""
+    diagnostic = _only_diagnostic(_NESTED_IN_A_GENERIC)
+    description, fix = str(diagnostic["description"]), str(diagnostic["fix"])
+    assert description.startswith(
+        "A function value of type fn(Nat -> Int) effects(pure), inside a "
+        "value of type fn(Int -> fn(Nat -> Int) effects(pure)) effects(pure), "
+        "is used where parameter 0 of 'use' gives it the type fn(Int -> Int) "
+        "effects(pure)"), description
+    assert "instantiated" not in description, description
+    assert fix == (
+        "Declare the closure's parameter 0 as `@Int`, the type the position "
+        "hands it, and narrow inside, where there is a value to check.  Or "
+        "declare parameter 0 of 'use' at a type holding, where this one "
+        "sits, a function type whose parameter 0 is `Nat`.")
