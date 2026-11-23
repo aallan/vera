@@ -309,13 +309,18 @@ class _Placement:
     def head_for(self, file: str) -> lsp.Range:
         """The range a diagnostic located in *file*, a module, is
         published at: the first import, the document's own before any a
-        module makes, that the resolver bound to *file*: by the path's
-        binding, or for an import it could not read, by its record of that
-        import; else the document's first token, for a file no import of
+        module makes, that the resolver bound to *file*: an import it
+        recorded as unread by that record alone, any other by the path's
+        binding; else the document's first token, for a file no import of
         the document reaches (none is known)."""
         for importer, mod_path, head in self.routes:
-            if (self.bound.get(mod_path) == file
-                    or self.unread.get((importer, mod_path)) == file):
+            # An import the resolver recorded as unread is bound to the file
+            # it could not read, and to nothing else: the path's binding is
+            # some other importer's (one path, two files, #1904).
+            recorded = self.unread.get((importer, mod_path))
+            target = (recorded if recorded is not None
+                      else self.bound.get(mod_path))
+            if target == file:
                 return head
         return location_to_range(SourceLocation(line=1, column=1), self.index)
 
@@ -342,7 +347,12 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
     # published on that import, wherever else the walk meets it.
     document = str(Path(analysis.path))  # as the resolver was handed it
     place.routes.extend((document, mod_path, head) for mod_path, head in heads)
+    # The walk goes on only through an import that read: one the resolver
+    # recorded as unread reached no module, whatever module the path is
+    # bound to through another importer (#1904).
     for mod_path, head in heads:
+        if (document, mod_path) in analysis.unread:
+            continue
         queue, seen = [mod_path], set()
         while queue:
             current = queue.pop(0)
@@ -350,9 +360,11 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
             if current in seen or mod is None:
                 continue
             seen.add(current)
+            importer = str(mod.file_path)
             for imp in mod.program.imports:
-                place.routes.append((str(mod.file_path), imp.path, head))
-                queue.append(imp.path)
+                place.routes.append((importer, imp.path, head))
+                if (importer, imp.path) not in analysis.unread:
+                    queue.append(imp.path)
     place.bound = {m.path: str(m.file_path) for m in analysis.modules}
     place.unread = dict(analysis.unread)
     place.sources = {

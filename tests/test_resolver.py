@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from vera.errors import Diagnostic
 from vera.resolver import ModuleResolver, ResolvedModule
 
@@ -610,9 +611,6 @@ class TestUnreadRecord:
     def test_the_record_names_the_importer_the_path_and_the_file(
         self, tmp_path: Path,
     ) -> None:
-        from vera.parser import parse_file
-        from vera.transform import transform
-
         hdr = "requires(true) ensures(true) effects(pure)"
         main_file = _write_file(
             tmp_path, "main.vera",
@@ -628,7 +626,7 @@ class TestUnreadRecord:
         bad.write_bytes(b"module lib;\n\xe9\n")
         resolver = ModuleResolver(_root=tmp_path)
         resolved = resolver.resolve_imports(
-            transform(parse_file(str(main_file))), main_file)
+            pipeline.parse(main_file).program, main_file)
         # a.mid's `lib` is a/lib.vera, which does not read; main's `lib`
         # is the root lib.vera, which does.
         assert resolver.unread == {(mid.resolve(), ("lib",)): bad.resolve()}
@@ -638,9 +636,6 @@ class TestUnreadRecord:
             (tmp_path / "lib.vera").resolve())
 
     def test_a_module_that_reads_leaves_no_record(self, tmp_path: Path) -> None:
-        from vera.parser import parse_file
-        from vera.transform import transform
-
         hdr = "requires(true) ensures(true) effects(pure)"
         main_file = _write_file(
             tmp_path, "main.vera",
@@ -648,6 +643,5 @@ class TestUnreadRecord:
         _write_file(tmp_path, "lib.vera",
                     f"module lib;\npublic fn word(@Unit -> @Int) {hdr} {{ 1 }}\n")
         resolver = ModuleResolver(_root=tmp_path)
-        resolver.resolve_imports(transform(parse_file(str(main_file))),
-                                 main_file)
+        resolver.resolve_imports(pipeline.parse(main_file).program, main_file)
         assert resolver.unread == {}
