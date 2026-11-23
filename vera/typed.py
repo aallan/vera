@@ -910,7 +910,8 @@ def _mentions(te: object, variables: frozenset[str]) -> bool:
                for n in _walk(te))
 
 
-def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
+def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
+              resolved_return: Type | None = None) -> str:
     """The root call's fix: instantiate its generic at Int, which every
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
@@ -919,7 +920,10 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     gives its result a type (a `match` scrutinee, an operand; the type a
     result is expected at fixes such a variable, #1684), so its fix is that
     type, where the result's type holds the variable, or a parameter that
-    carries one."""
+    carries one.  The result's type is read as the check resolved it where
+    the entry holds the generic (*resolved_return*): an alias can drop a
+    variable its written form names (`type Erased<T> = Int;`), and a
+    binding of that type fixes none."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -944,8 +948,10 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
             param = (f"give '{generic}' a parameter for each of "
                      f"{', '.join(names)} ({carried}) and pass each a value "
                      f"at a type that {needs}, Int for example.")
+        held = (set(_variables_in(resolved_return))
+                if resolved_return is not None else None)
         if not all(_mentions(root.decl.return_type, frozenset((v,)))
-                   for v in names):
+                   and (held is None or v in held) for v in names):
             # A variable the result's type does not hold (one only a
             # `where` constraint names): no binding of the result fixes it.
             return f"{head}: {param}"
@@ -974,6 +980,19 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     for lo, hi, example in sorted(edits, reverse=True):
         fixed = fixed[:lo] + example + fixed[hi:]
     return f"{advice}: replace '{text}' with '{fixed}'."
+
+
+def _resolved_return(template: Template, env: TypeEnv) -> Type | None:
+    """The return type the check resolved for the entry's generic
+    *template*, its variables as the declaration names them; None for one
+    the entry's environment does not hold (a module's, a `where` helper's),
+    whose written type is read in its place."""
+    if template.origin is not None:
+        return None
+    info = env.lookup_function(template.decl.name)
+    if info is None or info.forall_vars != template.decl.forall_vars:
+        return None
+    return info.return_type
 
 
 def _offset(text: str, base: ast.Span, span: ast.Span | None, *,
@@ -1079,8 +1098,11 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
                 inst = queue.pop(0)
                 for refusal in of(inst):
                     fix = (refusal.fix if refusal.fix is not None
-                           else _call_fix(node, source, templates[root.key],
-                                          refusal.needs))
+                           else _call_fix(
+                               node, source, templates[root.key],
+                               refusal.needs,
+                               resolved_return=_resolved_return(
+                                   templates[root.key], env)))
                     found.append(_diagnostic(
                         refusal.code, file, source, node,
                         f"The call '{call_text}' instantiates "

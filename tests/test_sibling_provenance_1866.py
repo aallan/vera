@@ -114,6 +114,8 @@ _FAMILIES = {
     "q_bool": "Q<Int, Bool>",
     "q_unit": "Q<Int, Unit>",
     "q_fn": "Q<Int, UF>",
+    "q_nat": "Q<Int, Nat>",
+    "array_option_nat": "Array<Option<Nat>>",
 }
 
 
@@ -574,3 +576,68 @@ def test_repro_the_fix_binds_the_open_call_in_the_arm() -> None:
         fixed = _ISSUE_PRE.replace(
             "JOIN", join.replace("empty_ord(())[0]", arm))
         assert _codes(fixed, "check") == (), order
+
+
+# ---------------------------------------------------------------------
+# A sibling's type is no narrowing target either (PR 1907 review)
+# ---------------------------------------------------------------------
+
+_MKQ = "MkQ(None, idg(0 - 3), 7)"
+_MKQ_CTL = "MkQ(Some(1), idg(0 - 3), 7)"
+
+#: Each site that hands a part of a sibling's type down, reaching an `Int`
+#: argument (`idg(0 - 3)`) at a position the sibling holds at `Nat`: the
+#: site's synthesis is against the sibling's part, and the type it records
+#: as the value's target, which the verifier narrows to, must be the
+#: context's (here none), as outside a branch.  (Family, open arm, control.)
+TARGET_FORMS: dict[str, tuple[str, str, str]] = {
+    "field": ("q_nat", _MKQ, _MKQ_CTL),
+    "component": ("tuple_nat", "Tuple(None, idg(0 - 3))",
+                  "Tuple(Some(1), idg(0 - 3))"),
+    "element": ("array_option_nat", "[None, Some(idg(0 - 3))]",
+                "[Some(1), Some(idg(0 - 3))]"),
+    "index": ("q_nat", f"[{_MKQ}][0]", f"[{_MKQ_CTL}][0]"),
+    "block": ("q_nat", f"{{ let @Int = 1; {_MKQ} }}",
+              f"{{ let @Int = 1; {_MKQ_CTL} }}"),
+    "nested_if": ("q_nat", f"if @Bool.0 then {{ {_MKQ} }} else {{ {_MKQ} }}",
+                  f"if @Bool.0 then {{ {_MKQ_CTL} }} else {{ {_MKQ_CTL} }}"),
+    "nested_match": (
+        "q_nat", f"match @Bool.0 {{ true -> {_MKQ}, false -> {_MKQ} }}",
+        f"match @Bool.0 {{ true -> {_MKQ_CTL}, false -> {_MKQ_CTL} }}"),
+}
+
+
+@functools.cache
+def _verified(source: str) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """The verdict and every obligation (kind, status) `vera verify` reports."""
+    result = pipeline.verify(source)
+    return (tuple(sorted(str(e.error_code) for e in result.errors)),
+            tuple(sorted((str(o.kind), str(o.status))
+                         for o in result.obligations)))
+
+
+@pytest.mark.parametrize("join", list(JOINS))
+@pytest.mark.parametrize("form", list(TARGET_FORMS))
+def test_a_sibling_s_type_is_no_narrowing_target(form: str, join: str) -> None:
+    """`MkQ(None, idg(0 - 3), 7)` beside a `Q<Int, Nat>`: re-synthesized
+    against the sibling, the argument was recorded with the sibling's
+    `Nat` as its target, so `vera verify` obligated a narrowing outside a
+    branch has none (`nat_bind`, refuted E503 at main, a run-time check
+    that trapped once the sibling stopped filling the literal's hole), in
+    three orders of four.  Every obligation, in every join and order, is
+    the control's."""
+    family, open_, control = TARGET_FORMS[form]
+    sib = f"@{_FAMILIES[family]}.0"
+    cell = _program(family, JOINS[join].format(sib=sib, open_=open_))
+    assert _verified(cell) == _verified(_program(family, control))
+
+
+def test_repro_a_sibling_s_nat_is_no_target_for_an_int_argument() -> None:
+    """The reported program, `MkQ(None, idg(0 - 3), 7)` beside a
+    `Q<Int, Nat>`, as an `if` with the sibling first: no `nat_bind` stands
+    at the argument, and the verdict is the construction's outside a
+    branch."""
+    cell = _program("q_nat", JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Nat>.0", open_=_MKQ))
+    codes, rows = _verified(cell)
+    assert codes == () and not any(k == "nat_bind" for k, _ in rows), rows

@@ -224,14 +224,18 @@ class ExpressionsMixin:
             result = self._synth_expr_impl(expr, expected=expected)
         finally:
             self._expected_from_sibling = outer
+        # The target is the type the value is expected at, which a sibling's
+        # type is not (spec §5.9, #1866): checked against one, the value
+        # keeps the target its context recorded, or none.
+        target = None if from_sibling else expected
         # #1679: the same two types by the node's identity, which every
         # check records: the typed program reads them, a span table being
         # unable to tell a clone's node from its template's.
         if self.node_semantic_types is not None and expr.node_id is not None:
             if result is not None:
                 self.node_semantic_types[expr.node_id] = result
-            if expected is not None and self.node_target_types is not None:
-                self.node_target_types[expr.node_id] = expected
+            if target is not None and self.node_target_types is not None:
+                self.node_target_types[expr.node_id] = target
         if self.expr_types is not None and expr.span is not None:
             key = ast.span_key(expr)
             if result is not None:
@@ -244,8 +248,8 @@ class ExpressionsMixin:
             # #747: the ``expected`` (instantiated target) type the
             # expression was checked against — e.g. a generic formal or
             # field fixed to @Nat at this call/construction site.
-            if self.expr_target_types is not None and expected is not None:
-                self.expr_target_types[key] = expected
+            if self.expr_target_types is not None and target is not None:
+                self.expr_target_types[key] = target
         return result
 
     def _synth_expr_impl(self, expr: ast.Expr, *,

@@ -1934,3 +1934,57 @@ def test_e613_offers_no_binding_where_the_result_holds_some_variables() -> None:
                .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
                .replace("pair_ord(())", "pair_ord((), 1, 2)"))
     assert "E613" not in _passed_codes("check", carried)
+
+
+#: One variable no argument fixes, the result's type written to hold it:
+#: plainly, and through an alias whose body drops it, so its resolved type
+#: holds none (PR 1907 review).
+_E613_ONE = {
+    "plain": "@Option<T>",
+    "erased_alias": "@Erased<T>",
+}
+
+
+def _e613_one(result: str) -> str:
+    return f"""\
+type Erased<T> = Int;
+
+private forall<T where Ord<T>> fn one_ord(@Unit -> {result})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {"None" if result == "@Option<T>" else "0"}
+}}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match one_ord(()) {{
+    _ -> 0
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("result", list(_E613_ONE))
+def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
+        result: str) -> None:
+    """The fix offers the binding it writes out only where the result's
+    type, as the check resolved it, holds the variable, and that binding,
+    pasted where the call is, clears E613; through `Erased<T>`, which
+    resolves to `Int`, it offers the parameter alone, which clears it."""
+    source = _e613_one(_E613_ONE[result])
+    fix = _the("E613", "check", source).fix
+    offered = re.findall(r"`(let @[^`]+ = one_ord\(\(\)\);)`, then "
+                         r"`(@[^`]+\.0)` in its place", fix)
+    assert bool(offered) == (result == "plain"), fix
+    for let, slot in offered:
+        bound = source.replace("  match one_ord(()) {",
+                               f"  {let}\n  match {slot} {{")
+        assert "E613" not in _passed_codes("check", bound), bound
+    carried = (source.replace("fn one_ord(@Unit -> ", "fn one_ord(@Unit, @T -> ")
+               .replace("one_ord(())", "one_ord((), 1)"))
+    assert "E613" not in _passed_codes("check", carried), carried
