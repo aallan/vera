@@ -1519,6 +1519,47 @@ def test_the_wasi_host_names_an_exception_no_boundary_catches() -> None:
     assert error.kind == "uncaught_exception", str(error)
 
 
+def test_repro_every_statement_wasmtime_makes_of_an_uncaught_exception_is_named(
+) -> None:
+    """wasmtime states an exception leaving an export in more than one way:
+    a component call reports `thrown Wasm exception` in 50 and `uncaught
+    exception propagated out of component` in 51, and `TrapCode` has
+    `UNCAUGHT_EXCEPTION`, which is read before any text where a trap
+    carries it.  The two tests above run whichever wasmtime is installed,
+    so each sees one statement; this one holds all of them whichever that
+    is (#1894).  The texts are wasmtime's own, as 50.0.1 and 51.0.0 render
+    the component above."""
+    from vera.runtime.traps import _classify_trap
+    from vera.runtime.wasi_host import _component_trap_error
+
+    class _Reason(Exception):
+        pass
+
+    backtrace = (
+        "error while executing at wasm backtrace:\n"
+        "    0:     0x34 - M!<wasm function 0>\n\nCaused by:\n    ")
+    for reason in (
+            "thrown Wasm exception\n",
+            "wasm trap: uncaught exception propagated out of component\n"):
+        error = _component_trap_error(
+            _Reason(backtrace + reason), bytearray(), bytearray(), None)
+        assert error.kind == "uncaught_exception", reason
+        assert error.fix == TRAP_KINDS["uncaught_exception"].fix, reason
+
+    class _Code:
+        name = "UNCAUGHT_EXCEPTION"
+
+    class _Coded(Exception):
+        trap_code = _Code()
+
+    # A code is read before any text, and the text here names nothing, so
+    # the code alone decides.
+    kind, description, fix = _classify_trap(_Coded("no row reads this"), [])
+    assert kind == "uncaught_exception"
+    assert description == TRAP_KINDS["uncaught_exception"].description
+    assert fix == TRAP_KINDS["uncaught_exception"].fix
+
+
 @browser
 def test_the_browser_names_an_exception_no_boundary_catches(
     tmp_path: Path,

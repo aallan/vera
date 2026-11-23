@@ -1662,11 +1662,23 @@ public fn f(@Int -> @Int)
 }
 """
 
-#: The closure prologue's own component guard, measured from the trap.  It
-#: names the CLOSURE's rendered signature rather than a caller's, which is
-#: what pins the check to the boundary the obligation points at.
-_A1_TUPLE_TRAP_SITE = "Refinement violation in fn(@Tuple<PosInt, Int> -> @Int)"
-_A1_TUPLE_TRAP_WHAT = "parameter (tuple component): @Int.0 > 0 failed"
+#: The check at the call, measured from the trap: an argument applied to a
+#: function value held in a slot is checked at the call against the
+#: function type's parameter (#1861), since the closure that runs can be
+#: wider than its type.
+_A1_TUPLE_TRAP_SITE = "Refinement violation in closure argument (tuple component)"
+_A1_TUPLE_TRAP_WHAT = "@Int.0 > 0 failed"
+
+#: The same argument applied to a closure LITERAL: its own parameter is the
+#: function type's, so the closure prologue's component guard answers it and
+#: names the closure's rendered signature.
+_A1_CLOSURE_TUPLE_LITERAL = _A1_CLOSURE_TUPLE.replace(
+    "  let @Taker = fn(@Tuple<PosInt, Int> -> @Int) effects(pure) { 1 };\n"
+    "  apply_fn(@Taker.0, apply_fn(@Maker.0, @Int.0))",
+    "  apply_fn(fn(@Tuple<PosInt, Int> -> @Int) effects(pure) { 1 },\n"
+    "    apply_fn(@Maker.0, @Int.0))")
+_A1_LITERAL_TRAP_SITE = "Refinement violation in fn(@Tuple<PosInt, Int> -> @Int)"
+_A1_LITERAL_TRAP_WHAT = "parameter (tuple component): @Int.0 > 0 failed"
 
 
 class TestClosureArgumentNestedGuardednessIsTypeDerived:
@@ -1756,22 +1768,23 @@ class TestClosureArgumentNestedGuardednessIsTypeDerived:
         assert envelope["verification"]["tier3_runtime"] == 1, envelope
         _assert_partition(envelope)
 
-    def test_and_the_tuple_component_traps_at_the_closure_prologue(
+    def test_and_the_tuple_component_traps_at_the_call(
         self, tmp_path: Path,
     ) -> None:
         """The guard the `tier3` promises, run.
 
         The trap text is asserted rather than the exit code, because an exit
-        code cannot say WHICH check fired.  It names the closure's own
-        signature and the tuple-component parameter position, so the check is
-        the one at the boundary the obligation points at — not a producer's
-        return guard standing in for it, which is the confound a refined-return
-        producer would have introduced here.
+        code cannot say WHICH check fired.  It names the closure argument's
+        tuple component, so the check is the one at the call the obligation
+        points at (#1861: an argument applied to a function value held in a
+        slot is checked at the call, against the function type's parameter)
+        — not a producer's return guard standing in for it, which is the
+        confound a refined-return producer would have introduced here.
         """
         out = _run(tmp_path, _A1_CLOSURE_TUPLE, "--fn", "f", "--", "-4",
                    name="a1d.vera")
         assert _A1_TUPLE_TRAP_SITE in out, (
-            f"the `tier3` promises a runtime check at the closure boundary "
+            f"the `tier3` promises a runtime check at the call "
             f"and none fired there:\n{out}"
         )
         assert _A1_TUPLE_TRAP_WHAT in out, out
@@ -1782,6 +1795,20 @@ class TestClosureArgumentNestedGuardednessIsTypeDerived:
             f"the guard rejects a satisfying component, so the trap above "
             f"witnesses nothing about the predicate:\n{ok}"
         )
+
+    def test_and_a_closure_literal_traps_at_its_prologue(
+        self, tmp_path: Path,
+    ) -> None:
+        """Applied in place, the closure literal's own parameter is the
+        function type's, so its prologue's component guard is the check, and
+        the trap names the closure's own signature."""
+        out = _run(tmp_path, _A1_CLOSURE_TUPLE_LITERAL, "--fn", "f", "--",
+                   "-4", name="a1f.vera")
+        assert _A1_LITERAL_TRAP_SITE in out, out
+        assert _A1_LITERAL_TRAP_WHAT in out, out
+        ok = _run(tmp_path, _A1_CLOSURE_TUPLE_LITERAL, "--fn", "f", "--", "7",
+                  name="a1g.vera")
+        assert ok.strip() == "1", ok
 
 
 _A2_CALL_RESULT_OPERAND = """\

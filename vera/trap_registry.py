@@ -916,11 +916,13 @@ NATIVE_TRAPPING_INSTRUCTIONS: frozenset[str] = frozenset({
 #: first match wins (wasmtime and the WASI 0.2 host).  "integer overflow" is
 #: also what wasmtime says for a truncation past its range or of an
 #: infinity, so a host that can read the trapping instruction consults it
-#: first (:func:`native_trap_kind`).  An exception leaving an export carries
-#: no trap code; "thrown Wasm exception" is wasmtime's whole statement of
-#: it, for an export no exception boundary wraps.
+#: first (:func:`native_trap_kind`).  An exception leaving an export no
+#: exception boundary wraps has two texts: "thrown Wasm exception" is
+#: wasmtime 50's whole statement of it, with no trap code, and from 51 a
+#: component call says "uncaught exception propagated out of component".
 WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
     ("thrown wasm exception", "uncaught_exception"),
+    ("uncaught exception propagated out of component", "uncaught_exception"),
     ("integer divide by zero", "divide_by_zero"),
     ("invalid conversion to integer", "float_conversion"),
     ("out of bounds memory access", "out_of_bounds"),
@@ -933,7 +935,12 @@ WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
 #: to the kind it is — read before any text wherever the host has it (the
 #: core runtime), so no program text can decide the kind.  Two spellings of
 #: the unreachable code cover the wasmtime-py releases in use.
+#: ``UNCAUGHT_EXCEPTION`` is ``TrapCode``'s member for an exception nothing
+#: caught: wasmtime 50.0.1 gives the trap of a thrown exception no code, but
+#: where a code is found no text is read, so a trap carrying this one would
+#: be ``unknown`` without the entry.
 WASMTIME_TRAP_CODES: dict[str, str] = {
+    "UNCAUGHT_EXCEPTION": "uncaught_exception",
     "INTEGER_DIVISION_BY_ZERO": "divide_by_zero",
     "INTEGER_OVERFLOW": "overflow",
     "BAD_CONVERSION_TO_INTEGER": "float_conversion",
