@@ -40,7 +40,7 @@ from tests import pipeline
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/types.py", "vera/checker/core.py", "vera/checker/control.py",
-    "vera/checker/calls.py"])
+    "vera/checker/calls.py", "vera/checker/expressions.py"])
 
 _ALIASES = (
     "type Pos = { @Int | @Int.0 > 0 };\n"
