@@ -110,6 +110,34 @@ def z3_float(value: z3.ExprRef) -> float:
     return -0.0 if (f == 0.0 and fp.isNegative()) else f
 
 
+def holds_string(value: str) -> bool:
+    """Whether Z3's string sort can hold every character of *value* (#802):
+    its alphabet ends at U+2FFFF, and a lone surrogate (U+D800..U+DFFF) is
+    no character a UTF-8 `String` can hold."""
+    return not any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
+                   for ch in value)
+
+
+def string_term(value: str) -> z3.SeqRef | None:
+    """The solver's string term for the string *value*, every character
+    read as itself; ``None`` where the sort cannot hold one of them
+    (:func:`holds_string`).  The inverse of :func:`z3_string`, and the one
+    builder of a solver string from a Vera or Python string (#1871).
+
+    ``z3.StringVal`` reads escape syntax in the text it is given: in
+    z3-solver 5.4.1, ``\\u{h}`` to ``\\u{hhhhh}`` up to U+2FFFF and
+    ``\\uhhhh``, each as the character it names, so the Vera literal
+    ``"\\\\u{41}"`` (six characters) became ``"A"`` and a proof over it
+    was a proof about another string.  ``\\x41``, ``\\U00000041``, ``\\n``,
+    ``\\\\`` and a lone ``\\`` it keeps as written.  Every backslash is
+    handed to it as the escape ``\\u{5c}``, which it reads as one
+    backslash and after which nothing that follows begins an escape, so
+    no character of *value* is read as anything but itself."""
+    if not holds_string(value):
+        return None
+    return z3.StringVal(value.replace("\\", "\\u{5c}"))
+
+
 def z3_string(value: z3.ExprRef) -> str:
     """A Z3 string model value as the Python string it holds, read one code
     point at a time (#1871, #1768).  Not Z3's text of it: ``as_string``

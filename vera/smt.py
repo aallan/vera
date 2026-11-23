@@ -5221,25 +5221,17 @@ _SmtArm = Callable[[SmtContext, Any, SlotEnv], "z3.ExprRef | None"]
 def _translate_string_lit(
     ctx: SmtContext, expr: ast.StringLit, env: SlotEnv,
 ) -> z3.ExprRef | None:
-    # #802: Z3's string sort cannot faithfully model two kinds of code
-    # point, so a literal containing either defers to Tier 3 (return
-    # None) rather than be reasoned over as a corrupted term.  For both,
-    # the Python binding silently stores the code point's *escape text*
-    # instead of the character (e.g. z3.StringVal("\U00030000") holds
-    # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
-    # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
-    # never sees, proving false contracts.  The two cases:
-    #   - above the alphabet (> U+2FFFF); and
-    #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
-    #     UTF-8 encoding at all (see string_length in `_translate_call`).
-    # We must return None *before* z3.StringVal sees either.  (string_length
-    # models a literal via its UTF-8 byte count, not z3.StringVal, so it
-    # is unaffected by the alphabet limit — but it too must guard the
-    # surrogate case, there, where the byte encoding genuinely fails.)
-    if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
-           for ch in expr.value):
-        return None
-    return z3.StringVal(expr.value)
+    # The literal's term, every character read as itself, built by the one
+    # builder of a solver string (`vera.literals.string_term`, #1871): a
+    # backslash in the program's text is no escape to the solver, so
+    # `"\\u{41}"` is six characters, not "A".  #802: a literal holding
+    # a code point the sort cannot hold (above U+2FFFF, or a lone
+    # surrogate, which also has no UTF-8 encoding; see string_length in
+    # `_translate_call`) has no term, and defers to Tier 3 (None) rather
+    # than be reasoned over as the escape text the binding would store.
+    # (string_length models a literal by its UTF-8 byte count, so the
+    # alphabet limit does not reach it, but it guards the surrogate.)
+    return literals.string_term(expr.value)
 
 
 def _translate_effect_op(

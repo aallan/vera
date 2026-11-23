@@ -486,4 +486,108 @@ def test_string_literal(value: str, text: str) -> None:
     value and from the solver's value alike."""
     from vera import literals
     assert literals.text(literals.string_literal(value)) == text
-    assert literals.z3_text(z3.StringVal(value)) == text
+    term = literals.string_term(value)
+    assert term is not None
+    assert literals.z3_text(term) == text
+
+
+
+# -- A string into the solver --------------------------------------------
+
+#: A string of each class of character: the builder's term read back by the
+#: reader is the same string.  The binding reads `\u{..}` and `\uXXXX` as
+#: escapes; the other backslash spellings it keeps.
+_ROUND_TRIP = {
+    "printable_ascii": "Hello, world! 123",
+    "backslash_u_brace": "\\u{41}",
+    "backslash_u_brace_astral": "\\u{1F600}",
+    "backslash_x": "\\x41",
+    "backslash_u_four": "\\u0041",
+    "backslash_alone": "\\",
+    "backslash_doubled": "\\\\",
+    "backslash_then_brace_escape": "\\\\u{41}",
+    "quote": 'q"x',
+    "control": "a\x01b\x7f",
+    "zero_width": "​",
+    "astral": "\U0001F600",
+    "alphabet_end": "\U0002FFFF",
+    "empty": "",
+}
+
+
+@pytest.mark.parametrize("name", list(_ROUND_TRIP))
+def test_string_term_round_trip(name: str) -> None:
+    from vera import literals
+    value = _ROUND_TRIP[name]
+    term = literals.string_term(value)
+    assert term is not None
+    assert literals.z3_string(term) == value
+
+
+@pytest.mark.parametrize("value", ["\U00030000", "a\U0010FFFF", "\ud800"],
+                         ids=["above_alphabet", "max_code_point", "surrogate"])
+def test_string_term_defers_what_the_sort_cannot_hold(value: str) -> None:
+    """#802: a code point above U+2FFFF, or a lone surrogate, has no term."""
+    from vera import literals
+    assert literals.string_term(value) is None
+
+
+#: A literal holding escape text, beside the character the text spells.
+_ESCAPE_TEXT = {
+    "brace": ('"\\\\u{41}"', '"A"'),
+    "four_digits": ('"\\\\u0041"', '"A"'),
+    "astral": ('"\\\\u{1F600}"', '"\\u{1F600}"'),
+}
+
+
+def _escape_text_program(written: str, spelled: str) -> str:
+    return f"""\
+public fn same(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{{
+  {written} == {spelled}
+}}
+"""
+
+
+def _ensures_statuses(source: str) -> list[str]:
+    verified = pipeline.verify(source)
+    return [o.status for o in verified.obligations if o.kind == "ensures"]
+
+
+def test_repro_1871_a_literal_holding_escape_text_is_not_the_character() -> None:
+    """`"\\u{41}"` is six characters, not `"A"`: the `ensures` is false at
+    run time, so it is never proved (it was, Tier 1, with the run trapping
+    on the postcondition)."""
+    statuses = _ensures_statuses(_escape_text_program(*_ESCAPE_TEXT["brace"]))
+    assert statuses and "verified" not in statuses, statuses
+
+
+@pytest.mark.parametrize("name", list(_ESCAPE_TEXT))
+def test_escape_text_is_not_the_character_it_spells(name: str) -> None:
+    statuses = _ensures_statuses(_escape_text_program(*_ESCAPE_TEXT[name]))
+    assert statuses and "verified" not in statuses, statuses
+
+
+@pytest.mark.parametrize("name", list(_ESCAPE_TEXT))
+def test_escape_text_equals_itself(name: str) -> None:
+    """The control: the literal equals itself, proved."""
+    written = _ESCAPE_TEXT[name][0]
+    assert _ensures_statuses(_escape_text_program(written, written)) == [
+        "verified"]
+
+
+def test_repro_1871_no_solver_string_is_built_from_text_but_by_the_builder() -> None:
+    """Every solver string built from a Vera or Python string goes through
+    `vera.literals.string_term`: `z3.StringVal` is called in that function
+    alone."""
+    root = Path(__file__).resolve().parent.parent / "vera"
+    sites = [
+        f"{path.relative_to(root).as_posix()}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "StringVal(" in line and not line.lstrip().startswith("#")
+    ]
+    assert len(sites) == 1 and sites[0].startswith("literals.py:"), sites

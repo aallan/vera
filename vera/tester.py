@@ -1486,7 +1486,10 @@ def _assume_on_arguments(
         if bt == BOOL:
             pairs.append((var, z3.BoolVal(bool(value))))
         elif bt == STRING:
-            pairs.append((var, z3.StringVal(str(value))))
+            term = literals.string_term(str(value))
+            if term is None:
+                return None
+            pairs.append((var, term))
         elif bt == FLOAT64:
             pairs.append((var, z3.FPVal(float(value), var.sort())))
         else:
@@ -2235,8 +2238,10 @@ def _seed_boundaries(
     for i, (var, bt) in enumerate(zip(z3_vars, var_types)):
         if bt == STRING:
             for sval in _BOUNDARY_STRING:
+                term = literals.string_term(sval)
+                assert term is not None, sval  # noqa: S101 — ASCII seeds
                 smt.solver.push()
-                smt.solver.add(var == z3.StringVal(sval))
+                smt.solver.add(var == term)
                 if smt.solver.check() == z3.sat:
                     model = smt.solver.model()
                     values = _extract_values(model, z3_vars, var_types)
