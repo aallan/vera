@@ -275,7 +275,7 @@ type Maker = fn(Unit -> { @{ @String | string_length(@String.0) > 0 } | string_l
 
 private fn make_maker(@Unit -> @Maker)
   requires(true) ensures(true) effects(pure)
-{ fn(@Unit -> @String) effects(pure) { "hello" } }
+{ fn(@Unit -> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 }) effects(pure) { "hello" } }
 
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
