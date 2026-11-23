@@ -852,9 +852,17 @@ def test_the_commands_whose_success_carries_no_ok_are_the_spec_s(
         assert refused.returncode == 1 and envelope["ok"] is False, (name, envelope)
     text = (ROOT / "spec/00-introduction.md").read_text(encoding="utf-8")
     anchor = "The exception is a command whose output on success is a listing"
+    end = "carries `ok` when it succeeds"
+    assert anchor in text and end in text, (
+        f"spec §0.5.8 names no exception to `ok`, but {sorted(no_ok)} print no "
+        "`ok` on success")
     start = text.index(anchor)
-    named = sorted(set(re.findall(r"`vera (\w+)`", text[start:text.index("\n", start)])))
-    assert named == sorted(no_ok), (named, no_ok)
+    # The commands the exception names, up to the clause that says they
+    # carry no `ok`: a later mention (`vera ast` a source that does not
+    # parse) is not a name in the list.
+    named = sorted(set(re.findall(r"`vera (\w+)`", text[start:text.index(end, start)])))
+    assert named == sorted(no_ok), (
+        f"spec §0.5.8 names {named} as printing no `ok`; what runs: {sorted(no_ok)}")
 
 
 def test_the_sentence_naming_the_commands_that_refuse_json_is_the_table() -> None:

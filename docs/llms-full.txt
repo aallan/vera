@@ -2909,9 +2909,11 @@ client launches the process and the handshake does the rest. Stdio is the
 server's one transport, so `vera lsp --stdio`, which many editors'
 language-server settings pass, is the same command. Any other option is
 refused (E901) and the server does not start. The refusal is on stderr,
-which an editor may not show, except where the command line holds
-`--json`: that refusal is printed on stdout, as the JSON envelope, where
-an editor expects the protocol's first message. Without
+which an editor may not show, except where `--json` stands among the
+command line's own arguments, before any `--`: that refusal is printed on
+stdout, as the JSON envelope, where an editor expects the protocol's first
+message. A `--json` after `--` is not the command line's, so that refusal
+is on stderr. Without
 the extra installed, `vera lsp` prints a message naming the missing
 package and the install command, and exits; every other `vera` command
 works without it.
