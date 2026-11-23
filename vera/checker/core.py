@@ -975,8 +975,9 @@ class TypeChecker(
         root = value_node and not nested
         function_part = (holds_function(value_part)
                          or holds_function(position_part))
-        code = (root and not function_part
-                and isinstance(node, (ast.AnonFn, ast.SlotRef)))
+        # A part holding a function type is given the adapter in prose
+        # below, which prints none of the code computed here.
+        code = root and isinstance(node, (ast.AnonFn, ast.SlotRef))
         written_at: ast.TypeExpr | None = None
         if root and isinstance(node, ast.AnonFn):
             if i is None:
