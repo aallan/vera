@@ -164,9 +164,12 @@ def invalid_option_value(description: str) -> Diagnostic:
     )
 
 
-def command_not_understood(description: str) -> Diagnostic:
-    """E904: an unknown command, or a command that reads a file and names
-    none."""
+def command_not_understood(
+    description: str, *, fix: str | None = None,
+) -> Diagnostic:
+    """E904: an unknown command, a command that reads a file and names none
+    or more than one, or one that reads none and names one.  *fix* replaces
+    the general fix where the case has its own (`second_file_refused`)."""
     return Diagnostic(
         description=description,
         location=_at(None),
@@ -175,7 +178,7 @@ def command_not_understood(description: str) -> Diagnostic:
             "reads a program, the path of the program's source file. The "
             "usage text lists the commands."
         ),
-        fix=(
+        fix=fix if fix is not None else (
             "Name one of the commands the usage lists, and the file it "
             "reads:\n\n"
             "  vera check program.vera"
@@ -183,6 +186,25 @@ def command_not_understood(description: str) -> Diagnostic:
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
         severity="error",
         error_code="E904",
+    )
+
+
+def second_file_refused(command: str, count: int) -> Diagnostic:
+    """E904: a command that reads one source file, named more than one.
+
+    Refused rather than any one of them read: a gate that read the first
+    of two files and exited 0 would pass a program nobody checked (#1872).
+    Its fix says how to do what the command line meant.
+    """
+    return command_not_understood(
+        f"`vera {command}` reads one file, and the command line names "
+        f"{count}.",
+        fix=(
+            "Run the command once for each file, and gate on every exit "
+            "code:\n\n"
+            f"  for f in a.vera b.vera; do vera {command} \"$f\" || exit 1; "
+            "done"
+        ),
     )
 
 

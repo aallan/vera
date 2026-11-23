@@ -484,7 +484,7 @@ REFUSALS: dict[str, Refusal] = {
         located=False),
     "E903-port": Refusal(
         "E903", ("serve", "--port", "x", "{ok}"),
-        "--port requires an integer, not 'x'.", _RUN, located=False),
+        "--port requires an integer, not 'x'.", None, located=False),
     "E903-timeout-ms": Refusal(
         "E903", ("verify", "--timeout-ms", "abc", "{ok}"),
         "--timeout-ms: expected a positive integer number of milliseconds, "
@@ -1082,7 +1082,10 @@ def test_e800_with_no_frame_of_the_program_s_is_located_at_the_file(
 def test_e904_names_each_command_that_reads_a_file(tmp_path: Path) -> None:
     """Each command that reads a source file, given none, is E904 naming it,
     with the usage text after the diagnostic, and under `--json` the
-    envelope; a word that is no command is E904 too, as unknown."""
+    envelope; a word that is no command is E904 too, as unknown.  A command
+    that takes no `--json` refuses the option first (E901, #1872), and the
+    refusal is the envelope all the same, since the command line asked for
+    JSON."""
     from vera.cli import USAGE
 
     commands = ("parse", "check", "typecheck", "verify", "test", "compile",
@@ -1095,6 +1098,13 @@ def test_e904_names_each_command_that_reads_a_file(tmp_path: Path) -> None:
         assert run.stderr == expected.format() + "\n" + USAGE + "\n", command
         run = pipeline.cli(command, "--json")
         assert run.returncode == 1, (command, run)
+        if command in ("parse", "serve", "fmt"):
+            assert _coded(_envelope(run), "E901")["description"] == (
+                "--json is only accepted by `vera check`, `vera verify`, "
+                "`vera test`, `vera compile`, `vera run`, `vera ast`, "
+                f"`vera builtins`, `vera effects` and `vera errors`, not "
+                f"`vera {command}`."), command
+            continue
         assert _coded(_envelope(run), "E904") == expected.to_dict(), command
     run = pipeline.cli("nonsense")
     assert run.stderr.startswith(ce.command_not_understood(
