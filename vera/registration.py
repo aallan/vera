@@ -21,8 +21,9 @@ if TYPE_CHECKING:
 
 
 def _forall_vars_read(decl: ast.FnDecl) -> frozenset[str]:
-    """Which of ``decl``'s forall type-vars are READ via a `@T.n` slot anywhere
-    that lowers to WASM — the *body* OR a `requires` / `ensures` contract clause.
+    """Which of ``decl``'s forall type-vars are READ via a `@T.n` slot, or a
+    `@T.result` reference (#1870), anywhere that lowers to WASM — the *body*
+    OR a `requires` / `ensures` contract clause.
 
     A `@T.n` ``SlotRef`` lowers to a `local.get` (#900): the body lowers to the
     function body, and a `requires` / `ensures` clause lowers to the *runtime*
@@ -50,7 +51,9 @@ def _forall_vars_read(decl: ast.FnDecl) -> frozenset[str]:
     return frozenset(
         n.type_name
         for n in nodes
-        if isinstance(n, ast.SlotRef) and n.type_name in fvars
+        # #1870: a result reference reads the result as a slot reference
+        # reads a binding, so `@T.result` in an `ensures` reads `T`.
+        if isinstance(n, (ast.SlotRef, ast.ResultRef)) and n.type_name in fvars
     )
 
 

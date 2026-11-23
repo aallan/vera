@@ -78,6 +78,50 @@ class OperatorsMixin:
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
         """Translate binary operators to WAT."""
+        # #1870: an operand with no WebAssembly value is ruled on first,
+        # before any dispatch by the operands' type (the `@Nat` subtraction
+        # guard, the `@Byte` lowering, the arithmetic and comparison
+        # tables), so no dispatch below can take one.
+        lnothing = self._holds_nothing(expr.left)
+        rnothing = self._holds_nothing(expr.right)
+        short_circuit = expr.op in (
+            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES)
+        if lnothing == "never" or (rnothing == "never" and not short_circuit):
+            # An operand that does not complete (`Never`, a `throw`): the
+            # operator is never reached, and `unreachable` says so to the
+            # validator, whatever the other operand pushed.  A left one is
+            # all that runs; a right one runs after the left.  The right
+            # operand of `&&`, `||` and `==>` runs only where the left
+            # does not decide, so it keeps the short-circuit lowering below.
+            left = self.translate_expr(expr.left, env)
+            if left is None:
+                return None  # pragma: no cover — the [E615] channel
+            if lnothing == "never":
+                return self._after_never(left)
+            right = self.translate_expr(expr.right, env)
+            if right is None:
+                return None  # pragma: no cover — the [E615] channel
+            return self._after_never(left + right)
+        if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E140, E142, E143, E144, E145), and beside a `Never` one took the branch above
+                and rnothing == "unit"):
+            # Two values of a type with no WebAssembly value (`Unit`, a
+            # `Future` of one, a refinement of one) are equal, since the
+            # type has one value (spec §9.8.1 lists `Unit` as `Eq`).  Both
+            # operands are evaluated, in order, for their effects; they push
+            # nothing, and the comparison is the constant.  The checker
+            # refuses every other operator on them (E140, E143), so only
+            # `==` and `!=` reach here.
+            if expr.op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
+                raise CodegenInvariantError(
+                    "an operator other than == and != over two values of a "
+                    "type with no WebAssembly value reached code generation",
+                    expr)
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+            if left is None or right is None:
+                return None  # pragma: no cover — the [E615] channel
+            const = 1 if expr.op == ast.BinOp.EQ else 0
+            return left + right + [f"i32.const {const}"]
         # @Nat subtraction underflow guard (#520) — mirrors the static
         # obligation emitted in vera/verifier.py.  When both operands are
         # @Nat, emit a runtime check that traps on underflow.  Programs that
@@ -194,28 +238,6 @@ class OperatorsMixin:
         # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
             rtype = self._expr_width(expr.right)
-            # #1870: two values of a type with no WebAssembly value (`Unit`,
-            # a `Future` of one, a refinement of one) are equal, since the
-            # type has one value (spec §9.8.1 lists `Unit` as `Eq`).  Both
-            # operands are evaluated, in order, for their effects; they push
-            # nothing, and the comparison is the constant.  The checker
-            # refuses ordering on them (E143), so only `==` and `!=` reach
-            # here.
-            lnothing = self._holds_nothing(expr.left)
-            rnothing = self._holds_nothing(expr.right)
-            if "never" in (lnothing, rnothing):
-                # An operand that does not complete (`Never`, a `throw`):
-                # the comparison is never reached, and `unreachable` says
-                # so to the validator, whatever the other operand pushed.
-                return self._after_never(left + right)
-            if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E142, E243), and beside a `Never` one took the branch above
-                    and rnothing == "unit"):
-                if op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
-                    raise CodegenInvariantError(
-                        "an ordering of two values of a type with no "
-                        "WebAssembly value reached code generation", expr)
-                const = 1 if op == ast.BinOp.EQ else 0
-                return left + right + [f"i32.const {const}"]
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison

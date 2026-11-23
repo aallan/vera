@@ -486,17 +486,49 @@ def test_an_operand_with_an_effect_is_evaluated_in_order(cell: str) -> None:
 
 # --- A reference to a zero-size result ---------------------------------------
 
-@pytest.mark.parametrize("zero", ["Unit", "U"])
+@pytest.mark.parametrize("zero", list(ZERO_SIZE))
 @pytest.mark.parametrize("use", [
-    "@{z}.result == {v}", 'show(@{z}.result) == "unit"'])
+    "@{z}.result == @{z}.result", 'show(@{z}.result) == "unit"'])
 def test_a_reference_to_a_zero_size_result_is_refused(zero: str, use: str) -> None:
     """E182, the rule that refuses `@Unit.0` (§2.2.2): the result has no
-    value to read.  It ended in E699 when compared."""
+    value to read.  It ended in E699 when compared.  A `Future<Unit>` is
+    built by `async`, so its function declares `Async`; the postcondition
+    calls nothing."""
     value = ZERO_SIZE[zero]
+    effects = "<Async>" if zero == "Future<Unit>" else "pure"
     callee = (f"private fn g(@Int -> @{zero})\n  requires(true)\n"
-              f"  ensures({use.format(z=zero, v=value)})\n  effects(pure)\n"
+              f"  ensures({use.format(z=zero)})\n  effects({effects})\n"
               "{\n  " + value + "\n}\n\n")
     assert_cell(program("  IO.print(\"x\")", before=callee), Expect(code="E182"))
+
+
+# --- A generic that reads its type parameter only through its result -------
+
+#: The generic's body reads no `@T` slot; its postcondition reads
+#: `@T.result`.  At a zero-size type the result has no local, so the read
+#: is a read of `T` and the instance is refused (E206); at `Int` it runs.
+RESULT_ONLY_GENERIC = """\
+type Gen<A> = fn(Unit -> A) effects({eff});
+
+private forall<T> fn run(@Gen<T> -> @T)
+  requires(true)
+  ensures(@T.result == @T.result)
+  effects({eff})
+{{
+  apply_fn(@Gen<T>.0, ())
+}}
+
+"""
+
+
+@pytest.mark.parametrize("zero", [*ZERO_SIZE, "Int"])
+def test_a_generic_read_only_through_its_result(zero: str) -> None:
+    value = {**ZERO_SIZE, "Int": "1"}[zero]
+    eff = "<Async>" if zero == "Future<Unit>" else "pure"
+    before = RESULT_ONLY_GENERIC.format(eff=eff)
+    call = f"  run(fn(@Unit -> @{zero}) effects({eff}) {{ {value} }});\n"
+    expect = Expect(stdout="x") if zero == "Int" else Expect(code="E206")
+    assert_cell(program(call + '  IO.print("x")', before=before), expect)
 
 
 # --- An operand that does not complete ---------------------------------------
@@ -669,8 +701,9 @@ def test_repro_an_ordering_of_zero_size_values_is_an_internal_error(
     compiled = pipeline.compile(source)
     internal = [d for d in compiled.diagnostics if d.error_code == "E699"]
     assert internal, [d.error_code for d in compiled.diagnostics]
-    assert ("an ordering of two values of a type with no WebAssembly value"
-            in internal[0].description), internal[0].description
+    assert ("an operator other than == and != over two values of a type "
+            "with no WebAssembly value" in internal[0].description), (
+        internal[0].description)
     line = source.splitlines().index("  let @Bool = 1 < 2;") + 1
     assert internal[0].location.line == line, internal[0].location
 
@@ -692,3 +725,206 @@ def test_repro_the_verifier_reads_both_operands_types() -> None:
     assert not ctx._compares_two_zero_size_values(expr)
     types[id(right)] = UNIT
     assert ctx._compares_two_zero_size_values(expr)
+
+
+# --- Every binary dispatch, by operand type, by which side holds nothing ----
+#
+# Each dispatch of a binary operator by its operands' type (`Int`, `Nat`,
+# `Byte`, `Float64`, `Bool`, `String`, a data type, an array) is crossed
+# with a `Never` operand (a call of a function that does not return, and a
+# `throw`) or a `Unit` one, on either side, under each operator class.  A
+# cell the checker accepts is validated by wasmtime and run; a dispatch
+# that returned before the zero-size rule (the `Byte` one, #1905's second
+# review) wrote a module that did not load.
+
+BINARY_PROLOGUE = """\
+private fn stop(@Unit -> @Never)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  throw("x")
+}
+
+private fn nat1(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+private fn byte1(@Unit -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+"""
+
+OPERAND_VALUES: dict[str, str] = {
+    "Int": "1",
+    "Nat": "nat1(())",
+    "Byte": "byte1(())",
+    "Float64": "1.5",
+    "Bool": "true",
+    "String": '"s"',
+    "data": "Some(1)",
+    "array": "[1]",
+}
+
+#: The operand with no value.  A call of a function declared to return
+#: `Never` is not here: code generation drops such a function (`E601`),
+#: another mechanism, pinned by a strict xfail below.
+NOTHING_VALUES: dict[str, str] = {
+    "never": 'throw("x")',
+    "unit": "()",
+}
+
+OPERATOR_CLASSES: dict[str, str] = {
+    "equality": "==",
+    "ordering": "<",
+    "arithmetic": "+",
+    "boolean": "&&",
+}
+
+
+def _binary_program(ty: str, nothing: str, side: str, cls: str) -> str:
+    a, b = OPERAND_VALUES[ty], NOTHING_VALUES[nothing]
+    left, right = (b, a) if side == "left" else (a, b)
+    expr = f"{left} {OPERATOR_CLASSES[cls]} {right}"
+    shown = f"show({expr})" if cls == "arithmetic" else (
+        f'if {expr} then {{ "T" }} else {{ "F" }}')
+    return (BINARY_PROLOGUE
+            + "public fn main(@Unit -> @Unit)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n"
+            "  IO.print(handle[Exn<String>] {\n"
+            '    throw(@String) -> "caught"\n'
+            f"  }} in {{\n    {shown}\n  }})\n}}\n")
+
+
+BINARY_CELLS = [
+    pytest.param(ty, nothing, side, cls, id=f"{ty}-{nothing}-{side}-{cls}")
+    for ty in OPERAND_VALUES for nothing in NOTHING_VALUES
+    for side in ("left", "right") for cls in OPERATOR_CLASSES
+]
+
+
+def expected_binary(ty: str, nothing: str, side: str, cls: str) -> set[str]:
+    """The table's codes for a cell, or none for one that runs.
+
+    Equality takes `Unit` beside another type as incompatible (E142), and
+    judges `Eq` by its left operand, so a `Never` there, or an `Array`, is
+    no `Eq` type (E243).  Ordering takes neither as orderable (E143), nor
+    arithmetic as numeric (E140).  `&&` takes `Never` as a `Bool` and
+    `Unit` as none: a left operand that is not one is E144, a right one
+    E145."""
+    other = "left" if side == "right" else "right"
+    sides = {side: nothing, other: ty}
+    if cls == "equality":
+        if nothing == "unit":
+            return {"E142"}
+        return {"E243"} if sides["left"] in ("never", "array") else set()
+    if cls == "ordering":
+        return {"E143"}
+    if cls == "arithmetic":
+        return {"E140"}
+    codes = set()
+    if sides["left"] not in ("Bool", "never"):
+        codes.add("E144")
+    if sides["right"] not in ("Bool", "never"):
+        codes.add("E145")
+    return codes
+
+
+@pytest.mark.parametrize(("ty", "nothing", "side", "cls"), BINARY_CELLS)
+def test_every_binary_dispatch_beside_an_operand_with_no_value(
+    ty: str, nothing: str, side: str, cls: str,
+) -> None:
+    import wasmtime
+
+    source = _binary_program(ty, nothing, side, cls)
+    checked = pipeline.check(source)
+    codes = {d.error_code for d in checked.errors}
+    assert codes == expected_binary(ty, nothing, side, cls), (codes, source)
+    if codes:
+        return
+    compiled = pipeline.compile(source)
+    assert compiled.ok, ([d.error_code for d in compiled.diagnostics], source)
+    config = wasmtime.Config()
+    config.wasm_exceptions = True
+    wasmtime.Module.validate(wasmtime.Engine(config),
+                             compiled.result.wasm_bytes)
+    ran = pipeline.run(compiled)
+    assert ran.ok, (ran.trap, source)
+    assert ran.stdout == "caught", (ran.stdout, source)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a function declared to return Never is dropped by code generation "
+    "(E601), another mechanism"))
+def test_a_call_of_a_function_that_returns_never() -> None:
+    source = (BINARY_PROLOGUE
+              + "public fn main(@Unit -> @Unit)\n  requires(true)\n"
+              "  ensures(true)\n  effects(<IO>)\n{\n"
+              "  IO.print(handle[Exn<String>] {\n"
+              '    throw(@String) -> "caught"\n'
+              "  } in {\n"
+              '    if byte1(()) == stop(()) then { "T" } else { "F" }\n'
+              "  })\n}\n")
+    assert pipeline.run(source).stdout == "caught"
+
+
+def test_repro_a_generic_read_only_through_its_result_at_unit() -> None:
+    """`@T.result` is a read of `T`: at `Unit` the instance has no result
+    local, and the call was an internal error (E699) behind a green check."""
+    before = RESULT_ONLY_GENERIC.format(eff="pure")
+    call = "  run(fn(@Unit -> @Unit) effects(pure) { () });\n"
+    source = program(call + '  IO.print("x")', before=before)
+    assert "E206" in {d.error_code for d in pipeline.check(source).errors}
+
+
+@pytest.mark.parametrize("zero", list(ZERO_SIZE))
+def test_e163_at_a_zero_size_result_offers_no_reference(zero: str) -> None:
+    """A result reference of another type on a function whose result is
+    zero-size: E163 says the result has no value to read and names no
+    reference (the one it named, `@Unit.result`, is E182).  Its fix applied
+    as written checks clean."""
+    value = ZERO_SIZE[zero]
+    effects = "<Async>" if zero == "Future<Unit>" else "pure"
+    callee = ("private fn g(@Int -> @{z})\n  requires(true)\n"
+              "  ensures({e})\n  effects({f})\n{{\n  {v}\n}}\n\n")
+    source = program('  IO.print("x")', before=callee.format(
+        z=zero, e="@Int.result == 1", f=effects, v=value))
+    checked = pipeline.check(source)
+    (diag,) = [d for d in checked.errors if d.error_code == "E163"]
+    assert "a zero-size result has no value to read" in diag.description
+    assert ".result" not in diag.fix, diag.fix
+    assert diag.fix == ("Remove the result reference; with nothing else to "
+                        "state, write `ensures(true)`.")
+    fixed = program('  IO.print("x")', before=callee.format(
+        z=zero, e="true", f=effects, v=value))
+    assert pipeline.check(fixed).ok
+
+
+def test_repro_e163_at_a_unit_result() -> None:
+    callee = ("private fn g(@Int -> @Unit)\n  requires(true)\n"
+              "  ensures(@Int.result == 1)\n  effects(pure)\n{\n  ()\n}\n\n")
+    checked = pipeline.check(program('  IO.print("x")', before=callee))
+    (diag,) = [d for d in checked.errors if d.error_code == "E163"]
+    assert ".result" not in diag.fix, diag.fix
+
+
+def test_repro_a_short_circuit_never_reaches_a_right_operand_it_skips() -> None:
+    """The right operand of `&&`, `||` and `==>` runs only where the left
+    does not decide: a `throw` there is not reached when the left does."""
+    for expr, out in (('false && throw("x")', "F"),
+                      ('true || throw("x")', "T"),
+                      ('false ==> throw("x")', "T"),
+                      ('true && throw("x")', "caught")):
+        _runs("  IO.print(handle[Exn<String>] {\n"
+              '    throw(@String) -> "caught"\n'
+              f"  }} in {{\n    if {expr} then {{ \"T\" }} else {{ \"F\" }}\n"
+              "  })", out)

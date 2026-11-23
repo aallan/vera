@@ -498,6 +498,30 @@ class ExpressionsMixin:
         # write.  The name the fix gives is the return type's own spelling,
         # which keys as the declaration does, so it is accepted.
         written = self._written_slot_name(fn.return_type, ret_key)
+        if erases_to_unit(ret):
+            # #1870: the result has no value to read (E182), so no reference
+            # names it, and the fix offers none.
+            self._error(
+                ref,
+                f"{self._as_written(ref, f'@{key}.result')} does not refer to "
+                f"the result of '{fn.name}', which returns "
+                f"{self._as_written(fn.return_type, pretty_type(ret))}: a "
+                f"zero-size result has no value to read.",
+                rationale=(
+                    "@T.result refers to the function's return value, where "
+                    "T is the return type.  A zero-size result (`Unit`, or a "
+                    "`Future` wrapping one) compiles to no WASM value, so no "
+                    "reference reads it, and a postcondition about it says "
+                    "nothing: the result has one value."
+                ),
+                fix=(
+                    "Remove the result reference; with nothing else to state, "
+                    "write `ensures(true)`."
+                ),
+                spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
+                error_code="E163",
+            )
+            return UnknownType()
         self._error(
             ref,
             f"{self._as_written(ref, f'@{key}.result')} does not refer to "
