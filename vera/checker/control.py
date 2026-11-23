@@ -856,16 +856,17 @@ class ControlFlowMixin:
         its components; `Bool`'s, `true` and `false`.  Every other type has
         an open domain, which only a catch-all covers, as a scrutinee of it
         needs one (E313): every other primitive, a built-in with no
-        constructors, a function type, and a type parameter the function
-        declares, which may be `Int`, so `Some(None)` and `Some(Some(_))`
-        over `Option<T>` leave `Some(_)`.  A position typed `Unknown` is not
-        judged (``None``), as a scrutinee typed `Unknown` is not (#1671): a
-        diagnostic stands behind every `Unknown` (#1862), so the arms draw no
-        E311 beside it.  A type variable no inference bound (`T$1`, which
-        `Some(e)` has where `e` is in error, and `None` with no type to
-        take) is open, unless an error has been reported by the time the
-        scrutinee is typed (*after_error*): then the error is what left it
-        unsettled, and it is not judged either.  Nor is a `Tuple` with no
+        constructors, and a function type.  A position typed `Unknown` is
+        not judged (``None``), as a scrutinee typed `Unknown` is not
+        (#1671): a diagnostic stands behind every `Unknown` (#1862), so the
+        arms draw no E311 beside it.  A type variable is open, unless an
+        error has been reported by the time the scrutinee is typed
+        (*after_error*): then the error is what left it unsettled, and it is
+        not judged either.  One no inference bound (`T$1`, which `Some(e)`
+        has where `e` is in error, and `None` with no type to take) takes
+        any pattern; the function's own takes only a catch-all, a head there
+        being refused (E314, #1896) and read as one, so its domain decides
+        nothing.  Nor is a `Tuple` with no
         components, or a data type no declaration in reach says, as a
         scrutinee of one is not.
         """
@@ -884,8 +885,6 @@ class ControlFlowMixin:
             elif raw.name in _CONSTRUCTORLESS_BUILTIN_TYPES:
                 return patterns.Open()
             return None
-        if isinstance(raw, TypeVar) and raw.name in self.env.type_params:
-            return patterns.Open()
         if isinstance(raw, UnknownType) or (
                 isinstance(raw, TypeVar) and after_error):
             return None

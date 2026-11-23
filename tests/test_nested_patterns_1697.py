@@ -1246,16 +1246,6 @@ def test_mutant_the_missing_case_is_named_to_its_depth() -> None:
         ("E311", "error", _message("W(Blue)", "W(Green)"))]
 
 
-def test_mutant_a_type_parameter_position_is_open() -> None:
-    """Killed: a type parameter the function declares not judged, which
-    takes `Some(None), Some(Some(_)), None` to cover `Option<T>`, though at
-    `T = Int` `Some(5)` matches no arm and runs the last; and one read as an
-    unsettled type, which is not judged beside an earlier error."""
-    for key in ("option-t-constructor-subs", "option-t-beside-an-error"):
-        source, expected = OPEN_POSITIONS[key]
-        assert _reported(pipeline.check(source)) == expected, key
-
-
 def test_mutant_an_unsettled_position_is_not_judged_after_an_error() -> None:
     """Killed: a position the check did not settle, after an error, judged
     open, which draws an E311 beside the error, and a type variable no
