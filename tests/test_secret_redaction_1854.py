@@ -159,7 +159,10 @@ def _ok_bodies(secret: str, style: str) -> dict[str, bytes]:
         }
     else:
         shaped = {
-            "finish-reason": {"choices": [{"message": {"content": ""},
+            # `content` null, so the reply is refused and the refusal
+            # quotes `finish_reason`; an empty string is a completion, and
+            # the message would be empty whatever redaction did.
+            "finish-reason": {"choices": [{"message": {"content": None},
                                            "finish_reason": secret}]},
             "refusal": {"choices": [{"message": {"content": "",
                                                  "refusal": secret}}]},
@@ -185,6 +188,9 @@ def test_a_secret_in_a_response_the_message_quotes(
     secret, key = SECRETS[which]
     style = inference._PROVIDERS[provider].response_style
     message = _message(provider, key, body=_ok_bodies(secret, style)[form])
+    # Each form is refused, so the message is one that quotes the field:
+    # a completion would pass the assertion below with nothing checked.
+    assert message.startswith(f"Inference provider '{provider}'"), message
     assert_no_part_of(secret, message)
 
 
@@ -304,6 +310,100 @@ def test_a_key_holding_a_line_end_is_refused_by_its_variable(
         assert env_key in ran.stdout, ran.stdout
         assert "cannot carry" in ran.stdout, ran.stdout
         assert_no_part_of(KEY, ran.stdout)
+
+
+# --- Every rule on the original text, by key shape, spelling and split -------
+
+#: The shapes a configured key takes: plain (no recognisable prefix); one
+#: holding a credential-shaped part, which the pattern rule also matches;
+#: one holding a backslash, which `repr` escapes, so it has two spellings;
+#: and a short one.
+KEY_SHAPES: dict[str, str] = {
+    "plain": KEY,
+    "credential-part": KEY[:12] + "-sk-" + KEY[12:20] + "-" + KEY[20:26],
+    "backslash": KEY[:15] + "\\" + KEY[15:30],
+    "short": KEY[30:36],
+}
+
+#: A fragment of the key no longer than this may stand in a message: the
+#: message's own words (`[redacted]`, `... (truncated)`, the provider's
+#: name) share runs of a few characters with any key, so a shorter run
+#: cannot be told from the key, and the cut rule takes even one character
+#: at the cut, so nothing longer is left for this floor to excuse.
+FLOOR = 3
+
+
+def _spellings(key: str) -> dict[str, str]:
+    return {"raw": key, "escaped": repr(key)[1:-1]}
+
+
+def _fragments(key: str) -> set[str]:
+    """Every run of any spelling of *key* longer than :data:`FLOOR`."""
+    return {
+        spelling[i:i + FLOOR + 1]
+        for spelling in _spellings(key).values()
+        for i in range(len(spelling) - FLOOR)
+    }
+
+
+def _split_positions(spelling: str) -> list[tuple[str, int]]:
+    n = len(spelling)
+    return [("wholly-before", _ERROR_BODY_CAP - n - 1),
+            ("ending-at-the-cap", _ERROR_BODY_CAP - n),
+            *((f"{k}-before", _ERROR_BODY_CAP - k) for k in range(1, n)),
+            ("wholly-after", _ERROR_BODY_CAP)]
+
+
+SPLIT_CELLS = [
+    pytest.param(shape, spelling, name, start,
+                 id=f"{shape}-{spelling}-{name}")
+    for shape, key in KEY_SHAPES.items()
+    for spelling, text in _spellings(key).items()
+    for name, start in _split_positions(text)
+]
+
+
+@pytest.mark.parametrize(("shape", "spelling", "name", "start"), SPLIT_CELLS)
+def test_every_split_of_every_spelling_of_every_key_shape(
+    shape: str, spelling: str, name: str, start: int,
+) -> None:
+    key = KEY_SHAPES[shape]
+    text = _spellings(key)[spelling]
+    body = b" " * start + text.encode() + b" tail" * 8
+    message = _message("mistral", key, raises=_http_error(body))
+    found = sorted(f for f in _fragments(key) if f in message)
+    assert not found, (found, message)
+
+
+def test_repro_a_key_holding_a_credential_shaped_part_cut_inside_it() -> None:
+    """The pattern rule rewrote the `sk-` part first, and the cut rule then
+    found no prefix of the key: `OpaqueCredentialPrefix-` was quoted."""
+    key = "OpaqueCredentialPrefix-sk-12345678-END"
+    text = key[:key.index("12345678") + 8]
+    assert inference._redact_cut(" " + text, key) == " [redacted]"
+
+
+def test_repro_an_escaped_key_cut_inside_it() -> None:
+    """The cut rule tried prefixes of the key as it is, not as `repr`
+    spells it, so a cut escaped spelling was quoted."""
+    key = r"OpaquePrefix\RemainderSecret"
+    escaped = repr(key)[1:-1]
+    text = escaped[:escaped.index("Remainder") + len("Remainder")]
+    assert inference._redact_cut(" " + text, key) == " [redacted]"
+
+
+def test_repro_a_token_cut_where_the_key_s_first_character_ends_it() -> None:
+    """The key-prefix rule matched the last `A` and returned before the
+    credential-tail rule ran, leaving `sk-123456`."""
+    assert inference._redact_cut("x sk-123456A", "ABCDEFGH") == "x [redacted]"
+
+
+def test_spans_that_touch_are_one_redaction() -> None:
+    """Two secrets side by side are replaced once, and text between two
+    secrets stays."""
+    assert inference._redact("ABCDEFGHABCDEFGH", "ABCDEFGH") == "[redacted]"
+    assert inference._redact("ABCDEFGH ABCDEFGH", "ABCDEFGH") == (
+        "[redacted] [redacted]")
 
 
 def test_repro_1854_a_key_across_the_cap_leaves_nothing() -> None:

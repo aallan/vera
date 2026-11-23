@@ -174,6 +174,72 @@ def _truncate(text: str) -> str:
 _CREDENTIAL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]{8,}")
 
 
+def _key_spellings(api_key: str) -> tuple[str, ...]:
+    """The spellings the configured key is quoted in: as it is, and as
+    Python's `repr` escapes it, which is how an exception quotes a value
+    (`Invalid header value b'...\\r\\n'`), where a key holding a character
+    `repr` escapes (a backslash) does not match itself (#1854)."""
+    if not api_key:
+        return ()
+    escaped = repr(api_key)[1:-1]
+    return (api_key,) if escaped == api_key else (api_key, escaped)
+
+
+#: A credential-shaped token's start, at the end of a text: the cut that made
+#: the end may have taken the rest, so its length says nothing (#1854).
+_CREDENTIAL_TAIL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]*\Z")
+
+
+def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
+    """Where a secret stands in *text*, each rule's spans found on *text*
+    as it is (#1854).
+
+    Every rule reads the original text, so no rule reads what another has
+    already replaced, and none can stop another from running: the
+    configured key whole, in each of its spellings; a credential-shaped
+    token; and, at the end of a text a cut ended (*cut*), a proper prefix of
+    any spelling of the key and a credential-shaped token's start, since the
+    cut may have taken the rest of either.
+    """
+    spans: list[tuple[int, int]] = []
+    spellings = _key_spellings(api_key)
+    for spelling in spellings:
+        start = text.find(spelling)
+        while start != -1:
+            spans.append((start, start + len(spelling)))
+            start = text.find(spelling, start + 1)
+    spans.extend(m.span() for m in _CREDENTIAL_RE.finditer(text))
+    if cut:
+        for spelling in spellings:
+            for n in range(min(len(spelling) - 1, len(text)), 0, -1):
+                if text.endswith(spelling[:n]):
+                    spans.append((len(text) - n, len(text)))
+                    break
+        tail = _CREDENTIAL_TAIL_RE.search(text)
+        if tail is not None:
+            spans.append(tail.span())
+    return spans
+
+
+def _replace_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """*text* with each run of overlapping or touching *spans* replaced,
+    once, by `[redacted]`."""
+    merged: list[tuple[int, int]] = []
+    for start, stop in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+        else:
+            merged.append((start, stop))
+    out: list[str] = []
+    pos = 0
+    for start, stop in merged:
+        out.append(text[pos:start])
+        out.append("[redacted]")
+        pos = stop
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _redact(text: str, api_key: str) -> str:
     """*text* with the configured key and credential-shaped tokens removed.
 
@@ -183,20 +249,7 @@ def _redact(text: str, api_key: str) -> str:
     never given — a proxy quoting a DIFFERENT tenant's credential, or the
     same key in a form the exact match cannot see.
     """
-    if api_key and api_key in text:
-        text = text.replace(api_key, "[redacted]")
-    # #1854: the key as Python's `repr` escapes it, which is how an
-    # exception quotes a value (`Invalid header value b'...\r\n'`): a key
-    # holding a character `repr` escapes does not match itself there.
-    escaped = repr(api_key)[1:-1]
-    if api_key and escaped != api_key and escaped in text:
-        text = text.replace(escaped, "[redacted]")
-    return _CREDENTIAL_RE.sub("[redacted]", text)
-
-
-#: A credential-shaped token's start, at the end of a text: the cut that made
-#: the end may have taken the rest, so its length says nothing (#1854).
-_CREDENTIAL_TAIL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]*\Z")
+    return _replace_spans(text, _secret_spans(text, api_key, cut=False))
 
 
 def _redact_cut(text: str, api_key: str) -> str:
@@ -208,17 +261,13 @@ def _redact_cut(text: str, api_key: str) -> str:
     matches nothing, and a credential-shaped token cut before its eighth
     character after the prefix is too short for the pattern.  So beside
     `_redact`'s two rules, the end of the text is read as the start of a
-    secret the cut may have split: a proper prefix of the configured key,
-    or a credential-shaped prefix of any length, is redacted there.  The
-    text is marked as truncated by its caller either way, so what this
-    drops is at most part of a word the cut had already split.
+    secret the cut may have split: a proper prefix of any spelling of the
+    configured key, or a credential-shaped prefix of any length, is
+    redacted there.  The text is marked as truncated by its caller either
+    way, so what this drops is at most part of a word the cut had already
+    split.
     """
-    text = _redact(text, api_key)
-    if api_key:
-        for n in range(min(len(api_key) - 1, len(text)), 0, -1):
-            if text.endswith(api_key[:n]):
-                return text[:-n] + "[redacted]"
-    return _CREDENTIAL_TAIL_RE.sub("[redacted]", text)
+    return _replace_spans(text, _secret_spans(text, api_key, cut=True))
 
 
 def _or_blank(rendered: str) -> str:
