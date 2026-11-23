@@ -543,6 +543,12 @@ RAISE_SHAPES: dict[str, tuple[str, bool]] = {
     "a method": (
         "class C:\n    def m(self):\n        return 'E999'\n", True),
     "no site at all": ("X = 1\n", False),
+    "two functions that only call each other": (
+        "def a():\n    return b() or 'E999'\n\ndef b():\n    return a()\n",
+        False),
+    "a cycle live code reaches": (
+        "def a():\n    return b() or 'E999'\n\ndef b():\n    return a()\n"
+        "\nX = a\n", True),
 }
 
 

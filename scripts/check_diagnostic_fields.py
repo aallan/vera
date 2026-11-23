@@ -1089,8 +1089,8 @@ def placement_violations(paths: Iterable[Path]) -> list[Violation]:
 # can be raised when a string constant equal to it stands somewhere in vera/
 # (outside the registry itself and vera/_since.py) that is not dead: at
 # module scope (a table), in a method (dispatched by name, so taken as
-# live), or in a module-level function some live code names.  A function
-# named only by dead code is dead, to a fixed point.  Static and
+# live), or in a module-level function reachable from that code: one the
+# module-level code or a method names, or one a reachable function names.  Static and
 # conservative: a name reached only through `getattr` is not seen, and such a
 # code would be reported.
 
@@ -1128,7 +1128,7 @@ def _raise_sites(paths: Iterable[Path]) -> dict[str, list[tuple[str, str | None]
 
 
 def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
-    """The module-level functions under *paths* no live code names."""
+    """The module-level functions under *paths* no live code reaches."""
     defs: set[tuple[str, str]] = set()
     users: dict[str, set[tuple[str, str | None]]] = {}
     for p in paths:
@@ -1144,17 +1144,25 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
                         node.attr if isinstance(node, ast.Attribute) else None)
                 if name is not None:
                     users.setdefault(name, set()).add((rel, owner))
-    dead: set[tuple[str, str]] = set()
-    changed = True
-    while changed:
-        changed = False
-        for d in defs - dead:
-            live = {u for u in users.get(d[1], set())
-                    if u != d and not (u[1] is not None and (u[0], u[1]) in dead)}
-            if not live:
-                dead.add(d)
-                changed = True
-    return dead
+    # Reachability from the live roots: module-level code (a table, a class
+    # and its methods, which are dispatched by name) names functions, and a
+    # function a live one names is live.  Pruning by remaining users instead
+    # let two functions that only name each other keep each other alive.
+    names_used: dict[tuple[str, str | None], set[str]] = {}
+    for name, owners in users.items():
+        for owner in owners:
+            names_used.setdefault(owner, set()).add(name)
+    by_name: dict[str, set[tuple[str, str]]] = {}
+    for d in defs:
+        by_name.setdefault(d[1], set()).add(d)
+    live: set[tuple[str, str]] = set()
+    frontier = [name for (_, owner), names in names_used.items()
+                if owner is None for name in names]
+    while frontier:
+        for d in by_name.get(frontier.pop(), set()) - live:
+            live.add(d)
+            frontier.extend(names_used.get(d, set()))
+    return defs - live
 
 
 def unraised_code_violations(paths: Iterable[Path],
