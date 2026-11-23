@@ -91,12 +91,15 @@ included) and publishes:
   position on its first line counts it: one UTF-16 unit to the right of
   the column the compiler names.  A
   diagnostic located in an imported module is published on the `import`
-  that brings that module in (for a module reached only through another,
-  the import of the module that reaches it), its message starting with
-  the module's location as `vera check` prints it (`In imported module
+  that names that module's file (the document's own import of it before
+  any; for a module reached only through another, the import of the
+  module that reaches it), its message starting with the module's
+  location as `vera check` prints it (`In imported module
   /path/lib.vera, line 8, column 3: …`), and, for a client that
   advertises `textDocument.publishDiagnostics.relatedInformation`, a
-  related location at that line and column of the module.
+  related location at that line and column of the module, counting a
+  byte-order mark the module's file begins with as the document's own
+  ranges count one.
 - **Per-function verification-tier hints**: a Hint-severity
   diagnostic per function summarising its proof state:
   `Tier 1 — all contracts proven by Z3`,

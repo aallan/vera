@@ -57,7 +57,7 @@ from vera.obligations.session import (
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.parser import source_text
-from vera.resolver import ResolvedModule, own_module_path
+from vera.resolver import ModuleResolver, ResolvedModule, own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -274,32 +274,33 @@ class _Placement:
 
     index: LineIndex
     path: str
-    #: A module's file (as its diagnostics name it) → the range of the
-    #: document's import that brings it in.
-    imports: dict[str, lsp.Range] = field(default_factory=dict)
-    #: A module's file → its text, as the resolver read it.
+    #: A module's file → the text the client's buffer of it holds as the
+    #: resolver read it: its source, with the byte-order mark the file
+    #: begins with put back, so its line 0 is counted as the buffer is.
     sources: dict[str, str] = field(default_factory=dict)
-    #: Each import of the document or of a resolved module, by its module
-    #: path, with the range of the document's import it is reached under:
-    #: where a module the resolver could not read (its E024) is placed.
-    unread: list[tuple[tuple[str, ...], lsp.Range]] = field(
+    #: Each import of the document, then each import of a resolved module
+    #: in the order the walk reaches it: the file it imports from, the
+    #: module path, and the range of the document's import it is reached
+    #: under.  A module's diagnostic is placed by the file the resolver
+    #: resolves the import to, read or not (an unread module's E024).
+    routes: list[tuple[Path, tuple[str, ...], lsp.Range]] = field(
         default_factory=list)
     #: Whether the client takes ``relatedInformation``.
     related: bool = False
 
     def head_for(self, file: str) -> lsp.Range:
         """The range a diagnostic located in *file*, a module, is
-        published at: the import that brings it in; for a module the
-        resolver did not read, the first import whose module path names
-        the file (``a.b`` names ``…/a/b.vera``); else the document's first
+        published at: the first import, the document's own before any a
+        module makes, that the resolver resolves to *file*, which is the
+        file the module's diagnostics name; else the document's first
         token, for a file no import of the document reaches (none is
         known)."""
-        if file in self.imports:
-            return self.imports[file]
-        parts = Path(file).with_suffix("").parts
-        for mod_path, head in self.unread:
-            if tuple(parts[-len(mod_path):]) == mod_path:
-                return head
+        if self.routes:
+            resolver = ModuleResolver(_root=Path(self.path).parent)
+            for importer, mod_path, head in self.routes:
+                found = resolver._resolve_path(mod_path, importer)
+                if found is not None and str(found) == file:
+                    return head
         return location_to_range(SourceLocation(line=1, column=1), self.index)
 
 
@@ -321,12 +322,11 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
         (imp.path, span_to_range(imp.span, analysis.index))
         for imp in analysis.program.imports if imp.span is not None
     ]
+    document = Path(analysis.path)
+    # The document's own imports first: a module the document names is
+    # published on that import, wherever else the walk meets it.
+    place.routes.extend((document, mod_path, head) for mod_path, head in heads)
     for mod_path, head in heads:
-        mod = by_path.get(mod_path)
-        if mod is not None:
-            place.imports.setdefault(str(mod.file_path), head)
-    for mod_path, head in heads:
-        place.unread.append((mod_path, head))
         queue, seen = [mod_path], set()
         while queue:
             current = queue.pop(0)
@@ -334,12 +334,28 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
             if current in seen or mod is None:
                 continue
             seen.add(current)
-            place.imports.setdefault(str(mod.file_path), head)
             for imp in mod.program.imports:
-                place.unread.append((imp.path, head))
+                place.routes.append((mod.file_path, imp.path, head))
                 queue.append(imp.path)
-    place.sources = {str(m.file_path): m.source for m in analysis.modules}
+    place.sources = {
+        str(m.file_path): _with_mark(m.file_path, m.source)
+        for m in analysis.modules
+    }
     return place
+
+
+def _with_mark(path: Path, source: str) -> str:
+    """*source*, a module's text as the resolver read it, with the
+    byte-order mark put back if its file begins with one: the resolver's
+    reader drops it, and the buffer a client opens the file in holds it,
+    so a related location on the module's first line counts it, as the
+    document's own ranges do (:class:`~vera.lsp.convert.LineIndex`)."""
+    try:
+        with path.open("rb") as handle:
+            marked = handle.read(3) == b"\xef\xbb\xbf"
+    except OSError:
+        marked = False
+    return "\ufeff" + source if marked else source
 
 
 def _file_uri(path: str) -> str | None:

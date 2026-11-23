@@ -264,7 +264,10 @@ def test_published_position(
         return
 
     if surface in ("diag_imported", "diag_transitive", "diag_unread"):
-        lib = with_ends(lib_program(pfx), style)
+        # The module carries the document's mark too, so the related
+        # location into it is converted against a marked buffer: with its
+        # error on a later line, or (`bom_line0`) on its line 0.
+        lib = shape(lib_program(pfx), style, mark)
         if surface == "diag_unread":
             # Not UTF-8: the resolver reads no module, and the E024 is
             # located in the module's file (#1666).
@@ -283,7 +286,8 @@ def test_published_position(
         (want,) = [d for d in cli(path) if d["error_code"] == code]
         loc = want["location"]
         assert pathlib.Path(loc["file"]).name == "lib.vera"
-        (pub,) = [d for d in to_lsp_diagnostics(a) if d.code == code]
+        (pub,) = [d for d in to_lsp_diagnostics(a, related_information=True)
+                  if d.code == code]
         # Published on the import that brings the module in, whole.
         m = mark_units(main, 0)
         assert rng(pub.range) == (0, m, 0, m + utf16(head)), pub
@@ -291,6 +295,15 @@ def test_published_position(
         assert pub.message.startswith(
             f"In imported module {loc['file']}, line {loc['line']}, "
             f"column {loc['column']}: "), pub.message
+        if surface == "diag_unread":
+            assert pub.related_information is None  # no text was read
+        else:
+            # Linked to the module's own line and column, as a buffer of
+            # the module counts them, its mark included.
+            (rel,) = pub.related_information or []
+            assert rel.location.uri == pathlib.Path(loc["file"]).as_uri()
+            assert rng(rel.location.range) == widened(
+                lib, loc["line"], loc["column"])
         return
 
     if surface in ("hint", "hover", "definition", "completion"):
@@ -521,6 +534,106 @@ def test_a_marked_buffers_line_0_splice_keeps_the_mark(
 def test_a_marked_one_line_buffers_whole_range_counts_the_mark() -> None:
     r = full_document_range(Document(uri="file:///x.vera", text=BOM + "ab"))
     assert rng(r) == (0, 0, 0, 3)
+
+
+#: The import orders whose placement a first-match rule gets wrong: two
+#: modules whose paths end alike, each order, and a module the document
+#: imports directly that another of its imports also imports, each order.
+#: Each names the imports in order and the module that fails.
+_ORDERS = {
+    "lib_then_alib": (("lib", "a.lib"), "a.lib"),
+    "alib_then_lib": (("a.lib", "lib"), "lib"),
+    "mid_then_lib": (("mid", "lib"), "lib"),
+    "lib_then_mid": (("lib", "mid"), "lib"),
+}
+
+
+def _order_tree(tmp_path: pathlib.Path, order: str, failing: str,
+                unread: bool) -> tuple[pathlib.Path, str, int]:
+    """The program for *order*: its main, its source, and the line of the
+    import that names the failing module directly."""
+    imports, bad = _ORDERS[order]
+    (tmp_path / "a").mkdir(exist_ok=True)
+    for name in ("lib", "a.lib"):
+        rel = pathlib.Path(*name.split(".")).with_suffix(".vera")
+        text = lib_program("").replace("module lib;", f"module {name};")
+        if name == bad:
+            if unread:
+                (tmp_path / rel).write_bytes(
+                    text.replace("missing(1)", "1").encode("utf-8")
+                    + b"\xe9")
+                continue
+        else:
+            text = text.replace("missing(1)", "1")
+        write(tmp_path / rel, text)
+    write(tmp_path / "mid.vera", MID.replace("word(())", "1"))
+    names = {"lib": "word", "a.lib": "word", "mid": "w2"}
+    main = "".join(f"import {m}({names[m]});\n" for m in imports) + (
+        "\npublic fn main(@Unit -> @Int)\n" + HDR + "{\n  0\n}\n")
+    path = tmp_path / "main.vera"
+    return path, main, imports.index(bad)
+
+
+@pytest.mark.parametrize("unread", [False, True], ids=["checked", "unread"])
+@pytest.mark.parametrize("order", list(_ORDERS))
+def test_the_import_that_names_a_module_carries_its_diagnostics(
+    order: str, unread: bool, tmp_path: pathlib.Path,
+) -> None:
+    """A module's diagnostic is published on the document's import that
+    names it, whatever the import order: by the file the import resolves
+    to, not its last name, and the document's own import before one a
+    module it imports makes."""
+    path, main, line = _order_tree(tmp_path, order, _ORDERS[order][1],
+                                   unread)
+    a = analysed(path, main)
+    code = "E024" if unread else "E200"
+    want = [d for d in cli(path) if d["error_code"] == code]
+    got = [d for d in to_lsp_diagnostics(a) if d.code == code]
+    assert want and len(got) == len(want)
+    head = lsp_lines(main)[line]
+    assert {rng(d.range) for d in got} == {(line, 0, line, utf16(head))}
+
+
+def test_repro_cr1_an_unread_module_is_placed_by_its_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`main` imports `lib` before `a.lib`, and `a/lib.vera` is not UTF-8:
+    its E024 was published on `import lib`, the first import whose last
+    name matched."""
+    path, main, line = _order_tree(tmp_path, "lib_then_alib", "a.lib", True)
+    a = analysed(path, main)
+    (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E024"]
+    assert rng(got.range) == (1, 0, 1, len("import a.lib(word);"))
+
+
+def test_repro_cr2_the_documents_own_import_before_a_modules(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`main` imports `mid` before `lib`, `mid` imports `lib`, and
+    `lib.vera` is not UTF-8: its E024 (reported once per importer, as
+    `vera check` reports it) was published on `import mid`."""
+    path, main, line = _order_tree(tmp_path, "mid_then_lib", "lib", True)
+    a = analysed(path, main)
+    got = [d for d in to_lsp_diagnostics(a) if d.code == "E024"]
+    assert got and {rng(d.range) for d in got} == {
+        (1, 0, 1, len("import lib(word);"))}
+
+
+def test_repro_cr3_a_marked_modules_related_location_counts_its_mark(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A module whose file begins with a byte-order mark: the related
+    location on its first line was one UTF-16 unit left, converted against
+    the resolver's text, which has the mark dropped."""
+    lib = BOM + ("module lib; public fn word(@Unit -> @Int) requires(true) "
+                 "ensures(true) effects(pure) { missing(1) }\n")
+    write(tmp_path / "lib.vera", lib)
+    a = analysed(tmp_path / "main.vera", MAIN)
+    (got,) = [d for d in to_lsp_diagnostics(a, related_information=True)
+              if d.code == "E200"]
+    (rel,) = got.related_information or []
+    ch = lib.index("missing")
+    assert rng(rel.location.range) == (0, ch, 0, ch + len("missing"))
 
 
 def test_a_module_three_imports_deep(tmp_path: pathlib.Path) -> None:
