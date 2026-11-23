@@ -449,3 +449,34 @@ def test_a_lost_variable_beside_a_parameter_row_the_wrong_way_round(
     }[form]
     source = _LOST + _fn("outer(@Unit -> @Int)", body)
     assert _codes(source) == [code], source
+
+
+# =====================================================================
+# One type for an open variable met twice: the narrower one fits both
+# =====================================================================
+
+_TWIN = (
+    "type W = fn(Int -> Int) effects(pure);\n"
+    "type IOF = fn(Int -> Int) effects(<IO>);\n\n"
+    + _fn("twin(@Unit -> @Tuple<Option<X>, Option<X>>)", "Tuple(None, None)"
+          ).replace("private fn", "private forall<X> fn")
+    + _fn("take(@Tuple<Option<W>, Option<IOF>> -> @Int)", "0")
+    + _fn("idt(@A -> @A)", "@A.0").replace("private fn", "private forall<A> fn"))
+
+
+@pytest.mark.parametrize("body", [
+    "take(twin(()))", "take(idt(twin(())))",
+    "let @Tuple<Option<W>, Option<IOF>> = twin(());\n  0",
+    "let @Tuple<Option<W>, Option<IOF>> = idt(twin(()));\n  0",
+    "let Tuple<@Option<W>, @Option<IOF>> = twin(());\n  0"],
+    ids=["argument", "argument-through-idt", "let", "let-through-idt",
+         "destructure"])
+def test_an_open_variable_met_twice_fits_at_the_narrower_type(
+        body: str) -> None:
+    """`twin(())`'s one `X` meets `W` and `IOF`, a pure function type and
+    the same under `<IO>`: `X = W` gives both positions their types, so the
+    value fits.  The join binds `X` to the two types' join, the wider
+    `IOF`; with that binding substituted the fit was refused, at every
+    position, where it is accepted at main."""
+    source = _TWIN + _fn("main(@Unit -> @Int)", body, visibility="public")
+    assert _codes(source) == [], source

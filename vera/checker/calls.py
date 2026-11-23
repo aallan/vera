@@ -343,8 +343,6 @@ class JoinOutcome(typing.NamedTuple):
     conflict: bool
     builtin: bool
     failure: JoinFailure | None = None
-    #: The type each side's open variables were bound to, by name (#1896).
-    bound: tuple[dict[str, Type], dict[str, Type]] = ({}, {})
 
 
 def _lost_builtin_var(name: str) -> bool:
@@ -654,11 +652,15 @@ class CallsMixin:
         built-in's variable a failed substitution lost (#1688), the join
         neither fills nor refuses it, and the variable is read as unknown.
 
-        The join says what the open variables are; whether the value fits
-        is `is_subtype`'s, in the direction the value flows (#1896): the
-        pair with the join's bindings substituted, and each variable still
-        open read as unknown, the enclosing function's own kept rigid
-        (`_holds_at`).  The join compares each part by itself, a leaf by
+        The join says whether one type for each open variable gives the
+        value the target's type; whether the value fits is then
+        `is_subtype`'s, in the direction the value flows (#1896), each open
+        variable read as unknown and the enclosing function's own kept rigid
+        (`_holds_at`).  The join's bindings are not substituted: it binds a
+        variable met twice to the two types' join, the wider, where the
+        narrower one fits both positions, so a `Tuple<Option<X>,
+        Option<X>>` of two `None`s fits a `Tuple<Option<W>, Option<IOF>>`
+        at `X = W`.  The join compares each part by itself, a leaf by
         `is_subtype` either way and an effect row inside a parameter's
         function type the same way round as at the root, so a pair it
         joins need not be a subtype: a `fn(P, T -> Int)` closure, `P` pure,
@@ -668,11 +670,9 @@ class CallsMixin:
         if not (contains_typevar(ty) or contains_typevar(target)):
             return False
         outcome = self._join_parts(ty, target)
-        if outcome.joined is not None:
-            value_bound, target_bound = outcome.bound
-            return self._holds_at(substitute(ty, value_bound),
-                                  substitute(target, target_bound))
-        return outcome.builtin and self._holds_at(ty, target)
+        if outcome.joined is None and not outcome.builtin:
+            return False
+        return self._holds_at(ty, target)
 
     def _branches_agree(self, ty: Type, other: Type) -> bool:
         """Whether two branches of an `if` or two arms of a `match`, one of
@@ -826,8 +826,7 @@ class CallsMixin:
         builtin = (joined is None and walk.builtin and not walk.conflict
                    and not (walk.behaviour[0] or walk.behaviour[1]))
         return JoinOutcome(joined, walk.conflict, builtin,
-                           walk.failure if joined is None else None,
-                           walk.bound)
+                           walk.failure if joined is None else None)
 
     # -----------------------------------------------------------------
     # Function calls
