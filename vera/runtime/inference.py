@@ -175,14 +175,45 @@ _CREDENTIAL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]{8,}")
 
 
 def _key_spellings(api_key: str) -> tuple[str, ...]:
-    """The spellings the configured key is quoted in: as it is, and as
-    Python's `repr` escapes it, which is how an exception quotes a value
-    (`Invalid header value b'...\\r\\n'`), where a key holding a character
-    `repr` escapes (a backslash) does not match itself (#1854)."""
+    r"""Every spelling a quoting layer between the provider and the message
+    can give the configured key (#1854).
+
+    A key reaches this module only if `_refuse_unsendable_key` let it
+    through, so it is printable ASCII.  A layer that quotes text re-spells
+    some of those characters one at a time, by a fixed table, and each such
+    layer that can stand between the provider and a message is here:
+
+    - the key as it is;
+    - Python's `repr`, which is how an exception quotes a value
+      (`Invalid header value b'...'`): a backslash doubled, and one kind
+      of quote escaped;
+    - a JSON string, which is how an error body quotes it: `\"` and
+      `\\`, and `\/` for an encoder that escapes the solidus, which
+      JSON allows (a printable ASCII character is never a `\u` escape);
+    - an HTML page, which is how a proxy's error page quotes it:
+      `&amp;`, `&lt;`, `&gt;`, `&quot;`, and `&#x27;` or `&#39;`.
+
+    A transformation of the whole key is not quoting it, and none is here:
+    percent-encoding, base64, a hash or a mask is a different value the
+    provider chose to send, not the key under a quoting layer, and a key
+    re-spelt that way is not a key a reader can use.
+    """
     if not api_key:
         return ()
-    escaped = repr(api_key)[1:-1]
-    return (api_key,) if escaped == api_key else (api_key, escaped)
+    import html as _html
+    import json as _json
+
+    js = _json.dumps(api_key)[1:-1]
+    htm = _html.escape(api_key, quote=True)
+    spellings = (
+        api_key,
+        repr(api_key)[1:-1],
+        js,
+        js.replace("/", "\\/"),
+        htm,
+        htm.replace("&#x27;", "&#39;"),
+    )
+    return tuple(dict.fromkeys(spellings))
 
 
 #: A credential-shaped token's start, at the end of a text: the cut that made

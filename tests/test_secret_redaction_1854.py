@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import email.message
+import html
 import io
 import json
 import random
@@ -323,6 +324,12 @@ KEY_SHAPES: dict[str, str] = {
     "credential-part": KEY[:12] + "-sk-" + KEY[12:20] + "-" + KEY[20:26],
     "backslash": KEY[:15] + "\\" + KEY[15:30],
     "short": KEY[30:36],
+    "quote": KEY[:10] + '"' + KEY[10:24],
+    "solidus": KEY[:8] + "/" + KEY[8:20],
+    "markup": KEY[:6] + "&<>'" + KEY[6:16],
+    # Each layer spells this one differently: `repr` escapes the
+    # apostrophe, JSON the quote, and JSON may or may not escape the solidus.
+    "every-quote": KEY[:4] + "'" + KEY[4:8] + '"' + KEY[8:12] + "/" + KEY[12:18],
 }
 
 #: A fragment of the key no longer than this may stand in a message: the
@@ -334,7 +341,31 @@ FLOOR = 3
 
 
 def _spellings(key: str) -> dict[str, str]:
-    return {"raw": key, "escaped": repr(key)[1:-1]}
+    """The key under each quoting layer that can stand between a provider
+    and the message, each spelling once: as it is, Python's `repr` (an
+    exception's text), a JSON string (an error body), with the solidus
+    escaped too (JSON allows it), and an HTML page (a proxy's), with the
+    apostrophe as `&#x27;` and as `&#39;`."""
+    js = json.dumps(key)[1:-1]
+    htm = html.escape(key, quote=True)
+    named = {
+        "raw": key, "repr": repr(key)[1:-1], "json": js,
+        "json-solidus": js.replace("/", "\\/"), "html": htm,
+        "html-decimal": htm.replace("&#x27;", "&#39;"),
+    }
+    seen: dict[str, str] = {}
+    for name, text in named.items():
+        if text not in seen.values():
+            seen[name] = text
+    return seen
+
+
+def test_the_redaction_knows_every_spelling() -> None:
+    """`_key_spellings` gives each spelling this file names, for every
+    shape, and no other."""
+    for key in KEY_SHAPES.values():
+        assert set(inference._key_spellings(key)) == set(
+            _spellings(key).values()), key
 
 
 def _fragments(key: str) -> set[str]:
@@ -499,3 +530,18 @@ def test_a_key_of_printable_ascii_is_sent() -> None:
         with pytest.raises(urllib.error.URLError):
             inference._call_inference_provider("anthropic", "hi", "", KEY)
     assert len(seen) == 1
+
+
+def test_repro_a_json_quoted_key_cut_inside_it() -> None:
+    """A key holding a double quote is `\\"` in a JSON error body, which
+    neither the key as it is nor its `repr` spells."""
+    key = 'Opaque"CredentialRemainder'
+    assert inference._redact_cut(' Opaque\\"Credential', key) == " [redacted]"
+    assert inference._redact(f'x {json.dumps(key)[1:-1]} y', key) == (
+        "x [redacted] y")
+
+
+def test_repro_an_html_quoted_key_cut_inside_it() -> None:
+    key = "Opaque<Credential>Remainder"
+    assert inference._redact_cut(" Opaque&lt;Crede", key) == " [redacted]"
+    assert inference._redact_cut(" Opaque&l", key) == " [redacted]"
