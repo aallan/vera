@@ -1646,3 +1646,25 @@ def test_repro_a_nested_pair_names_no_outer_variable_1885() -> None:
         "hands it, and narrow inside, where there is a value to check.  Or "
         "declare parameter 0 of 'use' at a type holding, where this one "
         "sits, a function type whose parameter 0 is `Nat`.")
+
+
+def test_repro_each_element_of_an_array_is_reported_once_1885() -> None:
+    """Two stored callbacks of two refinements at `Array<F>`: the join of
+    the elements was E190 at element 0, then each element E162 against
+    the join, three reports for two elements.  Each element is now held
+    to the join once, and is E190."""
+    source = _ALIASES + (
+        "type FP = fn(Pos -> Int) effects(pure);\n"
+        "type FB = fn(Big -> Int) effects(pure);\n"
+        "type F = fn(Int -> Int) effects(pure);\n\n") + _fn(
+        "main(@Int -> @Int)",
+        "let @FP = fn(@Pos -> @Int) effects(pure) { @Pos.0 };\n"
+        "  let @FB = fn(@Big -> @Int) effects(pure) { @Big.0 };\n"
+        "  let @Array<F> = [@FP.0, @FB.0];\n"
+        "  apply_fn(@Array<F>.0[0], @Int.0)", visibility="public")
+    diagnostics = pipeline.check(source).errors
+    assert [(d.error_code, d.location.column) for d in diagnostics] == [
+        ("E190", 20), ("E190", 27)], [d.description for d in diagnostics]
+    assert all("where the literal's element type, the join of its "
+               "elements, gives it the type fn(Int -> Int) effects(pure)"
+               in d.description for d in diagnostics)

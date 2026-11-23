@@ -1651,14 +1651,15 @@ class ExpressionsMixin:
                         break
                     joined = step
                 else:
-                    element_type = self._value_join(joined, typed)
+                    element_type = self._value_join(joined, typed,
+                                                    report=False)
         elif typed and any(t is not None and not isinstance(t, UnknownType)
                            and self._leaves_open(t) for t in elem_types):
             # The structure may hold a fact only an element a call left open
             # states (its refinement, `NeArr<..>` beside a plain array): the
             # elements do not share it, so the element type states only the
             # facts the elements that took part state (#1684, rule J).
-            element_type = self._value_join(structure, typed)
+            element_type = self._value_join(structure, typed, report=False)
         held = element_type
         if ctx is not None and (contains_fresh_typevar(element_type)
                                 or contains_unknown(element_type)):
@@ -1752,6 +1753,15 @@ class ExpressionsMixin:
             if (i == first_at and not judge_first) or (
                     i not in conflicting and self._fits(ty, element_type)):
                 self._record_element_target(elem, ty, element_type)
+                continue
+            # A function value that fits the element type only by a
+            # narrowing is E190 (#1885, #1819), in place of E162: one
+            # report an element.  Its rewrite moves the join of the
+            # elements, so the fix is prose.
+            if self._refuse_unfit_function_value(
+                    elem, ty, element_type,
+                    "the literal's element type, the join of its elements,",
+                    "declare every element at", value_node=False):
                 continue
             shown = pretty_inferred_type(element_type)
             self._error(

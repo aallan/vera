@@ -438,6 +438,7 @@ class ControlFlowMixin:
 
     def _value_join(
         self, joined: Type, arms: Sequence[tuple[ast.Expr | None, Type]],
+        *, report: bool = True,
     ) -> Type:
         """The type a value join is recorded at: an `if` over its branches,
         a `match` over its arms, an `Exn` handler over its body and clauses,
@@ -448,9 +449,11 @@ class ControlFlowMixin:
         Where the arms state two refinements at a function type's
         parameter, the join keeps their shared prefix, which no arm accepts
         all of: that arm is refused at the join (E190, #1885), as it is at
-        any other flow into the type."""
+        any other flow into the type.  Without *report* nothing is refused
+        here: an array literal holds each element to the join itself, one
+        report an element (`_check_array_elements`)."""
         shared = _shared_facts(joined, arms)
-        for expr, ty in arms:
+        for expr, ty in arms if report else ():
             if expr is None or is_subtype(ty, shared):
                 continue
             node = expr.expr if isinstance(expr, ast.Block) else expr
