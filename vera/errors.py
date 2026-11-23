@@ -11,7 +11,7 @@ import unicodedata
 from dataclasses import dataclass
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Protocol, TypedDict
 
 from vera.lexical import CommentProblemKind
 
@@ -25,11 +25,17 @@ class SourceLocation:
     column: int = 0
 
     def __str__(self) -> str:
+        """The location as a diagnostic's header names it: the file, then
+        the line and column where it has a position.  A location with no
+        position (line 0: a refusal about the file as a whole) names the file
+        alone, and one with neither is empty (#1636); `line 0, column 0`
+        would state a position it does not have."""
         parts = []
         if self.file:
             parts.append(self.file)
-        parts.append(f"line {self.line}")
-        parts.append(f"column {self.column}")
+        if self.line > 0:
+            parts.append(f"line {self.line}")
+            parts.append(f"column {self.column}")
         return ", ".join(parts)
 
     def to_dict(self) -> dict[str, object]:
@@ -77,7 +83,8 @@ class Diagnostic:
         # Header with location
         loc = str(self.location)
         prefix = f"[{self.error_code}] " if self.error_code else ""
-        parts.append(f"{prefix}{self.severity.title()} at {loc}:")
+        where = f" at {loc}" if loc else ""
+        parts.append(f"{prefix}{self.severity.title()}{where}:")
 
         # Source context with pointer
         if self.source_line:
@@ -288,6 +295,79 @@ def _get_source_line(source: str, line: int) -> str:
     return ""
 
 
+class Placed(TypedDict):
+    """A diagnostic's location and the source line it quotes, built together
+    by :func:`locate` and passed to :class:`Diagnostic` as ``**placed``."""
+
+    location: SourceLocation
+    source_line: str
+
+
+class _Point(Protocol):
+    """Anything with a 1-based line and column: an ``ast.Span``, a Lark
+    token or meta."""
+
+    @property
+    def line(self) -> int: ...
+
+    @property
+    def column(self) -> int: ...
+
+
+def locate(file: Optional[str], source: str, line: int = 0,
+           column: int = 0) -> Placed:
+    """The one way a diagnostic's location and its quoted line are built
+    (#1636): *file*, *line* and *column*, with the line of *source* the
+    location names.  Spec §0.5.1 requires the file, the line and the column,
+    "with the offending source line quoted"; building the two in one place is
+    what keeps a stage from shipping one without the other, or a quote of a
+    line the location does not name.
+
+    Line 0 is no position (a refusal about the file as a whole): it quotes
+    nothing, and the header names the file alone (:class:`SourceLocation`).
+    An empty *source* quotes nothing either: a stage that holds no text (the
+    transform, before :func:`vera.transform.transform` places its error)."""
+    return Placed(
+        location=SourceLocation(file=file, line=line, column=column),
+        source_line=_get_source_line(source, line),
+    )
+
+
+def locate_at(file: Optional[str], source: str,
+              at: _Point | None) -> Placed:
+    """:func:`locate` at *at*'s line and column (a span, a token, a Lark
+    meta), or at no position when there is none."""
+    if at is None or getattr(at, "line", None) is None:
+        return locate(file, source)
+    return locate(file, source, at.line, at.column)
+
+
+def span_bounds(source: str, span: Any) -> tuple[int, int] | None:
+    """Where the text *span* covers starts and ends in *source*, as offsets
+    (1-based line and column, end exclusive), or ``None`` without one.
+
+    The one source slice (#1636), for a diagnostic whose fix splices a
+    replacement into the program's own text at a node's offsets.  A message
+    that QUOTES an expression, a type or a declaration renders it from the
+    node as ``vera fmt`` writes it (:func:`vera.formatter.format_expr_canonical`
+    and its siblings; #1573), never from here."""
+    if span is None or not source:
+        return None
+    starts = [0]
+    for piece in source_lines(source, keepends=True):
+        starts.append(starts[-1] + len(piece))
+    if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
+        return None
+    return (starts[span.line - 1] + span.column - 1,
+            starts[span.end_line - 1] + span.end_column - 1)
+
+
+def span_text(source: str, span: Any) -> str | None:
+    """The text of *source* that *span* covers (:func:`span_bounds`)."""
+    bounds = span_bounds(source, span)
+    return None if bounds is None else source[bounds[0]:bounds[1]]
+
+
 def missing_contract_block(
     file: Optional[str], source: str, line: int, column: int
 ) -> Diagnostic:
@@ -297,8 +377,7 @@ def missing_contract_block(
             "must declare requires(), ensures(), and effects() clauses "
             "between the signature and the body."
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "Vera requires all functions to have explicit contracts so that "
             "every function's behaviour is mechanically checkable."
@@ -411,8 +490,7 @@ def missing_effect_clause(
             "Function is missing its effects() declaration. Every function "
             "in Vera must declare its effects explicitly."
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "Vera is pure by default. All side effects must be declared in "
             "the function signature so the compiler can track them."
@@ -439,8 +517,7 @@ def malformed_slot_reference(
             "form @Type.index where Type starts with an uppercase letter "
             "and index is a non-negative integer."
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "Vera uses typed De Bruijn indices (@T.n) instead of variable "
             "names. The type must match the binding site, and the index "
@@ -467,8 +544,7 @@ def unclosed_block(
             'Expected closing brace "}". Every opening brace must have '
             "a matching closing brace."
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "Vera requires mandatory braces on all blocks. There is no "
             "brace-optional syntax."
@@ -494,8 +570,7 @@ def module_call_dot_syntax(
             "and the function name, not '.'. "
             "Did you mean to use '::' syntax?"
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "Vera uses '::' to separate the module path from the function "
             "name in module-qualified calls. The dot-separated module path "
@@ -545,8 +620,7 @@ def contract_clause_after_effects(
             f"clause. Every contract clause comes first, then 'effects', "
             f"then the body."
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "A function declaration has a fixed clause order: the "
             "signature, then its contract clauses ('requires', 'ensures' "
@@ -633,8 +707,7 @@ def unexpected_token(
             f'Unexpected "{token}" at this position. '
             f"Expected one of: {expected_str}"
         ),
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=(
             "The parser reached this position expecting one of the listed "
             "tokens; the token found does not begin any construct valid here."
@@ -776,8 +849,7 @@ def contract_state_argument(
     line, column = _line_column(source, keyword_offset)
     return Diagnostic(
         description=description,
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=rationale,
         fix=fix,
         spec_ref='Chapter 7, Section 7.9.2 "State in Contracts"',
@@ -835,8 +907,7 @@ def diagnose_comment_problem(
     code, description, rationale, fix = _COMMENT_PROBLEMS[kind]
     return Diagnostic(
         description=description,
-        location=SourceLocation(file=file, line=line, column=column),
-        source_line=_get_source_line(source, line),
+        **locate(file, source, line, column),
         rationale=rationale,
         fix=fix,
         spec_ref='Chapter 1, Section 1.3 "Comments"',
@@ -926,7 +997,10 @@ def source_not_utf8(
         )
     return Diagnostic(
         description=description,
-        location=SourceLocation(file=file, line=line, column=column),
+        # The one quote not cut from decoded text: the file does not decode,
+        # so its line is read from the bytes above, and only the location
+        # comes from `locate`.
+        location=locate(file, "", line, column)["location"],
         source_line=source_line,
         rationale=(
             "Vera source is UTF-8: every command reads the program, and "
@@ -1015,8 +1089,7 @@ def diagnose_lark_error(
                 f"Unexpected character {_name_character(char)}. This "
                 "character is not valid in Vera source code at this position."
             ),
-            location=SourceLocation(file=file, line=line, column=column),
-            source_line=_get_source_line(source, line),
+            **locate(file, source, line, column),
             rationale=(
                 "Vera's lexical grammar accepts only a fixed alphabet of "
                 "characters; this character is not part of any token."
@@ -1033,7 +1106,7 @@ def diagnose_lark_error(
     # Unknown exception type — wrap it
     return Diagnostic(  # diag-fields-exempt: internal fallback for an unrecognised Lark exception; indicates a parser bug, not a user error, so no source-level fix or spec section applies.
         description=f"Internal parser error: {exc}",
-        location=SourceLocation(file=file),
+        **locate(file, source),
         error_code="E007",
     )
 

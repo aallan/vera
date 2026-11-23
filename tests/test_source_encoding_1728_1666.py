@@ -848,7 +848,8 @@ def test_reconcile_file_records_e024_and_runs_a_utf8_program_to_the_join(
 
 def test_e009_s_surrogate_diagnostic_is_exact() -> None:
     """The E009 a surrogate escape raises, every field: the escape as
-    written, at the literal, with the surrogate rationale and fix."""
+    written, at the escape's backslash (#1636), with the surrogate
+    rationale and fix."""
     from vera.transform import (
         _E009_ESCAPE_SPEC,
         _E009_SURROGATE_FIX,
@@ -860,7 +861,7 @@ def test_e009_s_surrogate_diagnostic_is_exact() -> None:
     assert found.description == (
         "Unicode escape names a surrogate, not a Unicode scalar value: "
         "\\u{D800}")
-    assert (found.location.line, found.location.column) == (6, 17)
+    assert (found.location.line, found.location.column) == (6, 18)
     assert (found.rationale, found.fix, found.spec_ref) == (
         _E009_SURROGATE_RATIONALE, _E009_SURROGATE_FIX, _E009_ESCAPE_SPEC)
 

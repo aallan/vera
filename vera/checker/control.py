@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from vera import ast, naming, narrowing, patterns
 from vera.checker.calls import TypePath, _variable_name, describe_position
 from vera.checker.registration import builtin_effect_names
-from vera.checker.resolution import _span_text
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
+from vera.errors import span_text
 from vera.formatter import format_expr_canonical, format_type_canonical
 from vera.lowering import (
     CLAUSE_RESUME_IN_WITH,
@@ -2314,7 +2314,7 @@ class ControlFlowMixin:
         # The type as written, in apposition; none where it is not one a
         # program writes (an open `?`).
         wanted = f", `{shown}`" if shown is not None else ""
-        written = _span_text(self.source, clause.body.span)
+        written = span_text(self.source, clause.body.span)
         example = self._example_value(ty)
         if written is None or example is None:
             return (f"Make the clause's value the handled body's "

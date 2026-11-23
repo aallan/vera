@@ -7,13 +7,13 @@ bottom-up, so children are already transformed when a parent runs.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from lark import Token, Transformer, Tree, v_args
 from lark.exceptions import VisitError
 
-from vera.lexical import ANNOTATIONS_ATTR, AnnotationLabel
+from vera.lexical import ANNOTATIONS_ATTR, ORIGIN_ATTR, AnnotationLabel
 
 from vera.ast import (
     AbilityConstraint,
@@ -96,9 +96,10 @@ from vera.ast import (
 from vera.errors import (
     Diagnostic,
     ParseError,
-    SourceLocation,
     TransformError,
     VeraError,
+    locate,
+    locate_at,
 )
 
 
@@ -124,13 +125,30 @@ def _transform_error(
     full instruction fields; E010 (unhandled grammar rule) callers do not —
     a rule the grammar defines but the transformer misses is a compiler
     bug, not a user error, so there is no user-facing fix to offer (#966).
+
+    The transformer holds neither the file nor the source, so the error is
+    placed at its line and column alone; :func:`transform`, which reads both
+    off the tree, places it in its file with its source line (#1636).
     """
-    loc = SourceLocation()
-    if meta and hasattr(meta, "line") and meta.line is not None:
-        loc = SourceLocation(line=meta.line, column=meta.column)
     return TransformError(Diagnostic(  # diag-fields-exempt: fields threaded from call sites (E009 passes rationale/fix/spec_ref; E010 unhandled-rule sites report internal invariants, description-only — see the docstring)
-        description=msg, location=loc, error_code=error_code,
+        description=msg, **locate_at(None, "", meta or None),
+        error_code=error_code,
         rationale=rationale, fix=fix, spec_ref=spec_ref))
+
+
+def _placed(exc: VeraError, tree: Tree[Any]) -> VeraError:
+    """*exc* placed in the file and the source *tree* was parsed from
+    (:data:`ORIGIN_ATTR`), at the line and column it carries (#1636).
+
+    A tree built by hand carries no origin and leaves *exc* as it is."""
+    origin = getattr(tree, ORIGIN_ATTR, None)
+    diag = exc.diagnostic
+    if origin is None or diag.location.file is not None:
+        return exc
+    file, source = origin
+    placed = replace(diag, **locate(file, source, diag.location.line,
+                                    diag.location.column))
+    return type(exc)(placed)
 
 
 #: The call forms a pipe can name: each has an argument list for the
@@ -268,8 +286,50 @@ _SIMPLE_ESCAPES: dict[str, str] = {
 }
 
 
-def _decode_string_escapes(s: str, meta: Any = None) -> str:
+@dataclass(frozen=True)
+class _At:
+    """A source position: a 1-based line and column, read as a Lark meta's."""
+
+    line: int
+    column: int
+
+
+@dataclass(frozen=True)
+class _Literal:
+    """A string literal's raw text (between its quotes) and the position of
+    its opening quote, which maps an offset in the text to the source."""
+
+    raw: str
+    line: int | None
+    column: int | None
+
+    @classmethod
+    def of(cls, raw: str, meta: Any) -> "_Literal":
+        """*raw*, opened at *meta*'s position (a token or a rule's meta)."""
+        return cls(raw, getattr(meta, "line", None),
+                   getattr(meta, "column", None))
+
+    def point(self, offset: int) -> _At | None:
+        """Where ``raw[offset]`` is in the source (#1632, #1636), or None for
+        a literal with no position.  A literal may hold newlines, so the
+        line is the opening quote's plus the newlines before *offset*, and
+        after one the column counts from the line's start."""
+        if self.line is None or self.column is None:
+            return None
+        before = self.raw[:offset]
+        newlines = before.count("\n")
+        if not newlines:
+            return _At(self.line, self.column + 1 + offset)
+        return _At(self.line + newlines, offset - before.rfind("\n"))
+
+
+def _decode_string_escapes(s: str, meta: Any = None, *,
+                           lit: _Literal | None = None,
+                           start: int = 0) -> str:
     """Decode Vera escape sequences in a string literal body.
+
+    An error is placed at the escape's backslash: *s* is *lit*'s raw text
+    from offset *start* (#1636), or, without *lit*, at *meta*.
 
     Supports: ``\\\\``, ``\\"``, ``\\n``, ``\\t``, ``\\r``, ``\\0``,
     ``\\u{XXXX}`` (1-6 hex digits naming a Unicode scalar value).  Any other
@@ -279,6 +339,9 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
     """
     if "\\" not in s:
         return s  # fast path — no escapes
+
+    def _where(i: int) -> Any:
+        return (lit.point(start + i) if lit is not None else None) or meta
 
     result: list[str] = []
     i = 0
@@ -291,7 +354,7 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
         # Backslash at end of string (shouldn't happen with valid grammar)
         if i + 1 >= len(s):
             raise _escape_error(
-                "Invalid escape sequence: trailing backslash", meta)
+                "Invalid escape sequence: trailing backslash", _where(i))
 
         nxt = s[i + 1]
         if nxt in _SIMPLE_ESCAPES:
@@ -301,28 +364,28 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
             # \u{XXXX} — 1-6 hex digits
             if i + 2 >= len(s) or s[i + 2] != "{":
                 raise _escape_error(
-                    "Invalid unicode escape: expected '{' after \\u", meta)
+                    "Invalid unicode escape: expected '{' after \\u", _where(i))
             close = s.find("}", i + 3)
             if close == -1:
                 raise _escape_error(
-                    "Invalid unicode escape: missing '}'", meta)
+                    "Invalid unicode escape: missing '}'", _where(i))
             hex_str = s[i + 3:close]
             if not (1 <= len(hex_str) <= 6) or not all(
                 c in "0123456789abcdefABCDEF" for c in hex_str
             ):
                 raise _escape_error(
-                    f"Invalid unicode escape: \\u{{{hex_str}}}", meta)
+                    f"Invalid unicode escape: \\u{{{hex_str}}}", _where(i))
             code_point = int(hex_str, 16)
             if code_point > 0x10FFFF:
                 raise _escape_error(
-                    f"Unicode code point out of range: \\u{{{hex_str}}}", meta)
+                    f"Unicode code point out of range: \\u{{{hex_str}}}", _where(i))
             if 0xD800 <= code_point <= 0xDFFF:
-                raise _surrogate_error(hex_str, meta)
+                raise _surrogate_error(hex_str, _where(i))
             result.append(chr(code_point))
             i = close + 1
         else:
             raise _escape_error(
-                f"Invalid escape sequence: \\{nxt}", meta)
+                f"Invalid escape sequence: \\{nxt}", _where(i))
     return "".join(result)
 
 
@@ -355,6 +418,7 @@ def _split_interpolation(
     within ``raw`` — used by ``string_lit`` to compute original-source
     coordinates for span remapping (issue #634).
     """
+    lit = _Literal.of(raw, meta)
     parts: list[str | tuple[str, int]] = []
     buf: list[str] = []
     i = 0
@@ -390,12 +454,12 @@ def _split_interpolation(
                 if depth != 0:
                     raise _interp_error(
                         "Unmatched '\\(' in string interpolation — "
-                        "missing closing ')'.", meta)
+                        "missing closing ')'.", lit.point(i) or meta)
                 expr_text = raw[i + 2:j - 1]
                 if not expr_text.strip():
                     raise _interp_error(
                         "Empty expression in string interpolation '\\()'.",
-                        meta)
+                        lit.point(i) or meta)
                 parts.append((expr_text, i))
                 i = j
             else:
@@ -527,9 +591,10 @@ def _parse_interp_expr(
         if (isinstance(inner, TransformError) and base_line is not None
                 and base_col is not None
                 and inner.diagnostic.location.line):
-            loc = inner.diagnostic.location
-            loc.line, loc.column = _interp_source_point(
-                loc.line, loc.column, base_line, base_col)
+            at = inner.diagnostic.location
+            inner = TransformError(replace(inner.diagnostic, **locate(
+                None, "", *_interp_source_point(
+                    at.line, at.column, base_line, base_col))))
         if inner is not None:
             raise inner from None
         raise
@@ -593,7 +658,8 @@ class VeraTransformer(Transformer):
         raw = str(token)[1:-1]  # Strip surrounding quotes
         if _has_interpolation(raw):
             return _split_interpolation(raw, token)
-        return _decode_string_escapes(raw, token)
+        return _decode_string_escapes(raw, token,
+                                      lit=_Literal.of(raw, token))
 
     # =================================================================
     # Program Structure
@@ -1136,19 +1202,12 @@ class VeraTransformer(Transformer):
             # [lit_str, (expr_text, offset), lit_str, ...].
             span = _span_from_meta(meta)
             resolved: list[str | Expr] = []
-            # Compute original-source coordinates for span remapping
-            # (#634).  The opening `"` of the string literal is at
-            # `meta.column`; raw content starts at `meta.column + 1`.
-            # An expression segment whose `\(` opener is at offset
-            # `off` within raw has its expression text starting at
-            # original column `meta.column + 1 + off + 2`
-            # (= `meta.column + off + 3`).  We assume the string
-            # literal is on a single line — multi-line interpolation
-            # expressions are an edge case that still gets correct
-            # line numbers via the per-line offset fallback in
-            # `_remap_spans_inplace`'s mapper.
-            meta_line = getattr(meta, "line", None)
-            meta_col = getattr(meta, "column", None)
+            # Original-source coordinates (#634) come from one mapping of
+            # an offset in the literal's raw text to the source,
+            # `_Literal.point`, which counts the newlines the literal holds
+            # before the offset (#1632).  The raw text is the segments
+            # rejoined: a literal fragment is undecoded, and an expression
+            # segment was written `\(` + its text + `)`.
             # The alternating layout — even indices = str (literal
             # fragment), odd indices = (expr_text, raw_offset) tuple —
             # is guaranteed by `_split_interpolation`'s contract.
@@ -1156,25 +1215,28 @@ class VeraTransformer(Transformer):
             # mypy narrowing without `assert` (which `ruff S101`
             # forbids in production code, since `python -O` strips
             # asserts).
+            raw = "".join(
+                segment if isinstance(segment, str)
+                else f"\\({segment[0]})" for segment in child)
+            lit = _Literal.of(raw, meta)
+            offset = 0
             for segment in child:
                 if isinstance(segment, str):
                     # Literal fragment — decode escapes
-                    resolved.append(
-                        _decode_string_escapes(segment, meta)
-                    )
+                    resolved.append(_decode_string_escapes(
+                        segment, meta, lit=lit, start=offset))
+                    offset += len(segment)
                 else:
                     # Expression — recursively parse, with span remap.
+                    # Its text starts after the `\(` opener at `off`.
                     expr_text, off = segment
-                    if meta_line is not None and meta_col is not None:
-                        base_line = meta_line
-                        base_col = meta_col + off + 3
-                    else:
-                        base_line = None
-                        base_col = None
+                    base = lit.point(off + 2)
                     resolved.append(_parse_interp_expr(
-                        expr_text, meta,
-                        base_line=base_line, base_col=base_col,
+                        expr_text, lit.point(off) or meta,
+                        base_line=None if base is None else base.line,
+                        base_col=None if base is None else base.column,
                     ))
+                    offset = off + len(expr_text) + 3
             return InterpolatedString(
                 parts=tuple(resolved), span=span,
             )
@@ -1674,7 +1736,7 @@ def transform(tree: Tree[Any]) -> Program:
     except VisitError as exc:
         inner = _unwrap_visit_error(exc)
         if inner is not None:
-            raise inner from None
+            raise _placed(inner, tree) from None
         raise
 
     # Annotation comments are `%ignore`d by the grammar, so `parse()`

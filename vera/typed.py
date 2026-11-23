@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 from vera import ast
+from vera.errors import span_bounds, span_text
 from vera.types import (
     AdtType,
     FunctionType,
@@ -790,7 +791,7 @@ def _state_fix(node: ast.HandleExpr, record: HandlerCell,
     from vera.types import TypeVar
 
     cell = record.cell
-    declared = (_source_text(source, node.state.span)
+    declared = (span_text(source, node.state.span)
                 if node.state is not None else None)
     if (isinstance(cell, TypeVar) and declared is not None
             and any(isinstance(p, ast.NamedType) and p.name == cell.name
@@ -858,21 +859,6 @@ def _component_what(node: ast.FnCall, role: str, ty: Type,
             f"over {reason}")
 
 
-def _source_text(source: str, span: ast.Span | None) -> str | None:
-    """The text of *source* that *span* covers (1-based, end exclusive)."""
-    if span is None or not source:
-        return None
-    from vera.errors import source_lines
-
-    starts = [0]
-    for line in source_lines(source, keepends=True):
-        starts.append(starts[-1] + len(line))
-    if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
-        return None
-    return source[starts[span.line - 1] + span.column - 1:
-                  starts[span.end_line - 1] + span.end_column - 1]
-
-
 def _example(te: ast.TypeExpr, variables: frozenset[str]) -> str | None:
     """A value of the formal type *te* with each of *variables* at Int,
     where one is a literal: ``0``, ``Some(0)``, ``[0]``; else ``None``."""
@@ -905,7 +891,7 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     carries one."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
-    text = _source_text(source, call.span)
+    text = span_text(source, call.span)
     args: tuple[ast.Expr, ...] = getattr(call, "args", ())
     variables = frozenset(root.decl.forall_vars or ())
     if not any(_mentions(formal, variables) for formal in root.decl.params):
@@ -941,8 +927,8 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
         if not _mentions(formal, variables):
             continue
         example = _example(formal, variables)
-        lo = _offset(text, call.span, arg.span, start=True)
-        hi = _offset(text, call.span, arg.span, start=False)
+        lo = _offset(source, call.span, arg.span, start=True)
+        hi = _offset(source, call.span, arg.span, start=False)
         if example is None or lo is None or hi is None:
             return advice + ", by annotating the value it is fixed from."
         edits.append((lo, hi, example))
@@ -952,22 +938,16 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     return f"{advice}: replace '{text}' with '{fixed}'."
 
 
-def _offset(text: str, base: ast.Span, span: ast.Span | None, *,
+def _offset(source: str, base: ast.Span, span: ast.Span | None, *,
             start: bool) -> int | None:
-    """Where *span* starts (or ends) in *text*, the source *base* covers."""
-    if span is None:
+    """Where *span* starts (or ends) in the text of *source* that *base*
+    covers (:func:`vera.errors.span_bounds`)."""
+    outer = span_bounds(source, base)
+    inner = span_bounds(source, span)
+    if outer is None or inner is None:
         return None
-    line, column = ((span.line, span.column) if start
-                    else (span.end_line, span.end_column))
-    from vera.errors import source_lines
-
-    starts = [0]
-    for piece in source_lines(text, keepends=True):
-        starts.append(starts[-1] + len(piece))
-    row = line - base.line
-    if not 0 <= row < len(starts):
-        return None
-    return starts[row] + column - (base.column if row == 0 else 1)
+    at = (inner[0] if start else inner[1]) - outer[0]
+    return at if 0 <= at <= outer[1] - outer[0] else None
 
 
 def judge(derivation: Derivation, types: Mapping[int, Type],
@@ -1048,7 +1028,10 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
                     if node.node_id is not None else None)
             if root is None:
                 continue
-            call_text = _source_text(source, node.span) or _bare(root.key)
+            # As written: the typed program's call carries its resolved
+            # name (`mod$m$f`, `f$where$g`), which the canonical form would
+            # print (#1636).
+            call_text = span_text(source, node.span) or _bare(root.key)
             paths: dict[int, list[Instance]] = {id(root): [root]}
             queue = [root]
             while queue:
@@ -1079,14 +1062,14 @@ def _component_fix(node: ast.FnCall, role: str, source: str) -> str:
 
     index = next((i for r, i, arg in COLLECTION_COMPONENTS[node.name]
                   if r == role and arg is None), None)
-    text = _source_text(source, node.span)
+    text = span_text(source, node.span)
     if index is None or index >= len(node.args) or text is None:
         return (f"Give the collection's {role} a type it stores where the "
                 f"collection is built: a String or a number for a key or an "
                 f"element, an Option of the value for a value.")
     arg = node.args[index]
-    lo = _offset(text, node.span, arg.span, start=True)  # type: ignore[arg-type]
-    hi = _offset(text, node.span, arg.span, start=False)  # type: ignore[arg-type]
+    lo = _offset(source, node.span, arg.span, start=True)  # type: ignore[arg-type]
+    hi = _offset(source, node.span, arg.span, start=False)  # type: ignore[arg-type]
     if lo is None or hi is None:
         return f"Give the {role} a type the collection stores."
     value = text[lo:hi]
@@ -1143,7 +1126,7 @@ def _growth_fix(growth: Growth, templates: Mapping[str, Template],
               f"itself, not at a type built from it, or carry the nesting "
               f"in a value of a recursive data type")
     grown = {g.target[1]: g.source[1] for g in growth.grown}
-    text = _source_text(source, call.span)
+    text = span_text(source, call.span)
     args: tuple[ast.Expr, ...] = getattr(call, "args", ())
     if text is None or call.span is None or len(args) != len(callee.params):
         return advice + "."
@@ -1156,9 +1139,9 @@ def _growth_fix(growth: Growth, templates: Mapping[str, Template],
             return advice + "."
         inner = _part_typed(arg, TypeVar(grown[formal.name]), types)
         inner_text = (None if inner is None
-                      else _source_text(source, inner.span))
-        lo = _offset(text, call.span, arg.span, start=True)
-        hi = _offset(text, call.span, arg.span, start=False)
+                      else span_text(source, inner.span))
+        lo = _offset(source, call.span, arg.span, start=True)
+        hi = _offset(source, call.span, arg.span, start=False)
         if inner_text is None or lo is None or hi is None:
             return advice + "."
         edits.append((lo, hi, inner_text))
@@ -1201,7 +1184,7 @@ def _growth_diagnostic(growth: Growth, templates: Mapping[str, Template],
     callee = templates[flow.record.callee].decl
     names = _recorded_names(templates[flow.record.callee], flow.record)
     ty = flow.record.mapping.get(names.get(flow.target[1], ""))
-    text = (_source_text(source, flow.call.span)
+    text = (span_text(source, flow.call.span)  # as written, as above
             or _bare(flow.record.callee))
     at = "?" if ty is None else _type_text(ty)
     holder = _holder(templates[flow.caller].decl, flow.call)
@@ -1231,49 +1214,43 @@ def _diagnostic(code: str, file: str | None, source: str, node: ast.Node,
                 description: str, fix: str) -> Diagnostic:
     """The *code* diagnostic a judgment reports at *node* in *file*."""
     from vera.binding import display_type_names
-    from vera.errors import Diagnostic, SourceLocation, source_lines
+    from vera.errors import Diagnostic, locate_at
 
-    loc = SourceLocation(file=file)
-    line = ""
-    if node.span is not None:
-        loc.line, loc.column = node.span.line, node.span.column
-        lines = source_lines(source)
-        if 0 <= node.span.line - 1 < len(lines):
-            line = lines[node.span.line - 1]
+    placed = locate_at(file, source, node.span)
     description, fix = display_type_names(description, fix)
     if code == "E613":
         return Diagnostic(
-            description=description, location=loc, source_line=line,
+            description=description, **placed,
             rationale=_ABILITY_RATIONALE, fix=fix,
             spec_ref='Chapter 9, Section 9.8 "Abilities"',
             severity="error", error_code="E613")
     if code == "E607":
         return Diagnostic(
-            description=description, location=loc, source_line=line,
+            description=description, **placed,
             rationale=_CELL_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
             severity="error", error_code="E607")
     if code == "E612":
         return Diagnostic(
-            description=description, location=loc, source_line=line,
+            description=description, **placed,
             rationale=_PAYLOAD_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
             severity="error", error_code="E612")
     if code == "E533":
         return Diagnostic(
-            description=description, location=loc, source_line=line,
+            description=description, **placed,
             rationale=_STATE_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
             severity="error", error_code="E533")
     if code == "E139":
         return Diagnostic(
-            description=description, location=loc, source_line=line,
+            description=description, **placed,
             rationale=_GROWTH_RATIONALE, fix=fix,
             spec_ref='Chapter 11, Section 11.4.1 "Compilable Subset"',
             severity="error", error_code="E139")
     assert code == "E135", code  # noqa: S101
     return Diagnostic(
-        description=description, location=loc, source_line=line,
+        description=description, **placed,
         rationale=_COLLECTION_RATIONALE, fix=fix,
         spec_ref='Chapter 9, Section 9.4 "Built-in Collections"',
         severity="error", error_code="E135")

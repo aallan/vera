@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, SourceLocation, locate
 
 if TYPE_CHECKING:
     from vera.runtime.traps import TrapFrame
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 def _at(path: str | None) -> SourceLocation:
     """The location of a refusal about *path* as a whole: no position in it."""
-    return SourceLocation(file=path, line=0, column=0)
+    return locate(path, "")["location"]
 
 
 def runtime_trap(
@@ -51,8 +51,8 @@ def runtime_trap(
     location = _at(path)
     for frame in frames:
         if not frame.is_builtin and frame.line_start is not None:
-            location = SourceLocation(
-                file=frame.file, line=frame.line_start, column=1)
+            location = locate(frame.file, "", frame.line_start, 1)[
+                "location"]
             break
     return Diagnostic(
         description=description,

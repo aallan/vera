@@ -34,9 +34,8 @@ from vera.binding import Binding, DeclId, display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
-    SourceLocation,
     attach_partial_diagnostics,
-    source_lines,
+    locate_at,
 )
 from vera.lowering import ability_lowerable
 from vera.naming import AliasEnv
@@ -979,10 +978,8 @@ class TypeChecker(
         """Record a type error diagnostic, placed at *node*
         (:meth:`_placement`)."""
         span = self._placement(node)
-        loc = SourceLocation(file=self.file)
-        if span:
-            loc.line = span.line
-            loc.column = span.column
+        placed = locate_at(self.file, self.source, span)
+        loc = placed["location"]
         # Collapse an exact-duplicate (same code, file, position, severity,
         # and message) to a single entry — see `_seen_diag_keys`.
         key = (
@@ -998,8 +995,7 @@ class TypeChecker(
             description, rationale, fix)
         self.errors.append(Diagnostic(
             description=description,
-            location=loc,
-            source_line=self._source_line(span),
+            **placed,
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
@@ -1063,16 +1059,6 @@ class TypeChecker(
             # standing; a later unconstrained synthesis is still dropped.
             self.errors.append(withdrawn)
             self._literal_range_verdict[id(node)] = (withdrawn, contextual)
-
-    def _source_line(self, span: ast.Span | None) -> str:
-        """The source line a diagnostic placed at *span* quotes."""
-        if not span or not self.source:
-            return ""
-        lines = source_lines(self.source)
-        idx = span.line - 1
-        if 0 <= idx < len(lines):
-            return lines[idx]
-        return ""
 
     def _placement(self, node: ast.Node) -> ast.Span | None:
         """Where a diagnostic reported at *node* is placed: its span, or,

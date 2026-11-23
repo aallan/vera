@@ -62,8 +62,8 @@ from vera import command_errors
 from vera.codegen.api import ArgumentRefusal, WasmTrapError
 from vera.errors import (
     Diagnostic,
-    SourceLocation,
     VeraError,
+    locate,
     partial_diagnostics,
 )
 from vera.introspect import builtins_payload, effects_payload, errors_payload
@@ -774,8 +774,7 @@ def _internal_error_envelope(
             f"Internal compiler error while {doing} '{path}': "
             f"{type(exc).__name__}: {exc}"
         ),
-        location=SourceLocation(file=path, line=0, column=0),
-        source_line="",
+        **locate(path, ""),
         rationale=(
             "The compiler raised an unexpected exception. This is a bug in "
             "the compiler, not a property of the program being processed — "

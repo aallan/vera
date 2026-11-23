@@ -639,7 +639,9 @@ def _assert_refusal(name: str, as_json: bool, root: Path) -> None:
             expected = _expected(refusal.code, path, description).to_dict()
         assert found == expected, (name, found, expected)
         return
-    header = f"[{refusal.code}] Error at "
+    # A refusal with no file names no location at all (#1636).
+    header = (f"[{refusal.code}] Error at " if path or refusal.code == "E800"
+              else f"[{refusal.code}] Error:\n")
     assert header in run.stderr, (name, run.stderr[-2000:])
     if refusal.code == "E800":
         assert f"\n\n  {description}\n" in run.stderr, name
@@ -1076,7 +1078,7 @@ def test_e800_with_no_frame_of_the_program_s_is_located_at_the_file(
     assert (found["trap_kind"], found["frames"]) == ("host_error", []), found
     assert found["location"] == {"line": 0, "column": 0, "file": str(path)}
     run = pipeline.cli("run", path)
-    assert f"[E800] Error at {path}, line 0, column 0:" in run.stderr, run.stderr
+    assert f"[E800] Error at {path}:" in run.stderr, run.stderr
 
 
 def test_e904_names_each_command_that_reads_a_file(tmp_path: Path) -> None:
@@ -1165,7 +1167,7 @@ def test_e912_an_output_directory_the_command_may_not_write(tmp_path: Path) -> N
              locked / "c.wasm")):
             run = pipeline.cli(*argv)
             assert run.returncode == 1, (argv, run)
-            assert run.stderr.startswith(f"[E912] Error at {source}, line 0, column 0:"
+            assert run.stderr.startswith(f"[E912] Error at {source}:"
                                          f"\n\n  cannot write the output {output}: "), run.stderr
             assert "E699" not in run.stderr, run.stderr
     finally:

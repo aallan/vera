@@ -98,9 +98,6 @@ class DomainContract:
     domain: BuiltinDomain
     params: tuple[ast.TypeExpr, ...]
     requires: ast.Requires
-    #: The Vera source the two were parsed from — the text a diagnostic
-    #: quotes the precondition out of, since its span numbers lines there.
-    source: str
 
 
 def declaration_source(domain: BuiltinDomain) -> str:
@@ -129,11 +126,10 @@ def domain_contract(name: str) -> DomainContract | None:
     # a trapping built-in actually needs its domain.
     from vera.parser import parse_to_ast
 
-    source = declaration_source(domain)
-    program = parse_to_ast(source)
+    program = parse_to_ast(declaration_source(domain))
     fn = program.declarations[0].decl
     if not isinstance(fn, ast.FnDecl):  # pragma: no cover — source is ours
         raise AssertionError(f"domain of {name} did not parse as a function")
     requires = next(
         c for c in fn.contracts if isinstance(c, ast.Requires))
-    return DomainContract(domain, fn.params, requires, source)
+    return DomainContract(domain, fn.params, requires)

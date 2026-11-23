@@ -37,8 +37,8 @@ from vera.checker.core import CheckArtifacts
 from vera.errors import (
     Diagnostic,
     ParseError,
-    SourceLocation,
     TransformError,
+    locate,
     partial_diagnostics,
 )
 from vera.lsp.convert import (
@@ -299,7 +299,7 @@ def analysis_failure(
             f"Internal compiler error while analysing '{path}': "
             f"{type(exc).__name__}: {exc}"
         ),
-        location=SourceLocation(file=path, line=0, column=0),
+        **locate(path, ""),
         rationale=(
             "The compiler raised an unexpected exception. This is a bug in "
             "the compiler, not a property of the program -- the text may "

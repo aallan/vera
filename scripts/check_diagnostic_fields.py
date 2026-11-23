@@ -942,6 +942,148 @@ def hand_built_diagnostic_violations(paths: Iterable[Path]) -> list[Violation]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Placement (#1636): one constructor for a location and its quote
+# ---------------------------------------------------------------------------
+#
+# Spec §0.5.1 asks every diagnostic for its file, line and column, "with the
+# offending source line quoted".  Where each stage built the location and cut
+# the quote by hand, a stage that held no file or source (the transform)
+# shipped neither, one that forgot the quote (E614) shipped a location alone,
+# and one that sliced lines without their columns (E501) quoted its
+# neighbours.  `vera.errors.locate` / `locate_at` build the two together, and
+# `vera.errors.span_bounds` / `span_text` are the one source slice, for a fix
+# that splices a replacement into the program's text; a message that quotes
+# an expression, a type or a declaration renders it from the node
+# (`vera.formatter.format_*_canonical`, #1573).  So under vera/, outside
+# vera/errors.py, each of these is a violation, bar the sites named below:
+#
+# - a `SourceLocation(...)` call;
+# - a `source_line=` keyword (a quote passed by hand: `**locate(...)` carries
+#   it);
+# - a `source_lines(...)` call (lines cut for a quote);
+# - an assignment to a location's `.line` or `.column`, or a `replace(...)` of
+#   a `.location` (a position moved by hand);
+# - a slice whose bounds read a `.column` or an `.end_column` (a span cut by
+#   hand).
+#
+# An entry that names no such site is a violation too, so the list only
+# shrinks.
+
+PLACEMENT_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("vera/tester.py", "_TestEngine.run"): (
+        "the trial report's diagnostics pass `source_line=` from "
+        "`_get_source_line` and `_refuted_location`, which build it with "
+        "`locate_at`; the report's own lines change with issue #1768's fix, "
+        "which places them through `locate` and deletes this entry"),
+    ("vera/lsp/convert.py", "LineIndex.__init__"): (
+        "the language server's position index, which turns a location into "
+        "an LSP range: it reads lines to count columns, and quotes nothing"),
+}
+
+#: The names a location is held under at the sites the assignment rule reads.
+_LOCATION_NAMES = frozenset({"loc", "location"})
+
+
+def _reads_a_column(node: ast.AST | None) -> bool:
+    return node is not None and any(
+        isinstance(n, ast.Attribute) and n.attr in ("column", "end_column")
+        for n in ast.walk(node))
+
+
+def _is_location(node: ast.AST) -> bool:
+    return ((isinstance(node, ast.Name) and node.id in _LOCATION_NAMES)
+            or (isinstance(node, ast.Attribute) and node.attr == "location"))
+
+
+def _placement_sites(tree: ast.AST) -> Iterator[tuple[ast.AST, str]]:
+    """Each node that places a diagnostic or quotes source by hand, with
+    what it does."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = (node.func.id if isinstance(node.func, ast.Name) else
+                    node.func.attr if isinstance(node.func, ast.Attribute)
+                    else "")
+            if name == "SourceLocation":
+                yield node, "builds a SourceLocation"
+            elif name == "source_lines":
+                yield node, "cuts the source into lines for a quote"
+            elif (name == "replace" and node.args
+                    and _is_location(node.args[0])):
+                yield node, "moves a location by replace()"
+            if any(kw.arg == "source_line" for kw in node.keywords):
+                yield node, "passes source_line= by hand"
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            moved = sorted({
+                t.attr for target in targets
+                for t in (target.elts if isinstance(target, ast.Tuple)
+                          else [target])
+                if isinstance(t, ast.Attribute)
+                and t.attr in ("line", "column") and _is_location(t.value)})
+            if moved:
+                yield node, f"assigns a location's {' and '.join(moved)}"
+        elif isinstance(node, ast.Slice):
+            if any(_reads_a_column(b)
+                   for b in (node.lower, node.upper, node.step)):
+                yield node, "slices source at a span's columns"
+
+
+def _placement_site_names(
+    source: str, filename: str,
+) -> list[tuple[int, str, str]]:
+    """(line, enclosing qualified name, what) of each placement site."""
+    tree = ast.parse(source, filename=filename)
+    qualnames = _enclosing_qualified_names(tree)
+    return [(getattr(node, "lineno", 0), qualnames.get(id(node), "<module>"),
+             what) for node, what in _placement_sites(tree)]
+
+
+def placement_violations_in_source(
+    source: str, filename: str,
+) -> list[Violation]:
+    """Flag every hand-built placement outside ``PLACEMENT_EXCEPTIONS``;
+    vera/errors.py, the constructor's own module, is not read."""
+    if filename == "vera/errors.py":
+        return []
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for line, qualname, what in _placement_site_names(source, filename):
+        if (filename, qualname) in PLACEMENT_EXCEPTIONS:
+            continue
+        snip = src_lines[line - 1] if 0 < line <= len(src_lines) else None
+        out.append(Violation(
+            filename, line, "placement",
+            [f"{qualname} {what}: place a diagnostic with "
+             f"vera.errors.locate / locate_at (`**locate(...)`), slice a "
+             f"fix's text with span_bounds / span_text, and quote an "
+             f"expression, a type or a declaration through the canonical "
+             f"formatter"], snip))
+    return out
+
+
+def placement_violations(paths: Iterable[Path]) -> list[Violation]:
+    """Every hand-built placement in *paths*, and, when *paths* holds the
+    file an exception names, each exception that names no such site."""
+    out: list[Violation] = []
+    live: set[tuple[str, str]] = set()
+    seen: set[str] = set()
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        source = p.read_text(encoding="utf-8")
+        seen.add(rel)
+        live.update((rel, q) for _, q, _w in _placement_site_names(source, rel))
+        out.extend(placement_violations_in_source(source, rel))
+    for site in sorted(PLACEMENT_EXCEPTIONS):
+        if site[0] in seen and site not in live:
+            out.append(Violation(
+                site[0], 0, "placement",
+                [f"PLACEMENT_EXCEPTIONS names {site[0]}::{site[1]}, which "
+                 f"places nothing by hand: delete the entry"], None))
+    return out
+
+
 def error_code_registration_violations_in_source(
     source: str, filename: str, registry: set[str],
 ) -> list[Violation]:
@@ -1336,12 +1478,15 @@ def main() -> int:
     codes = error_code_registration_violations(files, registry)
     collisions = error_code_collision_violations(files)
     hand_built = hand_built_diagnostic_violations(files)
-    violations = presence + validity + coded + codes + collisions + hand_built
+    placement = placement_violations(files)
+    violations = (presence + validity + coded + codes + collisions
+                  + hand_built + placement)
     if not violations:
         print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
               "and carries an error_code, every spec_ref resolves, every "
               "error_code is registered, every multi-site error_code is a "
-              "declared, verified reuse, and no diagnostic is built by hand.")
+              "declared, verified reuse, no diagnostic is built by hand, "
+              "and every location and quote is built by vera.errors.locate.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
@@ -1370,7 +1515,7 @@ def main() -> int:
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
             if v.target in ("spec_ref", "error_code", "error_code_collision",
-                            "hand_built"):
+                            "hand_built", "placement"):
                 print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "

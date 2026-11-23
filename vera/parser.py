@@ -24,6 +24,7 @@ from vera.errors import (
 )
 from vera.lexical import (
     ANNOTATIONS_ATTR,
+    ORIGIN_ATTR,
     annotation_labels,
     blank_block_comments,
     find_comment_problems,
@@ -142,6 +143,9 @@ def parse(source: str, file: Optional[str] = None) -> Tree[Any]:
     # that path.  `setattr` because the attribute belongs to Lark's Tree,
     # which we do not own; `transform()` reads it back by the same name.
     setattr(tree, ANNOTATIONS_ATTR, annotation_labels(source))
+    # The same carriage, for the same reason, for the file and the text: a
+    # transform-stage diagnostic is placed with them (#1636).
+    setattr(tree, ORIGIN_ATTR, (file, source))
     return tree
 
 

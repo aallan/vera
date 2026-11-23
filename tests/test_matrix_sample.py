@@ -728,6 +728,7 @@ MARKED_FILES = (
     "test_index_nothing_types_1862.py",
     "test_entry_and_body_1851.py",
     "test_negation_overflow_1875.py",
+    "test_diagnostic_placement_1636.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

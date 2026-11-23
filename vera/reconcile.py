@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 from vera import ast
 from vera.errors import (
-    Diagnostic, SourceLocation, VeraError, source_lines,
+    Diagnostic, VeraError, locate,
 )
 from vera.obligations.core import ObligationKind, ProofObligation
 from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
@@ -515,13 +515,11 @@ def mismatch_diagnostics(
     confirm, a check it cannot place one it could not account for — and
     says so in its description.  *sources* maps each file to its text, for
     the source line."""
-    texts = {_file_key(f): source_lines(text)
-             for f, text in sources.items()}
+    texts = {_file_key(f): text for f, text in sources.items()}
     out: list[Diagnostic] = []
     for m in mismatches:
-        lines = texts.get(_file_key(m.file), [])
-        source_line = lines[m.line - 1] if 1 <= m.line <= len(lines) else ""
-        location = SourceLocation(file=m.file, line=m.line, column=m.column)
+        placed = locate(m.file, texts.get(_file_key(m.file), ""), m.line,
+                        m.column)
         if m.status:
             what = (
                 f"but {m.detail}" if m.kind == "recorded_unguarded" else
@@ -532,8 +530,7 @@ def mismatch_diagnostics(
                     f"The '{m.obligation}' obligation in '{m.function}' is "
                     f"recorded as checked at run time ({m.status}), {what}."
                 ),
-                location=location,
-                source_line=source_line,
+                **placed,
                 rationale=(
                     "`vera verify` counts a `tier3` or `timeout` obligation as "
                     "runtime-guarded: code generation is meant to emit a check "
@@ -574,8 +571,7 @@ def mismatch_diagnostics(
                 f"The compiled module checks this site in '{m.function}' "
                 f"(the runtime half of '{m.obligation}'), but {what}."
             ),
-            location=location,
-            source_line=source_line,
+            **placed,
             rationale=(
                 "Every runtime check in the compiled module is meant to be "
                 "the runtime half of an obligation `vera verify` recorded, so "
@@ -695,8 +691,6 @@ def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
     """The W005 warning for a join skipped because the program holds typed
     holes, located at the first."""
     first = holes[0]
-    lines = source_lines(source)
-    line = first.location.line
     count = (f"{len(holes)} typed holes" if len(holes) > 1
              else "a typed hole")
     return Diagnostic(
@@ -706,9 +700,8 @@ def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
             f"hole is filled (E614), so there is no compiled module to hold "
             f"its Tier 3 claims to."
         ),
-        location=SourceLocation(
-            file=first.location.file, line=line, column=first.location.column),
-        source_line=lines[line - 1] if 1 <= line <= len(lines) else "",
+        **locate(first.location.file, source, first.location.line,
+                 first.location.column),
         rationale=(
             "`vera verify` compiles the program in process and joins each "
             "runtime-check claim (`tier3`, `timeout`) with the check the "

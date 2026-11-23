@@ -78,7 +78,7 @@ python scripts/check_doc_examples.py  # Verify every Vera block in the agent-fac
 python scripts/check_doc_examples.py SKILL.md  # The same gate, for the named documents only
 python scripts/check_diagnostic_examples.py # Verify every vera:diagnostic-annotated ```text fence matches the live diagnostic it shows (#1291)
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
-python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682)
+python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682); and that every location and quoted line is built by vera.errors.locate (#1636)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
@@ -178,7 +178,7 @@ A bug fix closes the **class** the report belongs to (the set of inputs the same
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts, plus an `obligations` array, one entry per reified obligation, with `kind`, `status`, `description`, `location`, and `error_code` (when present).
+Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`.  A diagnostic about a file as a whole (a command-line refusal, E9xx) has no position: its `line` and `column` are 0 and it has no `source_line`, and its text form names the file alone (`[E900] Error at main.vera:`), or nothing where there is no file (`[E901] Error:`). The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts, plus an `obligations` array, one entry per reified obligation, with `kind`, `status`, `description`, `location`, and `error_code` (when present).
 
 The summary is *derived* from that array, by `status`. A consumer reproduces the counts by filtering on `status`, never by taking the array's length:
 
