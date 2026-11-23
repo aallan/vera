@@ -1208,6 +1208,44 @@ def test_repro_a_let_bound_tuple_at_a_closure_argument_has_its_record_1542(
     assert "W004" not in {d.error_code for d in verified.warnings}
 
 
+_REFINED_TUPLE_FORMAL = """\
+type Pos = { @Int | @Int.0 > 0 };
+type RT = { @Tuple<Pos, Int> | match @Tuple<Pos, Int>.0 { Tuple(@Int, @Int) -> @Int.0 < 100 } };
+type F = fn(RT -> Int) effects(pure);
+
+private fn pair(@Float64 -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(float_to_int(@Float64.0), 7)
+}
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F = fn(@Tuple<Int, Int> -> @Int) effects(pure) { 0 };
+  apply_fn(@F.0, pair(@Float64.0))
+}
+"""
+
+
+def test_repro_a_tuple_behind_a_refinement_at_a_closure_argument_is_read_through_it(
+) -> None:
+    """A function type's parameter that refines a tuple holding a refined
+    component: the call reads the component through the refinement's
+    wrapper (`_closure_argument_component`) and checks it.  With the
+    wrapper not read through, code generation stops with an internal
+    error."""
+    assert pipeline.run(_REFINED_TUPLE_FORMAL, fn="go", args=[5.0]).value == 0
+    ran = pipeline.run(_REFINED_TUPLE_FORMAL, fn="go", args=[-3.0])
+    assert ran.trap is not None, ran.value
+    assert ("Refinement violation in closure argument (tuple component)\n"
+            in str(ran.trap)), ran.trap
+
+
 _MODULE_LIB = """\
 type R = { @Int | above(@Int.0) };
 
