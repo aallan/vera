@@ -48,6 +48,7 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/wasm/data.py",
     "vera/wasm/inference.py",
     "vera/environment.py",
+    "vera/builtins.py",
     "vera/prelude.py",
     "vera/checker/expressions.py",
     "vera/smt.py",
@@ -468,6 +469,12 @@ EFFECT_CELLS: dict[str, tuple[str, str]] = {
     "match_future": ('  IO.print(match async(IO.print("a")) { _ -> "T" })',
                      "aT"),
     "match_refined": ('  IO.print(match mk_u(1) { _ -> "T" })', "T"),
+    # The built-in `Future`'s constructor over an irrefutable pattern
+    # matches the one value too, and binds no local.
+    "match_future_pattern": (
+        '  IO.print(match async(IO.print("a")) { Future(_) -> "T" })', "aT"),
+    "match_future_binder": (
+        '  IO.print(match async(()) { Future(@Unit) -> "T" })', "T"),
 }
 
 
