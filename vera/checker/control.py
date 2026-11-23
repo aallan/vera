@@ -1335,9 +1335,16 @@ class ControlFlowMixin:
         """Check a binding pattern (@Type)."""
         self._check_refinement_predicates(pat.type_expr)  # #861
         resolved = self._resolve_type(pat.type_expr)
-        # #1320: the pattern/scrutinee rule, applied here because the
-        # binder's type is resolved exactly once (see `_check_pattern`).
-        self._check_pattern_scrutinee(pat, expected, bound=resolved)
+        # The binder takes the value at the type it writes, so a function
+        # value in the scrutinee is held to rule 9 there, at any depth, as
+        # at every other flow (#1885, #1819): the relatedness below runs in
+        # either direction and skips a function-typed scrutinee.
+        if expected is None or not self._refuse_unfit_function_value(
+                pat, expected, resolved, "the binding pattern",
+                "write the binding pattern at"):
+            # #1320: the pattern/scrutinee rule, applied here because the
+            # binder's type is resolved exactly once (see `_check_pattern`).
+            self._check_pattern_scrutinee(pat, expected, bound=resolved)
         tname = self._type_expr_to_slot_name(pat.type_expr)
         return [Binding(tname, resolved, "match")]
 

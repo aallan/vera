@@ -896,6 +896,271 @@ def test_repro_a_wider_result_at_a_generic_callee_1819() -> None:
 
 
 # =====================================================================
+# Every form of the grammar that binds or admits a value
+# =====================================================================
+
+#: (position or result, the position's type, the value's type): the four
+#: that fit only by a narrowing, then two that fit.
+BINDING_RELATIONS = (
+    ("parameter", "Int", "Nat"), ("parameter", "Int", "Pos"),
+    ("result", "Nat", "Int"), ("result", "Pos", "Int"),
+    ("parameter", "Nat", "Int"), ("result", "Int", "Nat"))
+
+#: Each place `vera/grammar.lark` binds a value or admits one at a declared
+#: type (`let_stmt`, `let_destruct`, `match_arm` and its patterns, a
+#: handler's state, clause parameters and `with`, a call plain, piped and
+#: `where`-scoped, `resume`, an effect operation, a constructor, a join, a
+#: block, an index), each with a value `@G.0` of type `G` met at `F`.
+BINDING_FORMS = (
+    "let", "match-binder", "option-subpattern", "ctor-subpattern",
+    "option-subpattern-of-slot", "tuple-subpattern", "nested-subpattern",
+    "result-subpattern", "let-destructure", "let-destructure-slot",
+    "result-payload", "piped-call", "where-helper", "exn-payload",
+    "exn-clause-param", "state-clause-param", "state-resume",
+    "user-op-argument", "user-op-clause-param", "user-op-resume",
+    "adopted-generic-result", "adopted-apply-fn-result", "if-join-both",
+    "block-tail", "array-index", "option-unwrap-or")
+
+#: A user effect's operation over a function type is not lowered (E340):
+#: the form's own refusal, beside the relation's.
+_FORM_OWN_CODES = {"user-op-argument": {"E340"},
+                   "user-op-clause-param": {"E340"},
+                   "user-op-resume": {"E340"}}
+
+#: A handler clause's parameter is bound at the operation's type and its
+#: written type compared with nothing, at any type: its own mechanism, not
+#: the function-type rule's.
+_CLAUSE_PARAMETER = (
+    "a handler clause's parameter is bound at the operation's type, its "
+    "written type compared with nothing, at any type: ISSUE_HANDLER_CLAUSE")
+_CLAUSE_FORMS = ("exn-clause-param", "state-clause-param",
+                 "user-op-clause-param")
+
+
+#: A form that meets the value twice: `resume` hands the state's `get` the
+#: value the handler's state is initialised with.
+_E190_COUNT = {"state-resume": 2}
+
+
+def _binding_types(kind: str, p: str, c: str, generic: bool) -> tuple[str, str]:
+    """`F` and `G` (over the enclosing generic's `T` too, inside one), and
+    a closure of type `G`."""
+    t, tp = (", T", "<T>") if generic else ("", "")
+    if kind == "parameter":
+        lam = (f"fn(@{c}{', @T' if generic else ''} -> @Int) effects(pure) "
+               f"{{ @{c}.0 }}")
+        return (f"type F{tp} = fn({p}{t} -> Int) effects(pure);\n"
+                f"type G{tp} = fn({c}{t} -> Int) effects(pure);\n", lam)
+    body = "7" if c == "Nat" else "@Int.0"
+    lam = (f"fn(@Int{', @T' if generic else ''} -> @{c}) effects(pure) "
+           f"{{ {body} }}")
+    return (f"type F{tp} = fn(Int{t} -> {p}) effects(pure);\n"
+            f"type G{tp} = fn(Int{t} -> {c}) effects(pure);\n", lam)
+
+
+def binding_form_program(form: str, kind: str, p: str, c: str,
+                         generic: bool) -> str:
+    """`main` (or, *generic*, `forall<T> fn outer`) binds a closure of type
+    `G` to `@G` and meets `@G.0` at `F` by *form*, then applies the `F` it
+    holds to its `Int` argument."""
+    aliases, lam = _binding_types(kind, p, c, generic)
+    f, g = ("F<T>", "G<T>") if generic else ("F", "G")
+    tp, targ = ("<T>", ", @T.0") if generic else ("", "")
+    g0 = f"@{g}.0"
+
+    def app(fn_value: str) -> str:
+        return f"apply_fn({fn_value}, @Int.0{targ})"
+
+    def generic_fn(signature: str, body: str, variables: str,
+                   requires: str = "true") -> str:
+        return _fn(signature, body, requires=requires).replace(
+            "private fn", f"private forall<{variables}> fn")
+
+    use = app(f"@{f}.0")
+    helpers = effect = where = ""
+    if form == "let":
+        body = f"let @{f} = {g0};\n  {use}"
+    elif form == "match-binder":
+        body = f"match {g0} {{\n    @{f} -> {use}\n  }}"
+    elif form == "option-subpattern":
+        body = (f"match Some({g0}) {{\n    Some(@{f}) -> {use},\n"
+                f"    None -> 0\n  }}")
+    elif form == "ctor-subpattern":
+        helpers = f"private data H{tp} {{\n  MkH({g})\n}}\n\n"
+        body = f"match MkH({g0}) {{\n    MkH(@{f}) -> {use}\n  }}"
+    elif form == "option-subpattern-of-slot":
+        body = (f"let @Option<{g}> = Some({g0});\n  match @Option<{g}>.0 {{\n"
+                f"    Some(@{f}) -> {use},\n    None -> 0\n  }}")
+    elif form == "tuple-subpattern":
+        body = (f"match Tuple({g0}, true) {{\n    Tuple(@{f}, @Bool) -> "
+                f"{use}\n  }}")
+    elif form == "nested-subpattern":
+        body = (f"let @Option<Tuple<{g}, Bool>> = Some(Tuple({g0}, true));\n"
+                f"  match @Option<Tuple<{g}, Bool>>.0 {{\n"
+                f"    Some(Tuple(@{f}, @Bool)) -> {use},\n    None -> 0\n  }}")
+    elif form == "result-subpattern":
+        body = (f"let @Result<{g}, Int> = Ok({g0});\n"
+                f"  match @Result<{g}, Int>.0 {{\n"
+                f"    Ok(@{f}) -> {use},\n    Err(@Int) -> 0\n  }}")
+    elif form == "let-destructure":
+        body = f"let Tuple<@{f}, @Bool> = Tuple({g0}, true);\n  {use}"
+    elif form == "let-destructure-slot":
+        body = (f"let @Tuple<{g}, Bool> = Tuple({g0}, true);\n"
+                f"  let Tuple<@{f}, @Bool> = @Tuple<{g}, Bool>.0;\n  {use}")
+    elif form == "result-payload":
+        body = (f"let @Result<{f}, Int> = Ok({g0});\n"
+                f"  match @Result<{f}, Int>.0 {{\n"
+                f"    Ok(@{f}) -> {use},\n    Err(@Int) -> 0\n  }}")
+    elif form == "piped-call":
+        signature = f"run_f(@{f}, @Int{', @T' if generic else ''} -> @Int)"
+        helpers = (generic_fn(signature, use, "T", "@Int.0 >= 0") if generic
+                   else _fn(signature, use, requires="@Int.0 >= 0"))
+        body = f"{g0} |> run_f(@Int.0{targ})"
+    elif form == "where-helper":
+        body = f"helper({g0}, @Int.0{targ})"
+        where = (f"where {{\n  fn helper(@{f}, @Int"
+                 f"{', @T' if generic else ''} -> @Int)\n"
+                 "    requires(@Int.0 >= 0)\n    ensures(true)\n"
+                 f"    effects(pure)\n  {{\n    {use}\n  }}\n}}\n")
+    elif form == "exn-payload":
+        body = (f"handle[Exn<{f}>] {{\n    throw(@{f}) -> {{ {use} }}\n"
+                f"  }} in {{\n    throw({g0})\n  }}")
+    elif form == "exn-clause-param":
+        body = (f"handle[Exn<{g}>] {{\n    throw(@{f}) -> {{ {use} }}\n"
+                f"  }} in {{\n    throw({g0})\n  }}")
+    elif form == "state-clause-param":
+        body = (f"handle[State<{g}>](@{g} = {g0}) {{\n"
+                f"    get(@Unit) -> {{ resume(@{g}.0) }},\n"
+                f"    put(@{f}) -> {{ resume(()) }} with @{g} = @{g}.0\n"
+                f"  }} in {{\n    put({g0});\n    {app('get(())')}\n  }}")
+    elif form == "state-resume":
+        body = (f"handle[State<{f}>](@{f} = {g0}) {{\n"
+                f"    get(@Unit) -> {{ resume({g0}) }},\n"
+                f"    put(@{f}) -> {{ resume(()) }}\n"
+                f"  }} in {{\n    {app('get(())')}\n  }}")
+    elif form == "user-op-argument":
+        effect = f"effect E{tp} {{\n  op take({f} -> Int);\n}}\n\n"
+        body = (f"handle[E{tp}] {{\n    take(@{f}) -> {{ resume({use}) }}\n"
+                f"  }} in {{\n    take({g0})\n  }}")
+    elif form == "user-op-clause-param":
+        effect = f"effect E{tp} {{\n  op take({g} -> Int);\n}}\n\n"
+        body = (f"handle[E{tp}] {{\n    take(@{f}) -> {{ resume({use}) }}\n"
+                f"  }} in {{\n    take({g0})\n  }}")
+    elif form == "user-op-resume":
+        effect = f"effect E{tp} {{\n  op mk(Unit -> {f});\n}}\n\n"
+        body = (f"handle[E{tp}] {{\n    mk(@Unit) -> {{ resume({g0}) }}\n"
+                f"  }} in {{\n    {app('mk(())')}\n  }}")
+    elif form == "adopted-generic-result":
+        helpers = generic_fn(f"mk(@{g} -> @Tuple<{g}, Option<U>>)",
+                             f"Tuple(@{g}.0, None)",
+                             "T, U" if generic else "U")
+        body = (f"let @Tuple<{f}, Option<Int>> = mk({g0});\n"
+                f"  match @Tuple<{f}, Option<Int>>.0 {{\n"
+                f"    Tuple(@{f}, @Option<Int>) -> {use}\n  }}")
+    elif form == "adopted-apply-fn-result":
+        # `let @Tuple<W, Option<Int>> = apply_fn(make(()), ());`: the
+        # expected type adopted by a function value's result.  Inside a
+        # generic `make` takes a `T`, which fixes its variable.
+        aliases += (f"type MkT{tp} = fn(Unit -> Tuple<{g}, Option<Int>>) "
+                    "effects(pure);\n")
+        made = (f"fn(@Unit -> @Tuple<{g}, Option<Int>>) effects(pure) "
+                f"{{ Tuple({lam}, None) }}")
+        helpers = (generic_fn(f"make(@T -> @MkT{tp})", made, "T") if generic
+                   else _fn(f"make(@Unit -> @MkT{tp})", made))
+        made_from = "@T.0" if generic else "()"
+        body = (f"let @Tuple<{f}, Option<Int>> = apply_fn(make({made_from}), "
+                f"());\n  match @Tuple<{f}, Option<Int>>.0 {{\n"
+                f"    Tuple(@{f}, @Option<Int>) -> {use}\n  }}")
+    elif form == "if-join-both":
+        body = (f"let @{f} = if @Int.0 > 100 then {{ {g0} }} "
+                f"else {{ {g0} }};\n  {use}")
+    elif form == "block-tail":
+        body = f"let @{f} = {{ {g0} }};\n  {use}"
+    elif form == "array-index":
+        body = (f"let @Array<{g}> = [{g0}];\n  let @{f} = @Array<{g}>.0[0];\n"
+                f"  {use}")
+    elif form == "option-unwrap-or":
+        body = (f"let @{f} = option_unwrap_or(Some({g0}), {g0});\n  {use}")
+    else:
+        raise AssertionError(form)
+    body = f"let @{g} = {lam};\n  {body}"
+    if generic:
+        outer = _fn("outer(@T, @Int -> @Int)", body,
+                    requires="@Int.0 >= 0").replace(
+                        "private fn", "private forall<T> fn")
+        if where:
+            outer = outer.rstrip("\n") + "\n" + where + "\n"
+        main = _fn("main(@Int -> @Int)", "outer(true, @Int.0)",
+                   visibility="public", requires="@Int.0 >= 0")
+    else:
+        outer = ""
+        main = _fn("main(@Int -> @Int)", body, visibility="public",
+                   requires="@Int.0 >= 0")
+        if where:
+            main = main.rstrip("\n") + "\n" + where + "\n"
+    return _ALIASES + aliases + "\n" + effect + helpers + outer + main
+
+
+def _binding_cell(form: str, generic: bool, kind: str, p: str,
+                  c: str) -> object:
+    refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
+    cell_id = "-".join((form, "generic" if generic else "plain", kind, p, c))
+    if refused and form in _CLAUSE_FORMS:
+        return pytest.param(form, generic, kind, p, c, id=cell_id,
+                            marks=pytest.mark.xfail(
+                                strict=True, reason=_CLAUSE_PARAMETER))
+    return pytest.param(form, generic, kind, p, c, id=cell_id)
+
+
+BINDING_CELLS = [_binding_cell(form, generic, *rel)
+                 for form in BINDING_FORMS for generic in (False, True)
+                 for rel in BINDING_RELATIONS]
+
+
+def test_repro_a_match_binder_at_a_stricter_function_type_is_refused_1819(
+        ) -> None:
+    """Was accepted: the binder `@W` took a `fn(Int -> Int)` value at
+    `fn(Int -> Nat)`, and `t(-5)` gave -5 out of a `@Nat`, with check and
+    verify clean.  A pattern is not the value: the fix prints no code."""
+    source = (
+        "type V = fn(Int -> Int) effects(pure);\n"
+        "type W = fn(Int -> Nat) effects(pure);\n\n"
+        + _fn("t(@Int -> @Int)",
+              "let @V = fn(@Int -> @Int) effects(pure) { @Int.0 };\n"
+              "  match @V.0 {\n    @W -> nat_to_int(apply_fn(@W.0, @Int.0))\n"
+              "  }", visibility="public"))
+    diagnostic = _only_diagnostic(source)
+    assert diagnostic["description"] == (
+        "A function value of type fn(Int -> Int) effects(pure) is used where "
+        "the binding pattern gives it the type fn(Int -> Nat) effects(pure): "
+        "its result is declared `Int`, and that type promises `Nat`, which a "
+        "result declared `Int` does not guarantee.")
+    assert diagnostic["fix"] == (
+        "Declare the closure's result as `@Nat`, the type the position "
+        "states; the closure's own return is then proved or checked, where "
+        "the value is.  Or write the binding pattern at a function type "
+        "whose result is `Int`.")
+
+
+@pytest.mark.parametrize(("form", "generic", "kind", "p", "c"), BINDING_CELLS)
+def test_every_binding_form_meets_a_function_type(
+        form: str, generic: bool, kind: str, p: str, c: str) -> None:
+    """Every form of the grammar that binds a value or admits one at a
+    declared type, outside a generic and inside one: a pair that fits only
+    by a narrowing is E190 (with the form's own refusal, where the form has
+    one), and a pair that fits checks clean and verifies.  A judge the
+    function-type rule does not reach is a failing cell here."""
+    source = binding_form_program(form, kind, p, c, generic)
+    refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
+    own = _FORM_OWN_CODES.get(form, set())
+    assert sorted(_codes(source)) == sorted(
+        ["E190"] * _E190_COUNT.get(form, 1) * refused + list(own)), source
+    if not refused and not own:
+        verified = pipeline.verify(source, reconcile=True)
+        assert verified.ok, (verified.diagnostics, source)
+
+
+# =====================================================================
 # The fix reads back: the wrapper E190 prints checks where it is pasted
 # =====================================================================
 

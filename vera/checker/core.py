@@ -930,7 +930,7 @@ class TypeChecker(
 
     def _refuse_unfit_function_value(
         self,
-        node: ast.Expr,
+        node: ast.Expr | ast.Pattern,
         value_ty: Type,
         position_ty: Type,
         gave: str,
@@ -1039,7 +1039,8 @@ class TypeChecker(
         )
         return True
 
-    def _eta_wrapper(self, node: ast.Expr, fn: FunctionType) -> str | None:
+    def _eta_wrapper(self, node: ast.Expr | ast.Pattern,
+                     fn: FunctionType) -> str | None:
         """A closure of type *fn* that applies the function value the slot
         *node* holds, for E190's fix where the value is not written in
         place (#1819): `fn(@Int -> @Nat) effects(pure) { apply_fn(@F.0,
@@ -1082,7 +1083,7 @@ class TypeChecker(
         declared = ", ".join(f"@{p}" for p in params)
         return f"fn({declared} -> @{result}) {effect}"
 
-    def _unfit_header(self, node: ast.Expr,
+    def _unfit_header(self, node: ast.Expr | ast.Pattern,
                       written: ast.TypeExpr | None,
                       pp: str) -> str | None:
         """The closure *node*'s header as written, the type *written* (a
