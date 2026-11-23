@@ -1892,8 +1892,10 @@ def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
     assert fix == (
         "No argument of 'pair_ord(())' fixes A, B, so the call "
         "instantiates 'pair_ord' at Bool, nothing giving its result a "
-        "type: bind its result at a type that supports 'Ord' (a `let` of "
-        "that type), or give 'pair_ord' a parameter for each of A, B "
+        "type: bind its result at a type that supports 'Ord', where the "
+        "call is: `let @Option<Tuple<Int, Int>> = pair_ord(());`, then "
+        "`@Option<Tuple<Int, Int>>.0` in its place; or give 'pair_ord' a "
+        "parameter for each of A, B "
         "('@A', '@B') and pass each a value at a type that supports "
         "'Ord', Int for example."), fix
     bound = _E613_TWO_VARIABLES.replace(
