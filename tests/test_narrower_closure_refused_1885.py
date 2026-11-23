@@ -2058,3 +2058,80 @@ def test_repro_the_join_is_bound_at_its_pure_type_and_no_other_1885(
     assert _codes(pinned) == [], pinned
     assert pipeline.run(pinned, fn="main", args=[]).execution.value == 6
     assert _codes(_arm_program(form, arms, "io", bind="JI")) == ["E170"]
+
+
+# =====================================================================
+# A variable an argument writes one refinement at, at every position
+# =====================================================================
+
+_ENDO_TYPES = (_ALIASES
+               + "type G<T> = fn(T -> T) effects(pure);\n"
+               "type G3<T> = fn(T, T -> T) effects(pure);\n\n")
+_ENDO_HELPERS = "".join(
+    _fn(sig, body).replace("private fn", "private forall<T> fn")
+    for sig, body in (
+        ("app(@G<T>, @T -> @T)", "apply_fn(@G<T>.0, @T.0)"),
+        ("ppa(@T, @G<T> -> @T)", "apply_fn(@G<T>.0, @T.0)"),
+        ("app3(@G3<T>, @T -> @T)", "apply_fn(@G3<T>.0, @T.0, @T.0)")))
+
+#: (the parameter `main` takes, the call, whether it is accepted).  An
+#: argument that writes `Pos` at every position its function type gives
+#: `T` fixes `T` at `Pos`, the type the program wrote: the polarity pin
+#: chooses between `Int` and `Nat` only where the positions differ
+#: (spec §4.2).  Two refinements, or a value at the base beside the
+#: closure, leave no instance the closure fits: refused, in either order
+#: (the base value's pair is #1891's, both orders pinned as they are).
+_ENDO_CELLS = {
+    "one-refinement-closure-first": (
+        "@Pos", "app(fn(@Pos -> @Pos) effects(pure) { @Pos.0 }, @Pos.0)",
+        True),
+    "one-refinement-value-first": (
+        "@Pos", "ppa(@Pos.0, fn(@Pos -> @Pos) effects(pure) { @Pos.0 })",
+        True),
+    "three-positions": (
+        "@Pos", "app3(fn(@Pos, @Pos -> @Pos) effects(pure) { @Pos.1 }, "
+        "@Pos.0)", True),
+    "two-refinements-closure-first": (
+        "@Big", "app(fn(@Pos -> @Big) effects(pure) { 11 }, @Big.0)", False),
+    "two-refinements-value-first": (
+        "@Big", "ppa(@Big.0, fn(@Pos -> @Big) effects(pure) { 11 })", False),
+    "base-value-closure-first": (
+        "@Int", "app(fn(@Pos -> @Pos) effects(pure) { @Pos.0 }, @Int.0)",
+        False),
+    "base-value-value-first": (
+        "@Int", "ppa(@Int.0, fn(@Pos -> @Pos) effects(pure) { @Pos.0 })",
+        False),
+    "int-endofunction": (
+        "@Int", "app(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0)",
+        True),
+}
+
+
+@pytest.mark.parametrize("cell", list(_ENDO_CELLS))
+def test_a_variable_written_once_at_every_position_is_that_type(
+        cell: str) -> None:
+    param, call, accepted = _ENDO_CELLS[cell]
+    source = _ENDO_TYPES + _ENDO_HELPERS + _fn(
+        f"main({param} -> @Int)", call, visibility="public")
+    if not accepted:
+        assert _codes(source) == ["E190"], source
+        return
+    assert pipeline.verify(source, reconcile=True).ok, source
+    assert pipeline.run(source, fn="main", args=[12]).execution.value == 12
+
+
+def test_repro_an_endofunction_over_a_refinement_fills_its_data_type_1885(
+        ) -> None:
+    """`B(fn(@Pos -> @Pos) ...)` into `data Box<T> { B(fn(T -> T)) }`: the
+    polarity pin took the result's `Pos` for an `Int` and fixed `T` at the
+    base, so the closure was refused (E190) where every position wrote
+    `Pos`; main accepted it by the relaxed rule this change removes."""
+    source = _ALIASES + (
+        "type F = fn(Pos -> Pos) effects(pure);\n\n"
+        "private data Box<T> {\n  B(fn(T -> T) effects(pure))\n}\n\n"
+        + _fn("go(@Pos -> @Int)",
+              "let @Box<Pos> = B(fn(@Pos -> @Pos) effects(pure) { @Pos.0 });\n"
+              "  match @Box<Pos>.0 {\n    B(@F) -> apply_fn(@F.0, @Pos.0)\n  }",
+              visibility="public"))
+    assert pipeline.verify(source, reconcile=True).ok
+    assert pipeline.run(source, fn="go", args=[3]).execution.value == 3

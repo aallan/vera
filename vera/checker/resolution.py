@@ -165,6 +165,22 @@ class _Pins:
 
     found: list[_Pin] = field(default_factory=list)
     path: list[tuple[str, int]] = field(default_factory=list)
+    #: Every type the argument's function type gives each variable, at
+    #: every position it holds there (`written_once`).
+    met: dict[str, list[Type]] = field(default_factory=dict)
+
+    def written_once(self) -> list[_Pin]:
+        """The pins that stand: a variable every position of the argument
+        gives one refinement (`fn(@Pos -> @Pos)`) takes that type, the one
+        the program wrote, and pins nothing; the pin chooses between `Int`
+        and `Nat` only where the positions differ, and never widens a type
+        all of them state to its base (spec §4.2)."""
+        def written(var: str) -> bool:
+            types = self.met.get(var, [])
+            return (bool(types) and base_type(types[0]) != types[0]
+                    and all(same_type_and_facts(t, types[0])
+                            for t in types[1:]))
+        return [pin for pin in self.found if not written(pin.var)]
 
 
 def _record_pin(var: str, concrete: Type, polarity: int, pins: _Pins) -> None:
@@ -1246,7 +1262,7 @@ class ResolutionMixin:
             pins = _Pins()
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, conflicts, pins=pins)
-            pinned.extend((index, pin) for pin in pins.found)
+            pinned.extend((index, pin) for pin in pins.written_once())
             _bound_parts(param_ty, soft_ty, arg, given)
         self._settle_disagreement(given, mapping)
         from_context = self._expected_bindings(result_type, expected)
@@ -1508,6 +1524,7 @@ class ResolutionMixin:
         if isinstance(pattern, TypeVar):
             if pins is not None and polarity:
                 _record_pin(pattern.name, concrete, polarity, pins)
+                pins.met.setdefault(pattern.name, []).append(concrete)
             # Prefer concrete resolutions over fresh TypeVars (those named
             # with '$', e.g. T$1 from _fresh_typevar).
             #
