@@ -732,6 +732,7 @@ MARKED_FILES = (
     "test_lsp_positions_1788.py",
     "test_lsp_gate_status_1610.py",
     "test_narrower_closure_refused_1885.py",
+    "test_handler_value_guards_1542.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

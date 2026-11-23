@@ -1140,16 +1140,6 @@ _DISCLOSURE_FIXES: dict[str, str] = {
              "declare those effects on the function that applies it."),
 }
 
-#: The fix of a disclosure whose reason has a repair of its own, by reason.
-_REASON_FIXES: dict[str, str] = {
-    obligation_table.REASON_HANDLE_VALUE: (
-        "Produce the payload inside the handle and build the value outside "
-        "it: bind the handle's result with a `let` at the payload's type "
-        "and construct from that slot (`let @Int = handle[...] {...} in "
-        "{...}; Some(@Int.0)`), where the construction's store is checked "
-        "at run time."),
-}
-
 #: The warnings a disclosure replaces (each claims a runtime check), and the
 #: disclosures a guarded row's record replaces.
 _RUNTIME_CLAIM_CODES = frozenset({
@@ -1184,6 +1174,40 @@ def _source_component(source: obligation_table.Source) -> ast.Node | None:
         else:
             return None
     return node
+
+
+def _construction_skeleton(expr: ast.Expr) -> Iterator[ast.Expr]:
+    """The nodes a requirement on *expr*'s value reaches by the table's
+    hand-down: each value leaf (:func:`narrowing.value_leaves`) and, below a
+    construction, each component the construction stores (a constructor's
+    fields, an array literal's elements, a ``map_insert``'s key and value,
+    a ``set_add``'s element), read the same way."""
+    for leaf in narrowing.value_leaves(expr):
+        yield leaf
+        parts: tuple[ast.Expr, ...] = ()
+        if isinstance(leaf, ast.ConstructorCall):
+            parts = leaf.args
+        elif isinstance(leaf, ast.ArrayLit):
+            parts = leaf.elements
+        elif isinstance(leaf, ast.FnCall) and leaf.name in ("map_insert", "set_add"):
+            parts = leaf.args[1:]
+        for part in parts:
+            yield from _construction_skeleton(part)
+
+
+def _handle_value_skeleton(expr: ast.Expr) -> Iterator[ast.Expr]:
+    """The construction skeleton (:func:`_construction_skeleton`) of every
+    value a `handle` among *expr*'s joins yields: what the hand-down reaches
+    inside a handle, where the verifier's construction descent records
+    nothing of its own."""
+    arms = narrowing.flow_arms(expr)
+    if arms is None:
+        return
+    for arm in arms:
+        if isinstance(expr, ast.HandleExpr):
+            yield from _construction_skeleton(arm)
+        else:
+            yield from _handle_value_skeleton(arm)
 
 
 class ContractVerifier:
@@ -4247,14 +4271,15 @@ class ContractVerifier:
                 ret += [r for r in mine if r.path and r not in ret
                         and r.evaluation != obligation_table.RETURN
                         and obligation_table.ObligationTable._key(r.node) in tails]
-                # A value produced inside a `handle` body is held to the
+                # A value produced inside a `handle` is held to the
                 # requirement by the hand-down's rows, at the leaves and the
-                # constructions below them: the value's record is theirs.
+                # components of the constructions below them, where the
+                # construction descent records nothing of its own (it does
+                # not enter a handle, `_all_leaves_construct`): the value's
+                # record is theirs.
                 inner = {obligation_table.ObligationTable._key(n)
-                         for leaf in narrowing.value_leaves(node)
-                         for n in fold.walk(leaf)}
+                         for n in _handle_value_skeleton(node)}
                 ret += [r for r in mine if r not in ret
-                        and r.guard.reason == obligation_table.REASON_HANDLE_VALUE
                         and obligation_table.ObligationTable._key(r.node) in inner]
             if ret:
                 self._leaf_rows_branch = True
@@ -4311,7 +4336,7 @@ class ContractVerifier:
                 + f"No runtime check guards this site because {row.guard.reason}, "
                 "so a value that violates it is not caught at run time; the "
                 "verifier discloses it rather than claim a runtime check."),
-            fix=_REASON_FIXES.get(row.guard.reason) or _DISCLOSURE_FIXES.get(code, (
+            fix=_DISCLOSURE_FIXES.get(code, (
                 "Restate the obligation so the solver can prove it, or move "
                 "the fact to a site a runtime check guards.")),
             spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',

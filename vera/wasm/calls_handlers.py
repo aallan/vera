@@ -1949,11 +1949,16 @@ class CallsHandlersMixin:
         # `resume(v)` argument — the op's @T-typed RESULT at this call
         # site — so guard a narrowing resume value the same way
         # the closure-return guard works (`_compile_lifted_closure`'s
-        # analogue for the inlined clause).
+        # analogue for the inlined clause).  Both directions, as at the
+        # three write boundaries: the §2.6.5 predicate for a refined cell,
+        # whose row the table lists at the argument (#1542), then the sign.
         with self._evaluating(site):
             if call.name == "get":
                 resume_arg = self._tail_resume_arg(clause.body)
                 if resume_arg is not None:
+                    body_instrs = self._emit_state_write_refine_guard(
+                        body_instrs, entry.family_type_expr, resume_arg,
+                        "State get resume", env)
                     body_instrs = self._guard_nat_narrowing(
                         body_instrs, resume_arg)
             instructions.extend(body_instrs)
@@ -1989,7 +1994,9 @@ class CallsHandlersMixin:
         and a later reader binding it at the refinement reasoned from a
         predicate that does not hold.  The `Exn` `throw` payload has taken
         this guard since #1268; this is the same lowering at the boundary
-        beside it.
+        beside it.  A `get` clause's tail `resume(v)`, the operation's
+        result at the cell's type, takes it too (#1542): it was the one
+        handler position that ran the sign guard and not this one.
 
         Reads the cell's DECLARED type expression rather than
         `family_base`, which strips the refinement by design.  Returns
