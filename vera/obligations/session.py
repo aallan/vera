@@ -57,22 +57,27 @@ from vera.verifier import (
 
 def resolve_document_imports(
     program: ast.Program, file: str,
-) -> tuple[list[ResolvedModule], list[Diagnostic]]:
+) -> tuple[
+    list[ResolvedModule], list[Diagnostic],
+    dict[tuple[Path, tuple[str, ...]], Path],
+]:
     """Resolve *program*'s imports from the directory *file* lives in.
 
     The one rule for rooting a document's resolver, shared by
     :meth:`VerificationSession.verify_source` and the language server's
     own check (`vera.lsp.features.analyze`), so the two passes resolve the
     same modules — see the comment at the call in ``verify_source`` for why
-    a path-less document resolves none.  Returns the resolved modules and
-    the resolver's diagnostics.
+    a path-less document resolves none.  Returns the resolved modules, the
+    resolver's diagnostics, and the imports whose file it found and could
+    not read (:attr:`vera.resolver.ModuleResolver.unread`).
     """
     path = Path(file)
     parent = path.parent
     if (parent != Path(".") or path.is_file()) and parent.is_dir():
         resolver = ModuleResolver(_root=parent)
-        return resolver.resolve_imports(program, path), list(resolver.errors)
-    return [], []
+        resolved = resolver.resolve_imports(program, path)
+        return resolved, list(resolver.errors), resolver.unread
+    return [], [], {}
 
 
 @dataclass
@@ -231,7 +236,7 @@ class VerificationSession:
             # CWD.  `is_file()` separates them — a relative document that
             # exists on disk keeps its siblings, which keying on the parent
             # alone had silently taken away (PR #1282 review).
-            resolved_modules, resolver_errors = resolve_document_imports(
+            resolved_modules, resolver_errors, _ = resolve_document_imports(
                 program, file)
 
         from vera.checker import typecheck_with_artifacts

@@ -57,6 +57,22 @@ def _get_parser() -> Lark:
 _BYTE_ORDER_MARK = "\N{ZERO WIDTH NO-BREAK SPACE}"
 
 
+def _decode_utf8(raw: bytes, file: Optional[str]) -> str:
+    """*raw* as UTF-8, or E024 at the first byte that does not decode."""
+    try:
+        return raw.decode("utf-8")  # pragma: no mutate — equivalent: the codec name is case-insensitive
+    except UnicodeDecodeError as exc:
+        raise SourceEncodingError(
+            source_not_utf8(raw, exc.start, file)) from None
+
+
+def strip_byte_order_mark(text: str) -> str:
+    """*text* without a U+FEFF at its very start (#1790): editors write
+    it and the language has no use for it.  A U+FEFF anywhere else is a
+    character and stays."""
+    return text[1:] if text.startswith(_BYTE_ORDER_MARK) else text
+
+
 def decode_source(raw: bytes, file: Optional[str] = None) -> str:
     """*raw*, the bytes of a source file, as its text: UTF-8 (spec 1.1).
 
@@ -64,24 +80,41 @@ def decode_source(raw: bytes, file: Optional[str] = None) -> str:
     module resolver and so the language server's imports (#1666): bytes
     that are not UTF-8 raise :class:`SourceEncodingError`, E024, located at
     the first byte that does not decode.  A UTF-8 byte-order mark at the
-    very start is dropped (#1790): editors write it and the language has
-    no use for it, so every route that reads a file sees the text without
-    it.  A U+FEFF anywhere else is a character and stays.
+    very start is dropped (:func:`strip_byte_order_mark`), so every route
+    that reads a file sees the text without it.
     """
-    try:
-        text = raw.decode("utf-8")  # pragma: no mutate — equivalent: the codec name is case-insensitive
-    except UnicodeDecodeError as exc:
-        raise SourceEncodingError(
-            source_not_utf8(raw, exc.start, file)) from None
-    return text[1:] if text.startswith(_BYTE_ORDER_MARK) else text
+    return strip_byte_order_mark(_decode_utf8(raw, file))
+
+
+def normalize_line_ends(text: str) -> str:
+    """*text* with every line end a ``\\n``: ``\\r\\n`` and a lone ``\\r``
+    read as ``\\n``, as ``Path.read_text`` reads a file.  Only line ends
+    change, so every column is the column it was."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def source_text(text: str) -> str:
+    """The text the file reader gives for *text*, a source already decoded:
+    its leading byte-order mark dropped (:func:`strip_byte_order_mark`) and
+    every line end a ``\\n`` (:func:`normalize_line_ends`).
+
+    The one reading rule for the characters of a source: :func:`read_source`
+    applies it to a file's decoded bytes, and the language server to an
+    editor's buffer before the compiler sees it (#1788), so the compiler
+    reads the program `vera check` reads from the same bytes, with its lines
+    cut where the protocol cuts them (``\\n``, ``\\r\\n``, a lone ``\\r``).  A
+    buffer that begins with the mark holds it as its first character, so a
+    column on its first line is one further right in the buffer than in
+    this text (:class:`vera.lsp.convert.LineIndex`).
+    """
+    return normalize_line_ends(strip_byte_order_mark(text))
 
 
 def read_source(path: str | Path, file: Optional[str] = None) -> str:
     """The text of the source file at *path*, as every command reads one.
 
-    Its bytes through :func:`decode_source`, reported under *file* (the
-    path, by default), with universal newlines: ``\\r\\n`` and ``\\r`` read
-    as ``\\n``, as ``Path.read_text`` reads a file.
+    Its bytes as UTF-8, reported under *file* (the path, by default), read
+    by :func:`source_text`: the mark dropped and universal newlines.
 
     Raises:
         SourceEncodingError: If the file is not UTF-8 (E024).
@@ -89,9 +122,8 @@ def read_source(path: str | Path, file: Optional[str] = None) -> str:
             them).
     """
     path = Path(path)
-    text = decode_source(path.read_bytes(),
-                         file if file is not None else str(path))
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return source_text(_decode_utf8(path.read_bytes(),
+                                    file if file is not None else str(path)))
 
 
 def parse(source: str, file: Optional[str] = None) -> Tree[Any]:
