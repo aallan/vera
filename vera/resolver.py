@@ -289,7 +289,9 @@ class ModuleResolver:
             return None
 
         if mod_path in self._cache:
-            return self._cache[mod_path]
+            # Equivalent as None: resolve_imports emits each direct import
+            # from the cache, and the recursion discards the value.
+            return self._cache[mod_path]  # pragma: no mutate
         if ident in self._undecodable:
             # Read once and reported once; this import is placed by its
             # record (#1788).
@@ -424,8 +426,9 @@ class ModuleResolver:
             rel = file_path.resolve().relative_to(self._root.resolve())
         except ValueError:
             return None
+        # A file under the root has at least its own name as a part.
         parts = rel.with_suffix("").parts
-        if parts and all(_MODULE_NAME.fullmatch(p) for p in parts):
+        if all(_MODULE_NAME.fullmatch(p) for p in parts):
             return tuple(parts)
         return None
 

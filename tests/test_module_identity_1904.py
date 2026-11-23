@@ -544,11 +544,14 @@ def test_e015s_fix_changes_the_other_importer_when_only_that_works(
     assert check_json(entry) == []
 
 
-def _linked_pair(tmp: pathlib.Path, shadow: bool) -> pathlib.Path | None:
+def _linked_pair(tmp: pathlib.Path, shadow: bool,
+                 q_first: bool = False) -> pathlib.Path | None:
     """`x/p.vera` imports `x/lib.vera` as `lib`; `y/q.vera` imports `z`,
     `y/z.vera`, a hard link to the same file.  Neither path reaches the file
     from the other importer.  With *shadow*, `x/y/z.vera`, another file,
-    keeps the root path `y.z` from reaching it from `x/p.vera`."""
+    keeps the root path `y.z` from reaching it from `x/p.vera`.  With
+    *q_first*, the document imports `y.q` first, so `x/p.vera` meets the
+    conflict."""
     target = write(tmp, "x/lib.vera", "module lib;\n\n" + fn("word", "2"))
     (tmp / "y").mkdir()
     try:
@@ -559,7 +562,10 @@ def _linked_pair(tmp: pathlib.Path, shadow: bool) -> pathlib.Path | None:
         write(tmp, "x/y/z.vera", "module z;\n\n" + fn("word", "9"))
     write(tmp, "x/p.vera", "module x.p;\n\nimport lib(word);\n\n" + fn("wp", "word(())"))
     write(tmp, "y/q.vera", "module y.q;\n\nimport z(word);\n\n" + fn("wq", "word(())"))
-    return write(tmp, "main.vera", "import x.p(wp);\nimport y.q(wq);\n\n"
+    lines = ["import x.p(wp);", "import y.q(wq);"]
+    if q_first:
+        lines.reverse()
+    return write(tmp, "main.vera", "\n".join(lines) + "\n\n"
                  + main_fn(["wp(())", "wq(())"]))
 
 
@@ -623,3 +629,149 @@ def test_e014s_new_path_reaches_the_renamed_file_from_its_importer(
                                  new_import + "(", 1), encoding="utf-8")
     assert check_json(entry) == []
     assert pipeline.cli("run", entry).stdout.strip() == "21"
+
+
+# --- the hunt over the decisions: each cell kills a mutant that survived ----
+
+def _apply_e014(diag: dict, root: pathlib.Path) -> None:
+    """Rename the file E014's fix names and write the import it gives."""
+    old_file, new_file, new_import, old_import = _TICKS.findall(diag["fix"])[:4]
+    (root / old_file).rename(root / new_file)
+    here = pathlib.Path(diag["location"]["file"])
+    text = here.read_text(encoding="utf-8")
+    assert old_import + "(" in text, (here, old_import)
+    here.write_text(text.replace(old_import + "(", new_import + "(", 1), encoding="utf-8")
+
+
+def test_e014s_fix_names_the_first_free_path(tmp_path: pathlib.Path) -> None:
+    """The issue's tree, `main.vera` meeting the conflict: the fix renames
+    `lib.vera` to `lib2.vera`, the first suffix no file and no module takes."""
+    (d,) = check_json(_issue_tree(tmp_path, a_mid_first=True))
+    assert d["fix"].startswith(
+        "Give one of the two modules another path. Rename `lib.vera` to "
+        "`lib2.vera` and write `import lib2` here in place of `import lib`;"), d["fix"]
+
+
+@pytest.mark.parametrize(("taken", "expected"), [(range(2, 99), "lib99"),
+                                                 (range(2, 100), "lib_renamed")],
+                         ids=["lib99_free", "none_free"])
+def test_e014s_fix_skips_the_names_files_take(
+    tmp_path: pathlib.Path, taken: range, expected: str,
+) -> None:
+    """Each `libN.vera` beside the renamed file is taken; the fix gives the
+    first free suffix up to 99, and past it a name with no number."""
+    entry = _issue_tree(tmp_path, a_mid_first=True)
+    for n in taken:
+        write(tmp_path, f"lib{n}.vera", fn("word", "0"))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E014"]
+    assert f"`{expected}.vera` and write `import {expected}` here" in d["fix"], d["fix"]
+
+
+def test_e014s_fix_skips_a_path_a_module_is_bound_to(tmp_path: pathlib.Path) -> None:
+    """`b/p.vera` binds `lib2` to `b/lib2.vera`, which `main.vera`'s lookup
+    does not find: `lib2` is still taken in the program, so the fix gives
+    `lib3`, and applied, the program checks."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    write(tmp_path, "b/lib2.vera", fn("w3", "3"))
+    write(tmp_path, "b/p.vera", "import lib2(w3);\n\n" + fn("wp", "w3(())"))
+    entry = write(tmp_path, "main.vera",
+                  "import b.p(wp);\nimport a.mid(w2);\nimport lib(word);\n\n"
+                  + main_fn(["word(())", "w2(())", "wp(())"]))
+    (d,) = check_json(entry)
+    assert "`import lib3` here in place of `import lib`" in d["fix"], d["fix"]
+    _apply_e014(d, tmp_path)
+    assert check_json(entry) == []
+
+
+def test_e014s_fix_keeps_a_dotted_paths_prefix(tmp_path: pathlib.Path) -> None:
+    """`main.vera` binds `m.lib` to `m/lib.vera`; `x/p.vera`'s `m.lib` finds
+    `x/m/lib.vera`.  The renamed module's path keeps its `m.` prefix, and the
+    fix, applied, checks and runs."""
+    write(tmp_path, "m/lib.vera", fn("word", "1"))
+    write(tmp_path, "x/m/lib.vera", fn("word", "2"))
+    write(tmp_path, "x/p.vera", "import m.lib(word);\n\n" + fn("wp", "word(())"))
+    entry = write(tmp_path, "main.vera", "import m.lib(word);\nimport x.p(wp);\n\n"
+                  + main_fn(["word(())", "wp(())"]))
+    (d,) = check_json(entry)
+    assert "`x/m/lib2.vera` and write `import m.lib2` here" in d["fix"], d["fix"]
+    _apply_e014(d, tmp_path)
+    assert check_json(entry) == []
+    assert pipeline.cli("run", entry).stdout.strip() == "12"
+
+
+def test_e015s_fix_offers_no_root_path_that_is_not_a_module_path(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`x/lib.vera` and `y/z.vera` are symbolic links to `d/bad-name.vera`,
+    whose path from the root holds a name no module path can (`bad-name`):
+    no import reaches the file from both importers, so the fix offers
+    none."""
+    target = write(tmp_path, "d/bad-name.vera", fn("word", "2"))
+    for rel in ("x/lib.vera", "y/z.vera"):
+        (tmp_path / rel).parent.mkdir(parents=True)
+        try:
+            os.symlink(target, tmp_path / rel)
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform or account cannot make a symbolic link")
+    write(tmp_path, "x/p.vera", "import lib(word);\n\n" + fn("wp", "word(())"))
+    write(tmp_path, "y/q.vera", "import z(word);\n\n" + fn("wq", "word(())"))
+    entry = write(tmp_path, "main.vera", "import x.p(wp);\nimport y.q(wq);\n\n"
+                  + main_fn(["wp(())", "wq(())"]))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
+    assert "'d/bad-name.vera' is imported by two paths" in d["description"], d
+    assert "`import" not in d["fix"], d["fix"]
+
+
+def test_e015s_root_path_is_checked_from_this_importer(tmp_path: pathlib.Path) -> None:
+    """`_linked_pair` with `y.q` imported first: `x/p.vera` meets the
+    conflict, and the root path of the file it found, `x.lib`, reaches the
+    file from `y/q.vera` but not from `x/p.vera` (`x/x/lib.vera`, another
+    file, shadows it there), so no import is offered."""
+    entry = _linked_pair(tmp_path, shadow=False, q_first=True)
+    if entry is None:
+        pytest.skip("this filesystem cannot make a hard link")
+    write(tmp_path, "x/x/lib.vera", fn("word", "9"))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
+    assert pathlib.Path(d["location"]["file"]).name == "p.vera", d
+    assert "`import" not in d["fix"], d["fix"]
+
+
+def test_e015s_fix_prefers_changing_this_import(tmp_path: pathlib.Path) -> None:
+    """`lib.vera` and `alias.vera` are one file (two hard links) beside both
+    importers, so each path reaches it from both: the fix changes this
+    import, the one that met the conflict, and not the other importer's."""
+    target = write(tmp_path, "lib.vera", fn("word", "2"))
+    try:
+        os.link(target, tmp_path / "alias.vera")
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem cannot make a hard link")
+    write(tmp_path, "m.vera", "import alias(word);\n\n" + fn("wm", "word(())"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\nimport m(wm);\n\n"
+                  + main_fn(["word(())", "wm(())"]))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
+    assert "write `import lib` here in place of `import alias`" in d["fix"], d["fix"]
+    _apply_import_edit(d, tmp_path)
+    assert check_json(entry) == []
+
+
+def test_a_document_named_relative_to_the_working_directory(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The project root is the entry's directory as the command line names
+    it, here `.`; the diagnostics name files from it, and the root path is
+    found, as for an absolute entry."""
+    one = tmp_path / "one"
+    _issue_tree(one, a_mid_first=True)
+    two = tmp_path / "two"
+    linked = _linked_pair(two, shadow=False)
+    for root in (one,) + ((two,) if linked is not None else ()):
+        absolute = check_json(root / "main.vera")
+        monkeypatch.chdir(root)
+        relative = check_json(pathlib.Path("main.vera"))
+        keep = ("error_code", "description", "fix")
+        assert ([{k: d[k] for k in keep} for d in relative]
+                == [{k: d[k] for k in keep} for d in absolute]), relative
+    if linked is not None:
+        assert "`import y.z`" in relative[0]["fix"], relative
