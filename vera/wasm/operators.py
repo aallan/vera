@@ -92,7 +92,7 @@ class OperatorsMixin:
         # never reached, and repairs nothing.
         lnothing = self._holds_nothing(expr.left)
         right_never = self._holds_nothing(expr.right) == "never"
-        rnothing = lnothing if right_never else self._holds_nothing(expr.right)
+        rnothing = lnothing if right_never else self._holds_nothing(expr.right)  # pragma: no mutate — equivalent: the value is read only where the left holds a `Unit`, and the checker gives a comparison two operands of one type (measured: of 2,507 binary lowerings, in both instruments at --matrix=full and every corpus program, 28 had operands that differ in what they hold, each a `Never` left of `&&`, `||` or `==>`)
         if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E140, E142, E143, E144, E145)
                 and rnothing == "unit"):
             # Two values of a type with no WebAssembly value (`Unit`, a
@@ -230,8 +230,8 @@ class OperatorsMixin:
         if op in self._CMP_OPS:
             # A `Never` right operand reads as the left (see the top of
             # this function): a width for code never reached.
-            rtype = ltype if right_never else self._expr_width(expr.right)
-            if ltype == "f64" or rtype == "f64":
+            rtype = ltype if right_never else self._expr_width(expr.right)  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so a right operand that is not `Never` reads as the left does (measured: of 1,324 comparisons dispatched by width, in both instruments at --matrix=full and every corpus program, none had operands of two widths)
+            if ltype == "f64" or rtype == "f64":  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so a right operand that is not `Never` reads as the left does (measured: of 1,324 comparisons dispatched by width, in both instruments at --matrix=full and every corpus program, none had operands of two widths)
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison
             if (ltype == "i32_pair" and rtype == "i32_pair"

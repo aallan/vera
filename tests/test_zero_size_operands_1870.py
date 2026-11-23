@@ -621,6 +621,14 @@ def _runs(statements: str, stdout: str, before: str = "") -> None:
     assert_cell(program(statements, before=before), Expect(stdout=stdout))
 
 
+def test_repro_an_inequality_of_refined_unit_values_in_a_requires() -> None:
+    """The verifier's rule covers `!=` as well as `==`: the two calls'
+    stand-in terms are never left to the solver to pick apart."""
+    source = _operator_program("!=", "U", "requires")
+    assert source is not None
+    assert_cell(source, _operator_expect("!=", "requires"))
+
+
 def test_repro_unit_inequality_is_false() -> None:
     _runs('  let @Bool = () != ();\n'
           '  IO.print(if @Bool.0 then { "T" } else { "F" })', "F")
@@ -1081,7 +1089,10 @@ def test_repro_an_alias_of_a_future_is_read_through() -> None:
 #: a form stands inside a string interpolation as well as anywhere else.
 NEVER_FORMS: dict[str, str] = {
     "throw": "throw(m(1))",
-    "if": "if true then { throw(m(1)) } else { throw(m(2)) }",
+    # A thrown value that allocates: its code is wrapped in the shadow
+    # stack's save and restore, so it ends in the restore, not the `throw`.
+    "throw-allocating": "throw(string_concat(m(1), m(2)))",
+    "if":"if true then { throw(m(1)) } else { throw(m(2)) }",
     "match-one-arm": "match 1 { _ -> throw(m(1)) }",
     "match-two-arms": "match 1 { 0 -> throw(m(1)), _ -> throw(m(2)) }",
     "block": "{ let @Int = 1; throw(m(1)) }",
@@ -1387,3 +1398,33 @@ def test_repro_a_unit_equality_reads_its_operands_slots() -> None:
               + MAIN_HEAD
               + '  IO.print(if same(1) then { "T" } else { "F" })\n}\n')
     assert_cell(source, Expect(stdout="T"))
+
+
+def test_repro_a_zero_size_match_takes_its_first_arm() -> None:
+    """Every pattern over a zero-size value matches it, so the first arm
+    is the match, never a later one."""
+    _runs('  IO.print(match IO.print("a") { _ -> "T", _ -> "F" })', "aT")
+
+
+def test_repro_a_zero_size_match_arm_reads_the_function_s_slots() -> None:
+    """The arm is translated in the function's own environment."""
+    source = (PROLOGUE
+              + "private fn g(@Int -> @Int)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n"
+              "  match () { _ -> @Int.0 + 1 }\n}\n\n"
+              + MAIN_HEAD + "  IO.print(int_to_string(g(41)))\n}\n")
+    assert_cell(source, Expect(stdout="42"))
+
+
+def test_repro_a_zero_size_match_arm_keeps_its_nat_guard() -> None:
+    """A `Nat` return whose value is the arm of a zero-size match keeps the
+    guard on that leaf: a negative value traps rather than returning."""
+    source = (PROLOGUE
+              + "public fn h(@Int -> @Nat)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n"
+              "  match () { _ -> @Int.0 }\n}\n\n"
+              + MAIN_HEAD + "  IO.print(\"x\")\n}\n")
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.error_code for d in compiled.diagnostics]
+    assert pipeline.run(compiled, fn="h", args=[5]).ok
+    assert not pipeline.run(compiled, fn="h", args=[-1]).ok

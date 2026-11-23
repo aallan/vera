@@ -581,6 +581,10 @@ def _empty_completion_error(
     )
 
 
+#: The letters before which an expected type's name takes `an`.
+_VOWELS = "aeiou"  # pragma: no mutate — equivalent: the letter looked up is lower-cased, so the capitals `XX` adds match nothing
+
+
 def _missing_or_wrong(
     container: object,
     field: str,
@@ -609,7 +613,7 @@ def _missing_or_wrong(
             f"no '{field}' {expected} in the {where}; "
             f"{where} keys: {_describe_keys(container, held=held)}"
         )
-    article = "an" if expected[:1].lower() in "aeiou" else "a"
+    article = "an" if expected[:1].lower() in _VOWELS else "a"
     return (
         f"'{field}' is {type(container[field]).__name__}, "
         f"not {article} {expected}"

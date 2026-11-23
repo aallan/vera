@@ -25,8 +25,9 @@ import email.message
 import io
 import json
 import random
+import re
 import urllib.error
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -455,8 +456,6 @@ def test_repro_a_cut_inside_a_character_s_escape() -> None:
 def test_the_cost_is_bounded_by_the_text_and_the_key() -> None:
     """A 200-character key over 64 KiB bodies a hostile provider could
     choose, its own key among them: each redaction stays in milliseconds."""
-    import time
-
     key = (KEY * 5)[:196] + '&/"\\'
     escaped = "".join(f"\\u{ord(c):04x}" for c in key)
     n = _ERROR_BODY_CAP
@@ -465,10 +464,10 @@ def test_the_cost_is_bounded_by_the_text_and_the_key() -> None:
               (key * (n // len(key) + 1))[:n],
               (key[:-1] * (n // len(key) + 1))[:n],
               (escaped * (n // len(escaped) + 1))[:n]]
+    held = inference.HeldKeys((key,))
     for body in bodies:
-        started = time.perf_counter()
-        inference._redact_cut(body, held=inference.HeldKeys((key,)))
-        assert time.perf_counter() - started < 0.5, body[:20]
+        cost = _cost(lambda: inference._redact_cut(body, held=held))
+        assert cost < COST_BOUND_S, (body[:20], cost)
 
 
 def test_repro_a_key_holding_a_credential_shaped_part_cut_inside_it() -> None:
@@ -808,14 +807,39 @@ def test_every_redaction_takes_the_one_held_set() -> None:
 # rule is a pattern or a scan over that text: the whole-key matcher, the
 # per-character first-form matcher and the cut matcher (`_key_patterns`),
 # the credential pattern, and the credential tail at a cut.  Each rule's
-# worst body is built for the way it searches, and each redaction over it
-# is held to a bound.  The rules are linear in the body (the key's own
-# length bounds the work at each place), and a linear pass over 64 KiB takes
-# a few milliseconds here; the bound is half a second, two orders above
-# that, so a slow runner passes, and a quadratic rule, which takes seconds
-# over 64 KiB, does not.
+# worst body is built for the way it searches.
+#
+# The clock cannot tell the quadratic tail from a slow runner.  Measured
+# here (23 Nov, two runs, each one untimed run then the best of three),
+# every body of the cost tests takes 0.04 to 9.6 ms at the head (slowest:
+# the key's prefix repeated, cut, with every provider's key held); with the
+# tail searched from the text's start (the form before the fourth review),
+# the one body that shows it, `key-` repeated then a space, takes 1.91 to
+# 1.97 s, and every other body is within a millisecond of its head
+# reading.  A bound 30 times above the slowest linear reading (0.29 s) is
+# not 10 times below the quadratic one (0.19 s).
+# A required check on a Windows runner read 1.48 s for a 64 KiB body that
+# takes 28 ms here.  So the bound below holds every rule to well under a
+# second, 50 times the slowest reading here, and decides nothing about the
+# tail's order: the tail's own test counts what the scan reads
+# (`test_the_credential_tail_reads_only_the_run_that_ends_the_text`).
 
 COST_BOUND_S = 0.5
+
+
+def _cost(call: Callable[[], object]) -> float:
+    """The seconds *call* takes: one untimed run first (it compiles the
+    patterns a key needs, a cost paid once per key), then the best of
+    three timed runs, so one reading on a loaded runner decides nothing."""
+    import time
+
+    call()
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        call()
+        best = min(best, time.perf_counter() - started)
+    return best
 
 
 def _bodies_worst_for_each_rule(key: str) -> dict[str, str]:
@@ -848,16 +872,11 @@ def _bodies_worst_for_each_rule(key: str) -> dict[str, str]:
 @pytest.mark.parametrize("cut", [False, True], ids=["whole", "cut"])
 @pytest.mark.parametrize("body", sorted(_bodies_worst_for_each_rule(KEY)))
 def test_every_rule_is_linear_in_the_body(body: str, cut: bool) -> None:
-    import time
-
     text = _bodies_worst_for_each_rule(KEY)[body]
     held = _largest_held_set()
-    started = time.perf_counter()
-    if cut:
-        inference._redact_cut(text, held=held)
-    else:
-        inference._redact(text, held=held)
-    assert time.perf_counter() - started < COST_BOUND_S, body
+    redact = inference._redact_cut if cut else inference._redact
+    cost = _cost(lambda: redact(text, held=held))
+    assert cost < COST_BOUND_S, (body, cost)
 
 
 def _largest_held_set() -> inference.HeldKeys:
@@ -871,16 +890,79 @@ def _largest_held_set() -> inference.HeldKeys:
     return held
 
 
-def test_repro_the_credential_tail_over_a_body_at_the_cap() -> None:
-    """The fourth review's instance: `key-` repeated to the cap, then a
-    space.  The tail search tried every start and ran each to the space."""
-    import time
+class _CountedText(str):
+    """A text that counts the characters read from it by index."""
 
+    reads = 0
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def, override]
+        self.reads += 1
+        return str.__getitem__(self, index)
+
+
+class _CountedSearches:
+    """A stand-in for a compiled pattern, or for the `re` module, that
+    counts the characters each search may read: from where it starts to
+    the end of the text."""
+
+    def __init__(self, inner: object) -> None:
+        self.inner = inner
+        self.reach = 0
+
+    def search(self, *args: object) -> object:
+        if isinstance(self.inner, re.Pattern):
+            text, pos = args[0], (args[1] if len(args) > 1 else 0)
+        else:
+            text, pos = args[1], 0
+        assert isinstance(text, str) and isinstance(pos, int)
+        self.reach += len(text) - pos
+        return self.inner.search(*args)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.inner, name)
+
+
+def _tail_reads(text: str, monkeypatch: pytest.MonkeyPatch) -> int:
+    """The characters `_credential_tail` reads from *text*: each read by
+    index, and each a search may read from where it starts to the end."""
+    counted = _CountedText(text)
+    prefix = _CountedSearches(inference._CREDENTIAL_PREFIX_RE)
+    module = _CountedSearches(re)
+    with monkeypatch.context() as m:
+        m.setattr(inference, "_CREDENTIAL_PREFIX_RE", prefix)
+        m.setattr(inference, "re", module)
+        inference._credential_tail(counted)
+    return counted.reads + prefix.reach + module.reach
+
+
+def _trailing_run(text: str) -> int:
+    """The length of the run of token characters that ends *text*."""
+    return len(text) - len(text.rstrip(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"))
+
+
+@pytest.mark.parametrize("body", sorted(_bodies_worst_for_each_rule(KEY)))
+def test_the_credential_tail_reads_only_the_run_that_ends_the_text(
+        body: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A token's start at a cut lies in the run of token characters that
+    ends the text, so the tail rule reads that run and the character
+    before it, at most twice (the scan back, the prefix search forward),
+    and nothing else of a body a provider chose.  Searching the whole text
+    reads all of it from every start: quadratic in a run."""
+    text = _bodies_worst_for_each_rule(KEY)[body]
+    run = _trailing_run(text)
+    assert _tail_reads(text, monkeypatch) <= 2 * (run + 1), (body, run)
+
+
+def test_repro_the_credential_tail_over_a_body_at_the_cap(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fourth review's instance: `key-` repeated to the cap, then a
+    space.  The tail search tried every start and ran each to the space
+    (1.9 s here); the scan reads the space alone."""
     text = ("key-" * (_ERROR_BODY_CAP // 4)) + " "
-    started = time.perf_counter()
-    assert inference._redact_cut(text, held=inference.HeldKeys(("",))) == text.replace(
-        text[:-1], "[redacted]")
-    assert time.perf_counter() - started < COST_BOUND_S
+    held = inference.HeldKeys(("",))
+    assert inference._redact_cut(text, held=held) == "[redacted] "
+    assert _tail_reads(text, monkeypatch) <= 2, _tail_reads(text, monkeypatch)
 
 
 def test_repro_the_credential_tail_is_the_trailing_run_s_leftmost_token() -> None:
@@ -1048,3 +1130,95 @@ def test_repro_an_unselected_held_key_split_by_each_cut() -> None:
                                env_vars=_two_key_env(), capture_stderr=False)
         assert ran.ok, ran.trap
         assert_no_part_of(UNSELECTED, ran.stdout)
+
+
+# --- Each message's whole text, by the route that builds it -----------------
+#
+# Killers for the mutation lane's survivors at 004a6dd3: each asserts a
+# message whole, so a changed word, a dropped argument or a branch taken the
+# other way is red.
+
+def _openai_reply(body: bytes) -> str:
+    """The message `_call_inference_provider` gives for an OpenAI-style
+    reply of *body*, with the model `m`."""
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    with patch("urllib.request.urlopen", MagicMock(return_value=resp)):
+        with pytest.raises(InferenceError) as raised:
+            inference._call_inference_provider(
+                "openai", "hi", "m", "k", held=inference.NO_KEYS)
+    return str(raised.value)
+
+
+def test_repro_each_shape_report_s_whole_text() -> None:
+    head = "Inference provider 'openai' (m) returned no completion text ("
+    for body, detail in (
+            (b'{"choices": []}', "the 'choices' list is empty"),
+            (b"{}", "no 'choices' list in the response; response keys: "
+                    "(no keys)"),
+            (b'{"choices": 1}', "'choices' is int, not a list"),
+            (b'{"choices": [1]}', "the first choice is int, not an object"),
+            (b'{"choices": [{"message": {"content": 5}}]}',
+             "'content' is int, not a string or list of parts"),
+            (b'{"choices": [{"message": {}}]}',
+             "no 'content' string or list of parts in the message; "
+             "message keys: (no keys)")):
+        assert _openai_reply(body) == head + detail + ").", body
+
+
+def test_repro_the_renderers_whole_text() -> None:
+    held = inference.NO_KEYS
+    assert inference._describe_keys({"a": 1, "b": 2}, held=held) == "a, b"
+    assert inference._describe_types(
+        [{"type": "x"}, {"type": "y"}], held=held) == "x, y"
+    assert inference._missing_or_wrong(
+        {"x": 1}, "x", "object", held=held) == "'x' is int, not an object"
+    assert inference._missing_or_wrong(
+        {"x": 1}, "x", "list", held=held) == "'x' is int, not a list"
+
+
+def test_repro_an_error_body_s_detail_by_its_shape() -> None:
+    held = inference.NO_KEYS
+    for body, detail in (
+            (b'{"error": {"message": "bad"}}', "bad"),
+            (b'{"error": "worse"}', "worse"),
+            (b'{"message": "m"}', "m"),
+            (b'{"error": {"code": 1}}', '{"error": {"code": 1}}'),
+            (b'{"error": ""}', '{"error": ""}'),
+            (b"<html>", "<html>")):
+        assert inference._error_body_detail(body, held=held) == detail, body
+
+
+@pytest.mark.usefixtures("local_endpoints")
+def test_repro_the_host_sends_the_program_s_prompt_and_model() -> None:
+    seen: list[bytes] = []
+
+    def capture(req: urllib.request.Request, timeout: float) -> None:
+        seen.append(req.data)
+        raise urllib.error.URLError("stop")
+
+    env = {inference._PROVIDERS["openai"].env_key: "k" + "0" * 9,
+           "VERA_INFERENCE_PROVIDER": "openai",
+           "VERA_INFERENCE_MODEL": "m-1"}
+    with patch("urllib.request.urlopen", side_effect=capture):
+        ran = pipeline.run(_compile_ok(_SOURCE), env_vars=env,
+                           capture_stderr=False)
+    assert ran.ok, ran.trap
+    (data,) = seen
+    sent = json.loads(data)
+    assert sent["model"] == "m-1"
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_repro_no_provider_configured_names_every_variable() -> None:
+    names = ", ".join(c.env_key for c in inference._PROVIDERS.values())
+    expected = f"No inference provider configured. Set {names}."
+    ran = pipeline.run(_compile_ok(_SOURCE), env_vars={},
+                       capture_stderr=False)
+    assert ran.stdout == expected, ran.stdout
+    # With no environment handed in, the host reads the process's own.
+    with patch.dict("os.environ", {}, clear=True):
+        ran = pipeline.run(_compile_ok(_SOURCE), capture_stderr=False)
+    assert ran.stdout == expected, ran.stdout
