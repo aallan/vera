@@ -1906,24 +1906,41 @@ def test_repro_a_header_whose_body_reads_no_joined_slot_keeps_it_1885(
 # Outside the narrowing: two judges still pass a misfit that is none
 # =====================================================================
 
-_FIT = ("a judge that fits a function value by the join or by a binder's "
-        "relatedness passes an effect row, a parameter's base type or an "
-        "arity that does not fit: ISSUE_FIT")
+_FIT = ("a binding position judged outside `is_subtype` (the join used as "
+        "a fit, a `match` binder's either-direction relatedness) admits a "
+        "type a `let` refuses: an effect row, a type variable: #1896")
 
 
 @pytest.mark.xfail(strict=True, reason=_FIT)
-def test_repro_a_binder_at_a_pure_type_of_an_io_function_is_refused() -> None:
-    """`match @IOF.0 { @W -> apply_fn(@W.0, @Int.0) }`: an `<IO>` function
-    bound at a pure function type, accepted and run from a function
-    declared `effects(pure)`, at main too; the `let` of it is E170."""
+def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
+    """`@Option<W>` over an `Option<IOF>`: the either-direction test holds
+    (`Option<W>` fits `Option<IOF>`), so the binder takes an `<IO>`
+    function at a pure type, and the run prints from a function declared
+    `effects(pure)`, with no `E542`; at main too."""
     source = (
-        "type IOF = fn(Int -> Int) effects(<IO>);\n"
-        "type W = fn(Int -> Int) effects(pure);\n\n"
-        + _fn("run(@IOF, @Int -> @Int)",
-              "match @IOF.0 {\n    @W -> apply_fn(@W.0, @Int.0)\n  }")
+        "type W = fn(Int -> Int) effects(pure);\n"
+        "type IOF = fn(Int -> Int) effects(<IO>);\n\n"
+        + _fn("run(@Option<IOF> -> @Int)",
+              "match @Option<IOF>.0 {\n    @Option<W> -> match @Option<W>.0 "
+              "{\n      Some(@W) -> apply_fn(@W.0, 5),\n      None -> 0\n    }"
+              "\n  }")
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
-        "  effects(<IO>)\n{\n  run(fn(@Int -> @Int) effects(<IO>) {\n"
-        "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 5)\n}\n")
+        "  effects(<IO>)\n{\n  run(Some(fn(@Int -> @Int) effects(<IO>) "
+        "{ IO.print(\"leak\\n\"); @Int.0 }))\n}\n")
+    assert not pipeline.check(source).ok
+
+
+@pytest.mark.xfail(strict=True, reason=_FIT)
+def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
+    """`@Option<Int>` over an `Option<T>` inside `forall<T>`: the binder
+    takes a concrete type no instantiation is held to, and `Some("abc")`
+    returns 4; at main too.  The `let` of it is E170."""
+    source = (
+        _fn("run(@Option<T> -> @Int)",
+            "match @Option<T>.0 {\n    @Option<Int> -> "
+            "option_unwrap_or(@Option<Int>.0, 0) + 1\n  }").replace(
+                "private fn", "private forall<T> fn")
+        + _fn("main(@Unit -> @Int)", 'run(Some("abc"))', visibility="public"))
     assert not pipeline.check(source).ok
 
 
