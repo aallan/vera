@@ -229,6 +229,8 @@ _REGISTRY_FILES = {
     **{path: ("# A document\n\n<!-- render_lists:begin reserved-names -->\n"
               "- stale\n<!-- render_lists:end reserved-names -->\n")
        for path in RL.RESERVED_TARGETS},
+    RL.COMMANDS_TARGET: ("# The toolchain\n\n<!-- render_lists:begin command-options -->\n"
+                         "| stale |\n<!-- render_lists:end command-options -->\n"),
 }
 
 _ALL_FILES = {**_EFFECT_FILES, **_DOCS, **_REGISTRY_FILES}
@@ -793,7 +795,7 @@ class TestCheckAndWrite:
         data = RL.load_limitations(ROOT)
         assert not isinstance(data, list), data
         expected = (len(RL.EFFECT_TARGETS) + len(data.tables) + 1
-                    + len(RL.SIGNATURE_BLOCKS) + len(RL.RESERVED_TARGETS))
+                    + len(RL.SIGNATURE_BLOCKS) + len(RL.RESERVED_TARGETS) + 1)
         assert len({(b.path, b.name) for b in blocks}) == len(blocks) == expected
 
 
