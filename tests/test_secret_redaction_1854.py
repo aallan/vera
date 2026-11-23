@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import dataclasses
 import email.message
-import html
 import io
 import json
 import random
@@ -313,23 +312,18 @@ def test_a_key_holding_a_line_end_is_refused_by_its_variable(
         assert_no_part_of(KEY, ran.stdout)
 
 
-# --- Every rule on the original text, by key shape, spelling and split -------
+# --- Every rule on the original text, by key shape, form and split ----------
 
 #: The shapes a configured key takes: plain (no recognisable prefix); one
 #: holding a credential-shaped part, which the pattern rule also matches;
-#: one holding a backslash, which `repr` escapes, so it has two spellings;
-#: and a short one.
+#: a short one; and one holding every character a quoting layer re-spells
+#: by a table of its own (`"`, `\`, `/`, `'`, `&`, `<`, `>`).
 KEY_SHAPES: dict[str, str] = {
     "plain": KEY,
     "credential-part": KEY[:12] + "-sk-" + KEY[12:20] + "-" + KEY[20:26],
-    "backslash": KEY[:15] + "\\" + KEY[15:30],
     "short": KEY[30:36],
-    "quote": KEY[:10] + '"' + KEY[10:24],
-    "solidus": KEY[:8] + "/" + KEY[8:20],
-    "markup": KEY[:6] + "&<>'" + KEY[6:16],
-    # Each layer spells this one differently: `repr` escapes the
-    # apostrophe, JSON the quote, and JSON may or may not escape the solidus.
-    "every-quote": KEY[:4] + "'" + KEY[4:8] + '"' + KEY[8:12] + "/" + KEY[12:18],
+    "special": KEY[:4] + '"' + KEY[4:7] + "\\" + KEY[7:10] + "/" + KEY[10:12]
+               + "'" + KEY[12:14] + "&<>" + KEY[14:18],
 }
 
 #: A fragment of the key no longer than this may stand in a message: the
@@ -339,45 +333,53 @@ KEY_SHAPES: dict[str, str] = {
 #: at the cut, so nothing longer is left for this floor to excuse.
 FLOOR = 3
 
-
-def _spellings(key: str) -> dict[str, str]:
-    """The key under each quoting layer that can stand between a provider
-    and the message, each spelling once: as it is, Python's `repr` (an
-    exception's text), a JSON string (an error body), with the solidus
-    escaped too (JSON allows it), and an HTML page (a proxy's), with the
-    apostrophe as `&#x27;` and as `&#39;`."""
-    js = json.dumps(key)[1:-1]
-    htm = html.escape(key, quote=True)
-    named = {
-        "raw": key, "repr": repr(key)[1:-1], "json": js,
-        "json-solidus": js.replace("/", "\\/"), "html": htm,
-        "html-decimal": htm.replace("&#x27;", "&#39;"),
-    }
-    seen: dict[str, str] = {}
-    for name, text in named.items():
-        if text not in seen.values():
-            seen[name] = text
-    return seen
+_HTML_NAMES = {"&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos"}
 
 
-def test_the_redaction_knows_every_spelling() -> None:
-    """`_key_spellings` gives each spelling this file names, for every
-    shape, and no other."""
-    for key in KEY_SHAPES.values():
-        assert set(inference._key_spellings(key)) == set(
-            _spellings(key).values()), key
+def char_forms(char: str) -> list[str]:
+    """Every form a quoting layer may give *char* on its own: the character;
+    a backslash before it where JSON or `repr` writes one; JSON's `\\uXXXX`
+    and `repr`'s `\\xXX`, hex digits in either case; HTML's decimal and hex
+    entities, with and without leading zeros, and its named one."""
+    code = ord(char)
+    forms = [char]
+    if char in "\"\\/'":
+        forms.append("\\" + char)
+    forms += [f"\\u{code:04x}", f"\\u{code:04X}", f"\\x{code:02x}",
+              f"\\x{code:02X}", f"&#{code};", f"&#00{code};", f"&#x{code:x};",
+              f"&#X{code:X};", f"&#x00{code:x};"]
+    if char in _HTML_NAMES:
+        forms.append(f"&{_HTML_NAMES[char]};")
+    return forms
 
 
-def _fragments(key: str) -> set[str]:
-    """Every run of any spelling of *key* longer than :data:`FLOOR`."""
-    return {
-        spelling[i:i + FLOOR + 1]
-        for spelling in _spellings(key).values()
-        for i in range(len(spelling) - FLOOR)
-    }
+#: How a key is spelled, each occurrence of a character choosing its own
+#: form: the two corners (no character quoted; every character as JSON's
+#: `\uXXXX`), and three seeded draws, pinned by their seeds.
+SPELLING_SEEDS = (1, 2, 3)
+
+
+def spellings(key: str) -> dict[str, str]:
+    named = {"none": key,
+             "all": "".join(f"\\u{ord(c):04x}" for c in key)}
+    for seed in SPELLING_SEEDS:
+        rng = random.Random(f"{key}:{seed}")
+        named[f"drawn{seed}"] = "".join(
+            rng.choice(char_forms(c)) for c in key)
+    return named
+
+
+def _fragments(key: str, text: str) -> set[str]:
+    """Every run longer than :data:`FLOOR` of the key, and of *text*, a
+    spelling of it."""
+    return {s[i:i + FLOOR + 1] for s in (key, text)
+            for i in range(len(s) - FLOOR)}
 
 
 def _split_positions(spelling: str) -> list[tuple[str, int]]:
+    """Where the spelling stands against the cap: wholly before it, ending
+    at it, across it at every split (inside a character's form among
+    them), wholly after it."""
     n = len(spelling)
     return [("wholly-before", _ERROR_BODY_CAP - n - 1),
             ("ending-at-the-cap", _ERROR_BODY_CAP - n),
@@ -389,7 +391,7 @@ SPLIT_CELLS = [
     pytest.param(shape, spelling, name, start,
                  id=f"{shape}-{spelling}-{name}")
     for shape, key in KEY_SHAPES.items()
-    for spelling, text in _spellings(key).items()
+    for spelling, text in spellings(key).items()
     for name, start in _split_positions(text)
 ]
 
@@ -399,11 +401,74 @@ def test_every_split_of_every_spelling_of_every_key_shape(
     shape: str, spelling: str, name: str, start: int,
 ) -> None:
     key = KEY_SHAPES[shape]
-    text = _spellings(key)[spelling]
+    text = spellings(key)[spelling]
     body = b" " * start + text.encode() + b" tail" * 8
     message = _message("mistral", key, raises=_http_error(body))
-    found = sorted(f for f in _fragments(key) if f in message)
+    found = sorted(f for f in _fragments(key, text) if f in message)
     assert not found, (found, message)
+
+
+def test_every_form_of_every_printable_character() -> None:
+    """Each form of each character a key can hold (printable ASCII), on its
+    own inside a key, is redacted whole."""
+    for code in range(0x20, 0x7F):
+        char = chr(code)
+        key = "Qz" + char + "Zq"
+        for form in char_forms(char):
+            text = f" Qz{form}Zq "
+            assert inference._redact(text, key) == " [redacted] ", (form, key)
+
+
+def test_repro_a_mixed_solidus_escape() -> None:
+    """One solidus escaped and the next not, as JSON allows."""
+    key = "Opaque/First/Second"
+    assert inference._redact("x Opaque\\/First/Second y", key) == (
+        "x [redacted] y")
+
+
+def test_repro_a_unicode_escape_of_a_printable_character() -> None:
+    assert inference._redact("x Opaque\\u0026Second y", "Opaque&Second") == (
+        "x [redacted] y")
+
+
+def test_repro_a_unicode_escape_of_the_first_character_at_a_cut() -> None:
+    """`\\u004F` for the key's first `O`, `\\"` for its quote, cut after
+    `Credential`."""
+    key = 'Opaque"CredentialRemainder'
+    assert inference._redact_cut(' \\u004Fpaque\\"Credential', key) == (
+        " [redacted]")
+
+
+def test_repro_a_cut_inside_a_character_s_escape() -> None:
+    """The cut ends inside the next character's form: `\\u002` goes with
+    the prefix before it, and so does a form of the first character alone."""
+    key = "Opaque&Second"
+    assert inference._redact_cut(" Opaque\\u002", key) == " [redacted]"
+    assert inference._redact_cut(" \\u00", key) == " [redacted]"
+    assert inference._redact_cut(" Opaque&am", key) == " [redacted]"
+    # Negative space: a form that is no start of the first character's
+    # (`O` is `O`, never `\u01..`).
+    assert inference._redact_cut(" plain end\\u01", key) == (
+        " plain end\\u01")
+
+
+def test_the_cost_is_bounded_by_the_text_and_the_key() -> None:
+    """A 200-character key over 64 KiB bodies a hostile provider could
+    choose, its own key among them: each redaction stays in milliseconds."""
+    import time
+
+    key = (KEY * 5)[:196] + '&/"\\'
+    escaped = "".join(f"\\u{ord(c):04x}" for c in key)
+    n = _ERROR_BODY_CAP
+    bodies = ["\\" * n, "\\\\" * (n // 2), "&amp;" * (n // 5),
+              "\\u0041" * (n // 6), "\\u00" * (n // 4),
+              (key * (n // len(key) + 1))[:n],
+              (key[:-1] * (n // len(key) + 1))[:n],
+              (escaped * (n // len(escaped) + 1))[:n]]
+    for body in bodies:
+        started = time.perf_counter()
+        inference._redact_cut(body, key)
+        assert time.perf_counter() - started < 0.5, body[:20]
 
 
 def test_repro_a_key_holding_a_credential_shaped_part_cut_inside_it() -> None:

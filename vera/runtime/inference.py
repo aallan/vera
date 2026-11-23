@@ -6,6 +6,7 @@ provider registry and HTTP call helper, which are used only by this family.
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -174,46 +175,127 @@ def _truncate(text: str) -> str:
 _CREDENTIAL_RE = re.compile(r"(?:sk|key|token|xai)[-_][A-Za-z0-9_-]{8,}")
 
 
-def _key_spellings(api_key: str) -> tuple[str, ...]:
-    r"""Every spelling a quoting layer between the provider and the message
-    can give the configured key (#1854).
+#: The characters a quoting layer may write with a backslash before them:
+#: JSON's `\"`, `\\` and `\/`, and `repr`'s `\'` and `\\`.
+_BACKSLASHED = frozenset("\"\\/'")
 
-    A key reaches this module only if `_refuse_unsendable_key` let it
-    through, so it is printable ASCII.  A layer that quotes text re-spells
-    some of those characters one at a time, by a fixed table, and each such
-    layer that can stand between the provider and a message is here:
+#: The characters HTML names: `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`.
+_HTML_NAMED = {"&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos"}
 
-    - the key as it is;
-    - Python's `repr`, which is how an exception quotes a value
-      (`Invalid header value b'...'`): a backslash doubled, and one kind
-      of quote escaped;
-    - a JSON string, which is how an error body quotes it: `\"` and
-      `\\`, and `\/` for an encoder that escapes the solidus, which
-      JSON allows (a printable ASCII character is never a `\u` escape);
-    - an HTML page, which is how a proxy's error page quotes it:
-      `&amp;`, `&lt;`, `&gt;`, `&quot;`, and `&#x27;` or `&#39;`.
+#: How many leading zeros an HTML numeric entity may carry here.  A bound,
+#: so every form has a bounded length and the cut rule a bounded window.
+_ENTITY_ZEROS = 6
 
-    A transformation of the whole key is not quoting it, and none is here:
-    percent-encoding, base64, a hash or a mask is a different value the
-    provider chose to send, not the key under a quoting layer, and a key
-    re-spelt that way is not a key a reader can use.
+#: The longest any one form of a character can be: `&#x`, the zeros, the
+#: digits, `;`.
+_LONGEST_FORM = 3 + _ENTITY_ZEROS + 6 + 1
+
+
+def _hex_atoms(code: int, width: int) -> list[str]:
+    """One atom per hex digit of *code*, written to *width* digits, each
+    digit in either case."""
+    atoms = []
+    for digit in f"{code:0{width}x}":
+        atoms.append(f"[{digit}{digit.upper()}]" if digit.isalpha() else digit)
+    return atoms
+
+
+def _char_forms(char: str) -> list[list[str]]:
+    r"""Every form a quoting layer may give *char*, each a list of atoms (a
+    regex matching one character of text, or a bounded run of zeros).
+
+    The forms: the character itself; a backslash before it where JSON or
+    `repr` writes one (`\"`, `\\`, `\/`, `\'`); JSON's `\uXXXX` and `repr`'s
+    `\xXX`, hex digits in either case; and HTML's numeric entities, decimal
+    and hex, with up to :data:`_ENTITY_ZEROS` leading zeros, and its named
+    one where the character has one.
     """
-    if not api_key:
-        return ()
-    import html as _html
-    import json as _json
+    code = ord(char)
+    forms: list[list[str]] = [[re.escape(char)]]
+    if char in _BACKSLASHED:
+        forms.append([r"\\", re.escape(char)])
+    forms.append([r"\\", "u", *_hex_atoms(code, 4)])
+    forms.append([r"\\", "x", *_hex_atoms(code, 2)])
+    zeros = f"0{{0,{_ENTITY_ZEROS}}}"
+    forms.append(["&", "\\#", zeros, *str(code), ";"])
+    forms.append(["&", "\\#", "[xX]", zeros, *_hex_atoms(code, 1), ";"])
+    if char in _HTML_NAMED:
+        forms.append(["&", *_HTML_NAMED[char], ";"])
+    return forms
 
-    js = _json.dumps(api_key)[1:-1]
-    htm = _html.escape(api_key, quote=True)
-    spellings = (
-        api_key,
-        repr(api_key)[1:-1],
-        js,
-        js.replace("/", "\\/"),
-        htm,
-        htm.replace("&#x27;", "&#39;"),
-    )
-    return tuple(dict.fromkeys(spellings))
+
+@functools.lru_cache(maxsize=8)
+def _key_patterns(
+    api_key: str,
+) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    r"""The configured key as patterns over the text a message quotes: the
+    key whole; a form of its first character; and the start of the key at
+    the end of a text a cut ended (#1854).
+
+    A quoting layer between the provider and the message re-spells a
+    character at a time, by a fixed table, and may choose for each
+    occurrence of a character on its own: an encoder that escapes one
+    solidus and not the next, or writes `\u004F` for the first `O` only,
+    is still quoting the key.  So the key is matched character by
+    character, each character in any form a quoting layer may give that
+    one character (:func:`_char_forms`): JSON (an error body), Python's
+    `repr` (an exception's text) and HTML (a proxy's error page).
+
+    A transformation of the whole key is not a quoting, and is not
+    matched: percent-encoding, base64, a hash or a mask is a value the
+    provider computed from the key, not the key under a layer that quotes
+    it, and none of it is what a reader could use as the key.
+
+    At a cut the text may end inside the key: after a run of its leading
+    characters, each in any form, and even inside the next character's
+    form (`...\u002`).  The cut pattern matches such an end, anchored at
+    the end of the text; it is tried where a form of the first character
+    begins, leftmost (longest) first.
+
+    A form that begins with a backslash or an ampersand shares its first
+    character with the bare `\` or `&`, so a pattern backtracks only at a
+    key's own `\` and `&`: the work a text can cause is bounded by the
+    configured key, which the text does not choose.
+    """
+    forms = [_char_forms(c) for c in api_key]
+    whole = "".join(
+        "(?:" + "|".join("".join(f) for f in fs) + ")" for fs in forms)
+
+    def partial(fs: list[list[str]]) -> str:
+        parts = {"".join(f[:j]) for f in fs for j in range(1, len(f))}
+        return "|".join(sorted(parts))
+
+    tail = ""
+    for fs in reversed(forms):
+        full = "(?:" + "|".join("".join(f) for f in fs) + ")"
+        part = partial(fs)
+        inner = full + (f"(?:{tail})?" if tail else "")
+        tail = inner + (f"|{part}" if part else "")
+    first = "|".join(sorted({"".join(f) for f in forms[0]}
+                              | {"".join(f[:1]) for f in forms[0]}))
+    return (re.compile(whole), re.compile(f"(?:{first})"),
+            re.compile(f"(?:{tail})\\Z"))
+
+
+def _key_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]]:
+    """The spans of *text* that hold the configured key, in any of its
+    forms (:func:`_key_patterns`): every whole occurrence, and, at the end
+    of a text a cut ended, the key's start."""
+    if not api_key:
+        return []
+    whole, first, at_cut = _key_patterns(api_key)
+    spans = [m.span() for m in whole.finditer(text)]
+    if cut:
+        # The start of the key at the end of the text begins with a form
+        # of its first character, within the longest the key can be
+        # written: each such place is tried, leftmost (longest) first.
+        window = max(0, len(text) - (len(api_key) + 1) * _LONGEST_FORM)
+        for begin in first.finditer(text, window):
+            m = at_cut.match(text, begin.start())
+            if m is not None:
+                spans.append(m.span())
+                break
+    return spans
 
 
 #: A credential-shaped token's start, at the end of a text: the cut that made
@@ -227,26 +309,14 @@ def _secret_spans(text: str, api_key: str, *, cut: bool) -> list[tuple[int, int]
 
     Every rule reads the original text, so no rule reads what another has
     already replaced, and none can stop another from running: the
-    configured key whole, in each of its spellings; a credential-shaped
-    token; and, at the end of a text a cut ended (*cut*), a proper prefix of
-    any spelling of the key and a credential-shaped token's start, since the
-    cut may have taken the rest of either.
+    configured key whole, in any of its forms (`_key_spans`); a
+    credential-shaped token; and, at the end of a text a cut ended (*cut*),
+    the key's start in any of its forms and a credential-shaped token's
+    start, since the cut may have taken the rest of either.
     """
-    spans: list[tuple[int, int]] = []
-    spellings = _key_spellings(api_key)
-    for spelling in spellings:
-        start = text.find(spelling)
-        while start != -1:
-            spans.append((start, start + len(spelling)))
-            start = text.find(spelling, start + 1)
+    spans = _key_spans(text, api_key, cut=cut)
     spans.extend(m.span() for m in _CREDENTIAL_RE.finditer(text))
     if cut:
-        for spelling in spellings:
-            proper = spelling[:-1]
-            for n in range(len(proper), 0, -1):
-                if text.endswith(proper[:n]):
-                    spans.append((len(text) - n, len(text)))
-                    break
         tail = _CREDENTIAL_TAIL_RE.search(text)
         if tail is not None:
             spans.append(tail.span())
