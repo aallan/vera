@@ -322,7 +322,8 @@ class _Placement:
                       else self.bound.get(mod_path))
             if target == file:
                 return head
-        return location_to_range(SourceLocation(line=1, column=1), self.index)
+        return location_to_range(locate(None, "", 1, 1)["location"],
+                                 self.index)
 
 
 def _placement(analysis: Analysis, related: bool) -> _Placement:
