@@ -32,6 +32,28 @@ also compile. vera lsp keeps check and verify warm.
 
 </details>
 
+Each command takes the options it lists below and refuses any other (E901), and a command that reads a program reads exactly one source file: none, or a second, is E904, so run the command once for each file. A valued option with no value, or a value the command does not take, is E903, and an option given twice is E902. `vera <command> --help` prints that command's usage, and `vera --help` the whole list. Under `vera run`, every argument after `--` is the program's, whatever it looks like (`vera run f.vera --fn min -- -1 -5`). A command-line refusal is the `--json` envelope, on stdout, when `--json` stands before any `--`, and the diagnostic on stderr otherwise; either way the exit code is 1. The table is rendered from the one the command line is read against (`vera/command_line.py`):
+
+<!-- render_lists:begin command-options -->
+| Command | Reads | Options |
+|---|---|---|
+| `vera version` | no file | none |
+| `vera parse` | one `.vera` file | none |
+| `vera check` | one `.vera` file | `--json`, `--quiet`, `--explain-slots` |
+| `vera typecheck` | one `.vera` file | `--json`, `--quiet`, `--explain-slots` |
+| `vera verify` | one `.vera` file | `--json`, `--quiet`, `--timeout-ms <n>`, `--reconcile`, `--no-reconcile` |
+| `vera test` | one `.vera` file | `--json`, `--trials <n>`, `--fn <name>`, `--distrust` |
+| `vera compile` | one `.vera` file | `--json`, `--wat`, `-o <path>`, `--target <t>` (wasm, browser, wasi-p2), `--world <w>` (cli, server) |
+| `vera run` | one `.vera` file | `--json`, `--fn <name>`, `--target <t>` (wasm, wasi-p2), `--world <w>` (cli, server), `-- <args>...` |
+| `vera serve` | one `.vera` file | `--port <n>`, `--host <h>` |
+| `vera ast` | one `.vera` file | `--json` |
+| `vera fmt` | one `.vera` file | `--write`, `--check` |
+| `vera lsp` | no file | none |
+| `vera builtins` | no file | `--json` |
+| `vera effects` | no file | `--json` |
+| `vera errors` | no file | `--json` |
+<!-- render_lists:end command-options -->
+
 Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
@@ -438,7 +460,7 @@ The intended agent loop is: emit a `.vera` file → `vera check --json` → if n
 `ok`, read `diagnostics[].fix` and edit → repeat → `vera verify --json` → act on
 the tier summary → `vera test --json` on the Tier-3 remainder.
 
-The diagnostic-producing commands `check`, `verify`, `compile`, `run`, `test` and `ast` speak `--json` (`parse` and `fmt` ignore the flag); the introspection commands (`builtins`, `effects`,
+The diagnostic-producing commands `check`, `verify`, `compile`, `run`, `test` and `ast` speak `--json` (every other command refuses the flag, E901, as the envelope); the introspection commands (`builtins`, `effects`,
 `errors`) speak it natively. Diagnostic codes are **stable** (`vera errors`
 lists them), so an agent can branch on `error_code` rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
