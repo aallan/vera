@@ -1110,6 +1110,7 @@ def test_e527_without_a_counterexample_says_the_access_alone() -> None:
     verifier = SimpleNamespace(
         _as_written=lambda node: node,
         _written=vast.format_expr,
+        _inputs_renamed=lambda *_: False,
         _error=lambda node, description, **kw: reported.append(
             (description, kw["fix"])))
     access = vast.IndexExpr(
@@ -1174,6 +1175,7 @@ def _reporting_verifier(reported: list[tuple[str, str]], **reads: object):
     from types import SimpleNamespace
     return SimpleNamespace(
         _as_written=lambda node: node, _written=vast.format_expr,
+        _inputs_renamed=lambda *_: False,
         _error=lambda node, description, **kw: reported.append(
             (description, kw["fix"])), **reads)
 

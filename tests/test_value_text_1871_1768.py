@@ -158,12 +158,27 @@ public fn f({param} -> {ret})
 """
 
 
+#: The two headers `counterexample_text` writes: the plain one, and the one
+#: at a line in a body that binds a listed input's name again.
+_HEADER = "Counterexample:"
+_RENAMED_HEADER = (
+    "Counterexample (the function's inputs, as its signature names them):")
+
+
+def _header(description: str) -> str | None:
+    """The description's counterexample header, or ``None``."""
+    found = [line.strip() for line in description.split("\n")
+             if line.strip() in (_HEADER, _RENAMED_HEADER)]
+    assert len(found) <= 1, description
+    return found[0] if found else None
+
+
 def _block(description: str) -> list[str] | None:
-    """The lines under a description's `Counterexample:` header, or ``None``
-    when it has none."""
+    """The lines under a description's counterexample header, either of
+    the two, or ``None`` when it has none."""
     lines = description.split("\n")
     headers = [i for i, line in enumerate(lines)
-               if line.strip() == "Counterexample:"]
+               if line.strip() in (_HEADER, _RENAMED_HEADER)]
     if not headers:
         return None
     assert len(headers) == 1, description
@@ -591,3 +606,58 @@ def test_repro_1871_no_solver_string_is_built_from_text_but_by_the_builder() -> 
         if "StringVal(" in line and not line.lstrip().startswith("#")
     ]
     assert len(sites) == 1 and sites[0].startswith("literals.py:"), sites
+
+
+# -- Whose names a counterexample lists ----------------------------------
+
+def _named(body: str, *, ensures: str = "true", ret: str = "@Nat") -> str:
+    return f"""\
+public fn f(@Int -> {ret})
+  requires(@Int.0 == -1)
+  ensures({ensures})
+  effects(pure)
+{{
+  {body}
+}}
+"""
+
+
+def test_repro_1871_a_let_that_rebinds_an_input_s_name_says_whose_names() -> None:
+    """At `@Int.0` after `let @Int = @Int.0 * 2`, the line reads -2; the
+    block lists the parameter, -1, under the signature's name, and its
+    header says so."""
+    description = _description(_named("let @Int = @Int.0 * 2;\n  @Int.0"), "E503")
+    assert _header(description) == _RENAMED_HEADER, description
+    assert _block(description) == ["@Int.0 = -1"], description
+
+
+def test_repro_1871_no_rebinding_keeps_the_plain_header() -> None:
+    description = _description(_named("@Int.0"), "E503")
+    assert _header(description) == _HEADER, description
+    assert _block(description) == ["@Int.0 = -1"], description
+
+
+def test_a_match_binder_rebinds_an_input_s_name() -> None:
+    description = _description(_named(
+        "match Some(@Int.0 * 2) {\n    Some(@Int) -> @Int.0,\n    None -> 0\n  }"),
+        "E503")
+    assert _header(description) == _RENAMED_HEADER, description
+    assert _block(description) == ["@Int.0 = -1"], description
+
+
+def test_an_obligation_in_a_contract_clause_keeps_the_plain_header() -> None:
+    """A clause is read in the signature's scope, whatever the body binds:
+    the division in the `ensures` is `E526` at `@Int.0 = -1`, the parameter,
+    though the body binds `@Int` again."""
+    source = _named("let @Int = 1;\n  @Int.0",
+                    ensures="10 / (@Int.0 + 1) > 0", ret="@Int")
+    description = _description(source, "E526")
+    assert _header(description) == _HEADER, description
+    assert _block(description) == ["@Int.0 = -1"], description
+
+
+def test_a_binder_of_another_type_keeps_the_plain_header() -> None:
+    """A `let` that binds no listed input's name renames nothing."""
+    description = _description(_named("let @Bool = true;\n  @Int.0"), "E503")
+    assert _header(description) == _HEADER, description
+    assert _block(description) == ["@Int.0 = -1"], description

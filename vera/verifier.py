@@ -716,16 +716,25 @@ def counterexample_text(
     counterexample: Counterexample | None,
     *,
     result_name: str | None = None,
+    renamed: bool = False,
 ) -> str:
     """The counterexample block every refutation's description carries
     (#1871): the header, then each input the refutation lists as its
     literal, then *result_name*'s value where the obligation is an
     `ensures`; empty when nothing is listed, so no header stands over
-    nothing.  The one writer of the block: each emitter calls it."""
+    nothing.  The one writer of the block: each emitter calls it.
+
+    The inputs are named as the function's signature names them, the scope
+    a `requires` fix is written in (spec §6.4.5).  *renamed*, where the
+    diagnostic's line is in a body that binds one of those names again (a
+    `let`, a `match` binder, a closure parameter), says so in the header:
+    there the line reads the name as another value."""
     lines = [] if counterexample is None else counterexample.lines(result_name)
     if not lines:
         return ""
-    return "\n  ".join(["Counterexample:", *(f"    {x}" for x in lines)])
+    header = ("Counterexample (the function's inputs, as its signature "
+              "names them):" if renamed else "Counterexample:")
+    return "\n  ".join([header, *(f"    {x}" for x in lines)])
 
 
 def _param_slot_ref(name: str) -> ast.SlotRef | None:
@@ -11537,7 +11546,9 @@ class ContractVerifier:
         writes on a component.  Pointing the reader at "the value" would send
         them to check the wrong thing.
         """
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, node, counterexample))
         target = pretty_type(formal_ty) if formal_ty is not None else "the target type"
         description = (
             f"Value passed as a {site} in '{decl.name}' may not satisfy the "
@@ -13566,6 +13577,33 @@ class ContractVerifier:
             smt, goal, assumptions, counterexample, site_env=site_env,
             exprs=(at_value,) if at_value is not None else ())
 
+    def _inputs_renamed(
+        self, decl: ast.FnDecl, node: ast.Node,
+        counterexample: Counterexample | None,
+    ) -> bool:
+        """Whether a counterexample at *node* lists an input under a name
+        *decl*'s body binds again (#1871): the diagnostic's line is in the
+        body, and a binder there (a `let`, a `match` binder, a closure
+        parameter) declares a slot of a listed input's type, so the name may
+        read as another value at that line.  A contract clause is in the
+        signature's scope, and never is."""
+        if counterexample is None or not counterexample.shown:
+            return False
+        source, env = self._written_source(
+            decl, self._fn_naming_scope(self._current_alias_env, decl))
+        body = None if source.body is None else source.body.span
+        site = _site_span(self._evaluation_site(node))
+        if body is None or site is None or not (
+                (body.line, body.column) <= (site.line, site.column)
+                and (site.end_line, site.end_column)
+                <= (body.end_line, body.end_column)):
+            return False
+        listed = {name[1:].rpartition(".")[0] for name, _ in counterexample.shown}
+        return any(
+            p.type_expr is not None
+            and self._type_expr_to_slot_name(p.type_expr, env) in listed
+            for p in binders.binder_positions(source.body))
+
     def _report_underflow(
         self,
         decl: ast.FnDecl,
@@ -13578,7 +13616,9 @@ class ContractVerifier:
 
         *clause*, where :meth:`_discharging_clause` found one, is a
         precondition the solver confirmed discharges it (#1763)."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, expr, counterexample))
 
         description = (
             f"@Nat subtraction in '{decl.name}' may underflow."
@@ -13647,7 +13687,9 @@ class ContractVerifier:
         whatever binding is nearest there, which for a `let`-bound divisor
         is a parameter.  The guard is written where it is applied, around
         the operation, so the divisor as written is the divisor there."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, expr, counterexample))
 
         op_word = "modulo" if expr.op == ast.BinOp.MOD else "division"
         zero = ast.BinaryExpr(
@@ -13690,7 +13732,9 @@ class ContractVerifier:
         counterexample: Counterexample | None,
     ) -> None:
         """Emit an E528 diagnostic for a provably-overflowing arithmetic op."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, expr, counterexample))
 
         if isinstance(expr, ast.FnCall):
             op_word = "`abs`"
@@ -13795,7 +13839,9 @@ class ContractVerifier:
         counterexample: Counterexample | None,
     ) -> None:
         """Emit E507 for a body assert the solver proved can never hold (#800)."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, expr, counterexample))
 
         pred = self._written(expr.expr)
         description = (
@@ -13836,7 +13882,9 @@ class ContractVerifier:
         written from the site's operands named, for a `let`-bound index,
         a parameter.  The guard is written where it is applied, around the
         access, so its operands are the access's own."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, expr, counterexample))
 
         # The bound as a node rendered whole (#1573).
         lower, upper = ast.index_bounds(
@@ -13882,7 +13930,9 @@ class ContractVerifier:
 
         *clause*, where :meth:`_discharging_clause` found one, is a
         precondition the solver confirmed discharges it (#1763)."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, node, counterexample))
 
         description = (
             f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
@@ -13948,7 +13998,9 @@ class ContractVerifier:
         simply does — and the standing fix, "add a precondition implying the
         predicate", cannot constrain a literal, so it would send the reader
         somewhere that does not help."""
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                decl, node, counterexample))
 
         # The WHOLE chain, because membership is the conjunction over every
         # level and that is what was refuted (R-1431 review of PR #1453).
@@ -14489,7 +14541,9 @@ class ContractVerifier:
         site_pre = None if at_call is None else ast.format_expr(at_call)
 
         # Build counterexample description
-        ce_text = counterexample_text(counterexample)
+        ce_text = counterexample_text(
+            counterexample, renamed=self._inputs_renamed(
+                caller, call_node, counterexample))
 
         at = self._evaluated_at
         where = (
