@@ -52,7 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, TYPE_CHECKING
 
-from vera import ast, carriers, fold, naming, narrowing
+from vera import ast, binding, carriers, fold, naming, narrowing
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES
 from vera.lowering import quantifier_predicate_refusals, tail_resume_arg
 from vera.obligations.core import ObligationKind, expr_text_for
@@ -1167,6 +1167,17 @@ class _Builder:
             visit(tuple(linked.prelude), none)
             for inst in self.typed.instances:
                 visit(inst.clone, none)
+            # A checker type holds its predicate as the program writes it,
+            # and the link step rebuilds a predicate that names a
+            # constructor or a function (`match @Pt.0 { MkPt(@Int) -> … }`):
+            # such a predicate is found by its written node too, and answers
+            # with the linked refinement code generation compiles (#1861).
+            twins = binding.linked_twins(self.typed.program, linked.program)
+            for mod, lmod in zip(self.typed.modules, linked.modules):
+                binding.linked_twins(mod.program, lmod.program, twins)
+            for written_id, twin in twins.items():
+                if id(twin) in found:
+                    found.setdefault(written_id, found[id(twin)])
             self._refinement_bases = found
         return self._refinement_bases
 

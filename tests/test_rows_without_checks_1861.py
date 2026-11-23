@@ -34,19 +34,24 @@ violate its row traps at a violating input and runs at a satisfying one.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import pytest
 
 from tests import pipeline
+from vera.obligations import table
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs
 # a sample of its parametrised cells, and all of them when it changes this
-# file or a module that decides its class: the table's rows, and the
-# container lowerings' store guards.
+# file or a module that decides its class: the table's rows, the verifier's
+# reading of them, and the guards code generation emits for them (the
+# container stores', the closure argument's).
 pytestmark = pytest.mark.matrix(
     decides=[
         "vera/obligations/table.py",
+        "vera/verifier.py",
         "vera/wasm/calls_containers.py",
+        "vera/wasm/closures.py",
     ],
 )
 
@@ -924,6 +929,271 @@ def test_repro_set_add_element_and_map_insert_key_take_the_store_guard(
     ran = pipeline.run(_SET_ELEMENT, fn=fn, args=[-5.0])
     assert ran.trap is not None
     assert f"Refinement violation in {where}\n" in str(ran.trap), ran.trap
+
+
+# =====================================================================
+# How a refinement is written, by every site whose check this pull
+# request adds
+# =====================================================================
+#
+# A check binds a value under one name and holds it in one local, and the
+# two come from different types: the name from the refinement as the
+# program writes it (the binder its predicate reads, `@Count.0`), the local
+# from the type the checker resolved (`Int`).  Each member the review found
+# read one of them from the other type: a binder minted from the resolved
+# base (the call, then the two stores), a width read through the written
+# expression's alias chase, which follows `Scalar<Int>` to its parameter
+# `T` (the stores), and a written refinement looked up by a predicate the
+# link step rebuilt (a predicate naming a constructor or a function, at
+# every site).  Every site this pull request adds reads the binder from
+# `guard_type_expr` and the width from the resolved type, and this matrix
+# crosses every way a refinement is written with every one of those sites.
+
+_INT = ("Int", "float_to_int(@Float64.0)", 5.0, -3.0)
+_ARR = ("Array<Int>", "array_slice([1], 0, float_to_int(@Float64.0))", 1.0, 0.0)
+_PT = ("Pt", "MkPt(float_to_int(@Float64.0))", 5.0, -3.0)
+
+#: name -> (declarations, the refinement as a type argument writes it,
+#: (the resolved type, a value of it from `@Float64.0`, an input it holds
+#: at, an input it violates at or None))
+WRITTEN: dict[str, tuple[str, str, tuple[str, str, float, float | None]]] = {
+    "prim": ("type R = { @Int | @Int.0 > 0 };", "R", _INT),
+    "inline": ("", "{ @Int | @Int.0 > 0 }", _INT),
+    "alias_prim": ("type Count = Int;\ntype R = { @Count | @Count.0 > 0 };",
+                   "R", _INT),
+    "alias_alias": ("type Count = Int;\ntype Cnt2 = Count;\n"
+                    "type R = { @Cnt2 | @Cnt2.0 > 0 };", "R", _INT),
+    "alias_app": ("type Id<T> = T;\ntype R = { @Id<Int> | @Id<Int>.0 > 0 };",
+                  "R", _INT),
+    "alias_app_alias": ("type Cnt = Int;\ntype Box<T> = T;\n"
+                        "type R = { @Box<Cnt> | @Box<Cnt>.0 > 0 };", "R", _INT),
+    "alias_app_nat": ("type Cnt = Nat;\ntype Box<T> = T;\n"
+                      "type R = { @Box<Cnt> | @Box<Cnt>.0 > 2 };", "R",
+                      ("Nat", "float_to_int(@Float64.0)", 5.0, 1.0)),
+    "alias_app_f64": ("type Id<T> = T;\n"
+                      "type R = { @Id<Float64> | @Id<Float64>.0 > 0.0 };", "R",
+                      ("Float64", "@Float64.0", 5.0, -3.0)),
+    "alias_app_bool": ("type Id<T> = T;\ntype R = { @Id<Bool> | @Id<Bool>.0 };",
+                       "R", ("Bool", "@Float64.0 > 0.0", 5.0, -3.0)),
+    "alias_prim_f64": ("type Real = Float64;\n"
+                       "type R = { @Real | @Real.0 > 0.0 };", "R",
+                       ("Float64", "@Float64.0", 5.0, -3.0)),
+    "pred_call": ("type R = { @Int | above(@Int.0) };", "R", _INT),
+    "data": ("type R = { @Pt | match @Pt.0 { MkPt(@Int) -> @Int.0 > 0 } };",
+             "R", _PT),
+    "alias_data": ("type P2 = Pt;\n"
+                   "type R = { @P2 | match @P2.0 { MkPt(@Int) -> @Int.0 > 0 } };",
+                   "R", _PT),
+    "alias_array": ("type IntList = Array<Int>;\n"
+                    "type R = { @IntList | array_length(@IntList.0) > 0 };",
+                    "R", _ARR),
+    "param_array": ("type R = { @Array<Int> | array_length(@Array<Int>.0) > 0 };",
+                    "R", _ARR),
+    "nested": ("type Pos = { @Int | @Int.0 > 0 };\n"
+               "type R = { @Pos | @Pos.0 < 10 };", "R",
+               ("Int", "float_to_int(@Float64.0)", 5.0, 20.0)),
+    "generic_reads": ("type Wrapped<T> = { @T | array_length([@T.0]) > 0 };",
+                      "Wrapped<Int>",
+                      ("Int", "float_to_int(@Float64.0)", 5.0, None)),
+    "generic_reads_array": ("type NonEmptyOf<T> = { @Array<T> | "
+                            "array_length(@Array<T>.0) > 0 };",
+                            "NonEmptyOf<Int>", _ARR),
+    "generic_unread": ("type PosTag<T> = { @Int | @Int.0 > 0 };", "PosTag<Bool>",
+                       _INT),
+    "fn_alias": ("type IntFn = fn(Int -> Int) effects(pure);\n"
+                 "type R = { @IntFn | true };", "R",
+                 ("IntFn", "fn(@Int -> @Int) effects(pure) { 1 }", 1.0, None)),
+}
+
+_WRITTEN_COMMON = (
+    "private data Pt { MkPt(Int) }\n\n"
+    "private fn above(@Int -> @Bool)\n" + PLAIN + "{\n  @Int.0 > 0\n}\n\n")
+
+#: site -> (the program's body around R (the refinement), RES (its
+#: resolved type) and V (the value), the text its check traps with)
+WRITTEN_SITES: dict[str, tuple[str, str]] = {
+    "call_head": (
+        "type F = fn(R -> Int) effects(pure);\n\n"
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  let @F = fn(@RES -> @Int) effects(pure) { 0 };\n"
+        "  apply_fn(@F.0, V)\n}\n", "closure argument"),
+    "call_join": (
+        "type F = fn(R -> Int) effects(pure);\n\n"
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  let @F = fn(@RES -> @Int) effects(pure) { 0 };\n"
+        "  apply_fn(if @Float64.0 > 100.0 then { @F.0 } else { @F.0 }, V)\n}\n",
+        "closure argument"),
+    "call_tuple": (
+        "type F = fn(Tuple<R, Int> -> Int) effects(pure);\n\n"
+        "private fn take(@Tuple<RES, Int> -> @Int)\n" + PLAIN
+        + "{\n  let @F = fn(@Tuple<RES, Int> -> @Int) effects(pure) { 0 };\n"
+        "  apply_fn(@F.0, @Tuple<RES, Int>.0)\n}\n\n"
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  take(Tuple(V, 0))\n}\n",
+        "closure argument (tuple component)"),
+    "set_elem": (
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  let @Set<R> = set_add(set_new(), V);\n  set_size(@Set<R>.0)\n}\n",
+        "set element insert"),
+    "map_key": (
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  let @Map<R, Int> = map_insert(map_new(), V, 1);\n"
+        "  map_size(@Map<R, Int>.0)\n}\n", "map key insert"),
+    # The boundary: a tuple built at the call is stored by the construction
+    # store that predates this pull request (issue 1892's).
+    "call_tuple_built": (
+        "type F = fn(Tuple<R, Int> -> Int) effects(pure);\n\n"
+        "public fn go(@Float64 -> @Int)\n" + PLAIN
+        + "{\n  let @F = fn(@Tuple<RES, Int> -> @Int) effects(pure) { 0 };\n"
+        "  apply_fn(@F.0, Tuple(V, 0))\n}\n", "Tuple(…) construction"),
+}
+
+_STORES = ("set_elem", "map_key", "call_tuple_built")
+
+#: The cells whose rows no check guards, by the table's reason, which each
+#: asserts; every other cell's rows are checked.
+WRITTEN_DISCLOSED: dict[tuple[str, str], str] = {
+    **{("nested", s): "a refinement over a refinement has no guard"
+       for s in WRITTEN_SITES},
+    **{(b, s): "a construction store guards only a scalar-based refinement"
+       for b in ("data", "alias_data", "fn_alias") for s in _STORES},
+    **{(b, "call_tuple_built"): "a construction store guards only a "
+                                "scalar-based refinement"
+       for b in ("alias_array", "param_array", "generic_reads_array")},
+    **{(b, s): "the check has no written type to bind: the refinement is "
+               "written over a generic declaration's type parameter, or "
+               "nowhere"
+       for b, sites in (
+           ("generic_reads", ("call_head", "call_join", "call_tuple",
+                              "set_elem", "map_key")),
+           ("generic_reads_array", ("call_head", "call_join", "call_tuple")))
+       for s in sites},
+}
+
+#: A `Set` element or a `Map` key over an `Array` value: refused at check.
+WRITTEN_REFUSED = {(b, s): "E135"
+                   for b in ("alias_array", "param_array", "generic_reads_array")
+                   for s in ("set_elem", "map_key")}
+
+#: The tuple built at the call, at a refinement whose written base is not
+#: its resolved head: the older construction store mints its guard's type
+#: over the resolved base and stops with an internal error (E699).
+WRITTEN_1892 = frozenset(
+    ("call_tuple_built", b) for b in (
+        "alias_prim", "alias_alias", "alias_app", "alias_app_alias",
+        "alias_app_nat", "alias_app_f64", "alias_app_bool", "alias_prim_f64",
+        "generic_reads"))
+
+
+def written_program(base: str, site: str) -> str:
+    decls, r, (res, value, _, _) = WRITTEN[base]
+    body = (WRITTEN_SITES[site][0].replace("RES", res).replace("R", r)
+            .replace("V", value))
+    return decls + "\n" + _WRITTEN_COMMON + body
+
+
+WRITTEN_CELLS = [
+    pytest.param(base, site, id=f"{base}-{site}", marks=(
+        [pytest.mark.xfail(strict=True, reason="issue 1892: the older tuple "
+                           "store mints its guard's type over the resolved "
+                           "base")]
+        if (site, base) in WRITTEN_1892 else []))
+    for base in WRITTEN for site in WRITTEN_SITES]
+
+
+@pytest.mark.parametrize(("base", "site"), WRITTEN_CELLS)
+def test_a_written_base_is_checked_or_disclosed_at_every_site(
+        base: str, site: str) -> None:
+    """Every way a refinement is written (a primitive, inline, an alias of a
+    primitive, of an alias, a parameterised alias application at each
+    scalar, a predicate that calls a function, a data type and an alias of
+    one, an alias of an array and an array with arguments, a refinement
+    over a refinement, a generic alias that reads its parameter and one
+    that does not, a function type behind an alias) at every site whose
+    check this pull request adds: each cell joins clean and is checked,
+    trapping a violating value with its site's text, or is disclosed with
+    the table's reason; none stops with an internal error."""
+    source = written_program(base, site)
+    if (base, site) in WRITTEN_REFUSED:
+        checked = pipeline.check(source)
+        assert WRITTEN_REFUSED[base, site] in {
+            d.error_code for d in checked.errors}
+        return
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.ran, verified.checked.errors
+    # The solver refutes a tuple component of an unconstrained parameter
+    # (`E505`), and the check stands beside the refusal.
+    assert {d.error_code for d in verified.errors} <= {"E505"}, [
+        (d.error_code, d.description[:160]) for d in verified.errors]
+    reconciled = verified.reconciled
+    assert reconciled is not None and reconciled.reconciliation is not None
+    assert reconciled.reconciliation.mismatches == []
+    rows = [row for row in table.build(pipeline.typed(source)).rows
+            if row.kind == "refine_bind"]
+    assert rows
+    _, _, (_, _, good, bad) = WRITTEN[base]
+    assert pipeline.run(source, fn="go", args=[good]).ok
+    if (base, site) in WRITTEN_DISCLOSED:
+        assert {row.guard.reason for row in rows if not row.guard.check} == {
+            WRITTEN_DISCLOSED[base, site]}, rows
+        return
+    assert all(row.guard.check for row in rows), rows
+    if bad is not None:
+        ran = pipeline.run(source, fn="go", args=[bad])
+        assert ran.trap is not None, ran.value
+        assert (f"Refinement violation in {WRITTEN_SITES[site][1]}\n"
+                in str(ran.trap)), ran.trap
+
+
+_MODULE_LIB = """\
+type R = { @Int | above(@Int.0) };
+
+public fn above(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 > 0
+}
+
+public fn ins(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Set<R> = set_add(set_new(), float_to_int(@Float64.0));
+  set_size(@Set<R>.0)
+}
+"""
+
+_MODULE_MAIN = """\
+import lib(ins);
+
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  ins(@Float64.0)
+}
+"""
+
+
+def test_repro_a_refinement_an_imported_module_writes_is_checked_as_written(
+        tmp_path: Path) -> None:
+    """A refinement an imported module writes, whose predicate calls one of
+    its functions, is found by the predicate the module wrote, which the
+    link step rebuilds under the function's link name: the `set_add`
+    element's check binds it and traps a violating value."""
+    entry = pipeline.write_tree(
+        tmp_path, {"lib.vera": _MODULE_LIB, "main.vera": _MODULE_MAIN})
+    verified = pipeline.verify(entry, root=tmp_path, reconcile=True)
+    assert verified.ok, [(d.error_code, d.description[:120])
+                         for d in verified.errors]
+    assert pipeline.run(entry, root=tmp_path, fn="go", args=[3.0]).value == 1
+    ran = pipeline.run(entry, root=tmp_path, fn="go", args=[-3.0])
+    assert ran.trap is not None
+    assert "Refinement violation in set element insert\n" in str(ran.trap)
 
 
 # =====================================================================
