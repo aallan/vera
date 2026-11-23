@@ -72,15 +72,18 @@ def runtime_trap(
     )
 
 
-def file_not_found(path: str) -> Diagnostic:
-    """E900: the command names a source file that does not exist."""
+def file_not_found(path: str, *, description: str | None = None) -> Diagnostic:
+    """E900: the command names a source file that does not exist, or names
+    none that a file can be (an empty argument, a directory: *description*
+    says which)."""
     return Diagnostic(
-        description=f"file not found: {path}",
+        description=description or f"file not found: {path}",
         location=_at(path),
         rationale=(
             "A command reads the Vera source file its command line names, "
             "and no file exists at that path. A relative path is read from "
-            "the directory the command runs in."
+            "the directory the command runs in; a directory, or an empty "
+            "argument, is not a source file."
         ),
         fix=(
             "Name a .vera file that exists: a path relative to the directory "
@@ -93,8 +96,10 @@ def file_not_found(path: str) -> Diagnostic:
     )
 
 
-def option_not_accepted(description: str) -> Diagnostic:
-    """E901: an option given to a command that does not read it."""
+def option_not_accepted(description: str, *, fix: str | None = None) -> Diagnostic:
+    """E901: an option given to a command that does not read it.  *fix*
+    replaces the general fix where the case has its own: an option written
+    with ``=``, or a file whose name begins with a dash."""
     return Diagnostic(
         description=description,
         location=_at(None),
@@ -103,7 +108,7 @@ def option_not_accepted(description: str) -> Diagnostic:
             "cannot honour an option refuses it rather than ignore it, so an "
             "option never seems to take effect where it does not."
         ),
-        fix=(
+        fix=fix if fix is not None else (
             "Drop the option, or give it to the command that takes it:\n\n"
             "  vera verify --timeout-ms 60000 program.vera\n"
             "  vera test --distrust program.vera\n"
@@ -152,10 +157,12 @@ def invalid_option_value(description: str) -> Diagnostic:
             "names the option and, where it takes a fixed set, the values."
         ),
         fix=(
-            "Give the option a value it takes: `--target` wasm, browser or "
-            "wasi-p2; `--world` cli or server; `--trials` and `--port` an "
-            "integer; `--timeout-ms` and VERA_Z3_TIMEOUT_MS a positive "
-            "integer number of milliseconds.\n\n"
+            "Give the option a value it takes, as the next argument: "
+            "`--target` wasm, browser or wasi-p2 (for `vera run`, wasm or "
+            "wasi-p2); `--world` cli or server; `--trials` a positive "
+            "integer; `--port` an integer from 0 to 65535; `--fn` a "
+            "function's name; `--timeout-ms` and VERA_Z3_TIMEOUT_MS a "
+            "positive integer number of milliseconds, at most 4294967295.\n\n"
             "  vera verify --timeout-ms 60000 program.vera"
         ),
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
@@ -164,9 +171,12 @@ def invalid_option_value(description: str) -> Diagnostic:
     )
 
 
-def command_not_understood(description: str) -> Diagnostic:
-    """E904: an unknown command, or a command that reads a file and names
-    none."""
+def command_not_understood(
+    description: str, *, fix: str | None = None,
+) -> Diagnostic:
+    """E904: an unknown command, a command that reads a file and names none
+    or more than one, or one that reads none and names one.  *fix* replaces
+    the general fix where the case has its own (`second_file_refused`)."""
     return Diagnostic(
         description=description,
         location=_at(None),
@@ -175,7 +185,7 @@ def command_not_understood(description: str) -> Diagnostic:
             "reads a program, the path of the program's source file. The "
             "usage text lists the commands."
         ),
-        fix=(
+        fix=fix if fix is not None else (
             "Name one of the commands the usage lists, and the file it "
             "reads:\n\n"
             "  vera check program.vera"
@@ -183,6 +193,25 @@ def command_not_understood(description: str) -> Diagnostic:
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
         severity="error",
         error_code="E904",
+    )
+
+
+def second_file_refused(command: str, count: int) -> Diagnostic:
+    """E904: a command that reads one source file, named more than one.
+
+    Refused rather than any one of them read: a gate that read the first
+    of two files and exited 0 would pass a program nobody checked (#1872).
+    Its fix says how to do what the command line meant.
+    """
+    return command_not_understood(
+        f"`vera {command}` reads one file, and the command line names "
+        f"{count}.",
+        fix=(
+            "Run the command once for each file, and gate on every exit "
+            "code:\n\n"
+            f"  for f in a.vera b.vera; do vera {command} \"$f\" || exit 1; "
+            "done"
+        ),
     )
 
 

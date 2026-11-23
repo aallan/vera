@@ -728,6 +728,7 @@ MARKED_FILES = (
     "test_index_nothing_types_1862.py",
     "test_entry_and_body_1851.py",
     "test_negation_overflow_1875.py",
+    "test_command_line_1872.py",
     "test_zero_size_operands_1870.py",
     "test_secret_redaction_1854.py",
 )
