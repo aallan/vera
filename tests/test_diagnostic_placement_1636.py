@@ -225,10 +225,6 @@ PRE_CHECKER: dict[str, tuple[str, dict[str, str | bytes]]] = {
 
 #: The pre-checker codes no program raises, and why.
 NOT_RAISED = {
-    "E003": "registered, but no site in vera/ raises it: a malformed slot "
-            "is E005",
-    "E004": "registered, but no site in vera/ raises it: a missing brace is "
-            "E005",
     "E007": "an unrecognised Lark exception: a parser bug, no source raises it",
     "E010": "a grammar rule the transformer misses: a compiler bug, no "
             "source raises it",
@@ -526,3 +522,44 @@ def test_a_growing_call_in_a_module_is_quoted_as_written(
     assert diag["description"].startswith(
         "The call 'grow(Some(@T.0), @Nat.0 - 1)' in 'grow' instantiates"), diag
     assert "$" not in diag["description"]
+
+
+# =====================================================================
+# Every registered code can be raised
+# =====================================================================
+
+#: (module text, whether E999 is raisable from it).
+RAISE_SHAPES: dict[str, tuple[str, bool]] = {
+    "a function no code names": (
+        "def make():\n    return 'E999'\n", False),
+    "a function only itself names": (
+        "def make(n):\n    return make(n - 1) if n else 'E999'\n", False),
+    "a function only a dead function names": (
+        "def make():\n    return 'E999'\n\ndef outer():\n    return make()\n",
+        False),
+    "a function live code names": (
+        "def make():\n    return 'E999'\n\nX = make\n", True),
+    "a module-level table": ("CODES = {'k': 'E999'}\n", True),
+    "a method": (
+        "class C:\n    def m(self):\n        return 'E999'\n", True),
+    "no site at all": ("X = 1\n", False),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(RAISE_SHAPES))
+def test_the_gate_refuses_a_code_nothing_can_raise(
+        shape: str, tmp_path: Path) -> None:
+    text, raisable = RAISE_SHAPES[shape]
+    module = tmp_path / "m.py"
+    module.write_text(text, encoding="utf-8")
+    found = _gate().unraised_code_violations([module], {"E999"})
+    assert (found == []) == raisable, (shape, found)
+
+
+def test_every_registered_code_can_be_raised() -> None:
+    root = Path(__file__).resolve().parent.parent
+    gate = _gate()
+    registry = gate._load_error_codes(root / "vera" / "errors.py")
+    assert gate.unraised_code_violations(
+        gate.iter_vera_files(root / "vera"), registry) == []
+    assert "E003" not in ERROR_CODES and "E004" not in ERROR_CODES

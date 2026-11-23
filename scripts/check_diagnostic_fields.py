@@ -1084,6 +1084,103 @@ def placement_violations(paths: Iterable[Path]) -> list[Violation]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Every registered code can be raised
+# ---------------------------------------------------------------------------
+#
+# `vera errors` lists the registry, so a code no site raises is a diagnostic
+# the compiler says it can give and never does: E003 and E004 had a
+# constructor each from the first commit and no caller ever (#1636).  A code
+# can be raised when a string constant equal to it stands somewhere in vera/
+# (outside the registry itself and vera/_since.py) that is not dead: at
+# module scope (a table), in a method (dispatched by name, so taken as
+# live), or in a module-level function some live code names.  A function
+# named only by dead code is dead, to a fixed point.  Static and
+# conservative: a name reached only through `getattr` is not seen, and such a
+# code would be reported.
+
+def _rel(p: Path) -> str:
+    """*p* relative to the repository, or as given when outside it."""
+    if p.is_absolute() and p.is_relative_to(ROOT):
+        return p.relative_to(ROOT).as_posix()
+    return p.as_posix()
+
+
+def _raise_sites(paths: Iterable[Path]) -> dict[str, list[tuple[str, str | None]]]:
+    """Each string constant under *paths*, by value: the (file, outermost
+    module-level function or None) it stands in.  The registry dict and
+    vera/_since.py are not read."""
+    sites: dict[str, list[tuple[str, str | None]]] = {}
+    for p in paths:
+        rel = _rel(p)
+        if rel == "vera/_since.py":
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
+        for top in tree.body:
+            if (rel == "vera/errors.py"
+                    and isinstance(top, (ast.Assign, ast.AnnAssign))
+                    and any(isinstance(t, ast.Name) and t.id == "ERROR_CODES"
+                            for t in (top.targets if isinstance(top, ast.Assign)
+                                      else [top.target]))):
+                continue
+            owner = (top.name if isinstance(top, (ast.FunctionDef,
+                                                  ast.AsyncFunctionDef))
+                     else None)
+            for node in ast.walk(top):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    sites.setdefault(node.value, []).append((rel, owner))
+    return sites
+
+
+def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
+    """The module-level functions under *paths* no live code names."""
+    defs: set[tuple[str, str]] = set()
+    users: dict[str, set[tuple[str, str | None]]] = {}
+    for p in paths:
+        rel = _rel(p)
+        tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
+        for top in tree.body:
+            owner = None
+            if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defs.add((rel, top.name))
+                owner = top.name
+            for node in ast.walk(top):
+                name = (node.id if isinstance(node, ast.Name) else
+                        node.attr if isinstance(node, ast.Attribute) else None)
+                if name is not None:
+                    users.setdefault(name, set()).add((rel, owner))
+    dead: set[tuple[str, str]] = set()
+    changed = True
+    while changed:
+        changed = False
+        for d in defs - dead:
+            live = {u for u in users.get(d[1], set())
+                    if u != d and not (u[1] is not None and (u[0], u[1]) in dead)}
+            if not live:
+                dead.add(d)
+                changed = True
+    return dead
+
+
+def unraised_code_violations(paths: Iterable[Path],
+                             registry: set[str]) -> list[Violation]:
+    """Each registered code no live site in *paths* can raise."""
+    files = list(paths)
+    sites = _raise_sites(files)
+    dead = _dead_functions(files)
+    out: list[Violation] = []
+    for code in sorted(registry):
+        live = [s for s in sites.get(code, [])
+                if s[1] is None or (s[0], s[1]) not in dead]
+        if not live:
+            out.append(Violation(
+                "vera/errors.py", 0, "unraised",
+                [f"{code} is registered in ERROR_CODES, but no live site in "
+                 f"vera/ can raise it: remove its entry (and vera/_since.py's), "
+                 f"or raise it"], None))
+    return out
+
+
 def error_code_registration_violations_in_source(
     source: str, filename: str, registry: set[str],
 ) -> list[Violation]:
@@ -1479,14 +1576,16 @@ def main() -> int:
     collisions = error_code_collision_violations(files)
     hand_built = hand_built_diagnostic_violations(files)
     placement = placement_violations(files)
+    unraised = unraised_code_violations(files, registry)
     violations = (presence + validity + coded + codes + collisions
-                  + hand_built + placement)
+                  + hand_built + placement + unraised)
     if not violations:
         print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
               "and carries an error_code, every spec_ref resolves, every "
               "error_code is registered, every multi-site error_code is a "
               "declared, verified reuse, no diagnostic is built by hand, "
-              "and every location and quote is built by vera.errors.locate.")
+              "every location and quote is built by vera.errors.locate, "
+              "and every registered code can be raised.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
@@ -1515,7 +1614,7 @@ def main() -> int:
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
             if v.target in ("spec_ref", "error_code", "error_code_collision",
-                            "hand_built", "placement"):
+                            "hand_built", "placement", "unraised"):
                 print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "

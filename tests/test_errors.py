@@ -19,10 +19,8 @@ from vera.errors import (
     e001_doc_example,
     missing_contract_block,
     missing_effect_clause,
-    malformed_slot_reference,
     render_e001_doc_example,
     render_e001_doc_example_html,
-    unclosed_block,
     unexpected_token,
     _get_source_line,
 )
@@ -108,22 +106,6 @@ class TestMissingEffectDiagnostic:
     def test_has_spec_ref(self) -> None:
         d = missing_effect_clause("test.vera", "", 1, 1)
         assert "Chapter 5" in d.spec_ref
-
-
-class TestSlotReferenceDiagnostic:
-    def test_has_description(self) -> None:
-        d = malformed_slot_reference("test.vera", "", 1, 1, "@int.0")
-        assert "@int.0" in d.description
-        assert "slot reference" in d.description.lower()
-
-    def test_has_fix_examples(self) -> None:
-        d = malformed_slot_reference("test.vera", "", 1, 1, "@int.0")
-        assert "@Int.0" in d.fix
-        assert "@T.result" in d.fix
-
-    def test_has_spec_ref(self) -> None:
-        d = malformed_slot_reference("test.vera", "", 1, 1, "@int.0")
-        assert "Chapter 3" in d.spec_ref
 
 
 class TestParseErrorDiagnostics:
@@ -269,16 +251,6 @@ class TestHelpers:
 
     def test_get_source_line_zero(self) -> None:
         assert _get_source_line("hello", 0) == ""
-
-
-class TestUnclosedBlock:
-    def test_has_description(self) -> None:
-        d = unclosed_block("test.vera", "fn f() {", 1, 9)
-        assert '"}"' in d.description or "closing brace" in d.description
-
-    def test_has_spec_ref(self) -> None:
-        d = unclosed_block("test.vera", "", 1, 1)
-        assert "Chapter 1" in d.spec_ref
 
 
 class TestUnexpectedToken:

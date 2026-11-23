@@ -508,55 +508,6 @@ def missing_effect_clause(
     )
 
 
-def malformed_slot_reference(
-    file: Optional[str], source: str, line: int, column: int, text: str
-) -> Diagnostic:
-    return Diagnostic(
-        description=(
-            f'Malformed slot reference "{text}". Slot references use the '
-            "form @Type.index where Type starts with an uppercase letter "
-            "and index is a non-negative integer."
-        ),
-        **locate(file, source, line, column),
-        rationale=(
-            "Vera uses typed De Bruijn indices (@T.n) instead of variable "
-            "names. The type must match the binding site, and the index "
-            "counts from the most recent binding of that type (0 = most recent)."
-        ),
-        fix=(
-            "Use the correct slot reference form:\n"
-            "\n"
-            "  @Int.0     -- most recent Int binding\n"
-            "  @Int.1     -- second most recent Int binding\n"
-            "  @Bool.0    -- most recent Bool binding\n"
-            "  @T.result  -- return value (in postconditions only)"
-        ),
-        spec_ref='Chapter 3, Section 3.1 "Overview"',
-        error_code="E003",
-    )
-
-
-def unclosed_block(
-    file: Optional[str], source: str, line: int, column: int
-) -> Diagnostic:
-    return Diagnostic(
-        description=(
-            'Expected closing brace "}". Every opening brace must have '
-            "a matching closing brace."
-        ),
-        **locate(file, source, line, column),
-        rationale=(
-            "Vera requires mandatory braces on all blocks. There is no "
-            "brace-optional syntax."
-        ),
-        fix=(
-            'Add the missing "}" to close the block.'
-        ),
-        spec_ref='Chapter 10, Section 10.3.14 "Block Expressions"',
-        error_code="E004",
-    )
-
-
 def module_call_dot_syntax(
     file: Optional[str],
     source: str,
@@ -1125,8 +1076,6 @@ ERROR_CODES: dict[str, str] = {
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
     "E002": "Missing effect clause",
-    "E003": "Malformed slot reference",
-    "E004": "Missing closing brace",
     "E005": "Unexpected token",
     "E006": "Unexpected character",
     "E007": "Internal parser error",

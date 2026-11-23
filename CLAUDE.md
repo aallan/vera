@@ -78,7 +78,7 @@ python scripts/check_doc_examples.py  # Verify every Vera block in the agent-fac
 python scripts/check_doc_examples.py SKILL.md  # The same gate, for the named documents only
 python scripts/check_diagnostic_examples.py # Verify every vera:diagnostic-annotated ```text fence matches the live diagnostic it shows (#1291)
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
-python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682); and that every location and quoted line is built by vera.errors.locate (#1636)
+python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682); that every location and quoted line is built by vera.errors.locate, and that every registered code can be raised (#1636)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
