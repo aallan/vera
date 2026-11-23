@@ -255,6 +255,18 @@ def test_a_secret_an_exception_quotes(
     assert_no_part_of(secret, stdout)
 
 
+@pytest.mark.parametrize("provider", list(inference._PROVIDERS))
+@pytest.mark.parametrize("char", ["\\", "'"])
+def test_a_key_an_exception_quotes_escaped(provider: str, char: str) -> None:
+    """A key a header can carry may still hold a character `repr` escapes
+    (a backslash, a quote), so an exception quoting its `repr` holds a
+    spelling the exact match does not find; that spelling is redacted."""
+    key = KEY[:20] + char + KEY[20:]
+    stdout = _boundary(provider, key, ValueError(f"bad value {key!r}"))
+    assert_no_part_of(KEY[:20], stdout)
+    assert_no_part_of(KEY[20:], stdout)
+
+
 # --- A key an HTTP header cannot carry ---------------------------------------
 
 @pytest.fixture
