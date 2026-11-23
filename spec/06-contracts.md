@@ -329,7 +329,7 @@ VCs are translated to SMT-LIB format and solved by Z3:
 
 ### 6.4.5 Counterexample Reporting
 
-When Z3 finds a counterexample (a VC is invalid), the compiler reports the specific input values that violate the contract, each under the slot reference the function's signature gives it, the scope a `requires` that rules it out is written in; where the diagnostic stands in a body that binds one of those names again (a `let`, a `match` binder, a closure parameter), so that the line reads the name as another value, the header says whose names they are, `Counterexample (the function's inputs, as its signature names them):`:
+When Z3 finds a counterexample (a VC is invalid), the compiler reports the specific input values that violate the contract, each under the slot reference the function's signature gives it, the scope a `requires` that rules it out is written in; where the diagnostic stands in a body that binds one of those names again (a `let`, a `match` binder, a closure parameter), the line may read the name as another value, and the header says whose names they are, `Counterexample (the function's inputs, as its signature names them):`:
 
 For `private fn foo(@Int -> @Int)` with `ensures(@Int.result > @Int.0)` and the body `@Int.0`:
 
