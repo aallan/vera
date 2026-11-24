@@ -138,7 +138,7 @@ Vera verifies in two implemented tiers, at every call site:
   contract is compiled as a runtime check that traps on violation with the
   contract text.
 - **Unguarded sites.** The few obligations that have no runtime guard are
-  reported as warnings (`E504`, `E506`, `E542`, `E543`) and counted in neither tier.
+  reported as warnings (`E504`, `E506`, `E543`) and counted in neither tier.
 
 **Checking the Tier 3 claims against the module.** A `tier3` status claims that
 the compiled module checks the property. `vera verify` compiles the program in

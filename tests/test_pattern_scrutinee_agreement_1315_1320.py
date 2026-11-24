@@ -455,13 +455,14 @@ class TestAcceptedShapes:
 
 class TestBoundaries:
 
-    def test_bare_type_variable_scrutinee_is_skipped(self) -> None:
-        """`T` can be instantiated at `Option<Int>` — undecidable here.
-
-        Deliberately accepted: the rule refuses only what it can prove
-        cannot match, and a generic body knows nothing about `T`.
+    def test_bare_type_variable_scrutinee_is_refused_1896(self) -> None:
+        """Was accepted as undecidable, since `T` may be instantiated at
+        `Option<Int>`: but the body must hold at every `T`, and an
+        instance at which the head matched read its field at the type that
+        instance gave it, a `Bool` as an `Int` at `T = Option<Bool>`.
+        Nothing says a `T` is an `Option`, so the head is refused (#1896).
         """
-        _check_ok(
+        assert [d.error_code for d in _errors(
             "public forall<T> fn probe(@T -> @Int)\n"
             "  requires(true)\n"
             "  ensures(true)\n"
@@ -472,7 +473,7 @@ class TestBoundaries:
             "    _ -> 0\n"
             "  }\n"
             "}\n"
-        )
+        )] == ["E314"]
 
     def test_integer_literal_over_a_byte_scrutinee_is_accepted(self) -> None:
         """A `Byte` is an integer 0..255, so an integer literal names one.

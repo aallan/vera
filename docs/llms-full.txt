@@ -154,7 +154,7 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ### Error codes
 
-Every diagnostic has a stable code grouped by compiler phase. Every `W` code is a warning; most `E` codes are errors, and a few are warnings (the Tier 3 notes `E520` to `E525`, and the disclosures `E504`, `E506`, `E539`, `E540`, `E542` and `E543`):
+Every diagnostic has a stable code grouped by compiler phase. Every `W` code is a warning; most `E` codes are errors, and a few are warnings (the Tier 3 notes `E520` to `E525`, and the disclosures `E504`, `E506`, `E539`, `E540` and `E543`):
 
 - **W001**: Typed hole (`?`); reports the expected type and available bindings (warning, not error)
 - **W002**: `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
@@ -3831,6 +3831,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E339**: Handler-clause State operation code generation cannot lower
 - **E340**: Code generation cannot lower this construct
 - **E341**: Exn handler clause value incompatible with the handler's
+- **E342**: Handler clause parameter type the operation's value does not fit
 - **E500**: Postcondition verified false
 - **E501**: Call-site precondition violation
 - **E502**: @Nat subtraction underflow obligation not discharged
@@ -3857,7 +3858,6 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E539**: Premise set contradictory beyond the author's premises
 - **E540**: Premise satisfiability not established (Tier 1 withheld)
 - **E541**: Runtime-check claim not matched by an emitted check
-- **E542**: Narrower effect row at a binder: not verified, no runtime check
 - **E543**: Obligation not statically verified and no runtime check can guard it
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type

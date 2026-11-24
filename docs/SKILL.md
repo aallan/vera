@@ -148,7 +148,7 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ### Error codes
 
-Every diagnostic has a stable code grouped by compiler phase. Every `W` code is a warning; most `E` codes are errors, and a few are warnings (the Tier 3 notes `E520` to `E525`, and the disclosures `E504`, `E506`, `E539`, `E540`, `E542` and `E543`):
+Every diagnostic has a stable code grouped by compiler phase. Every `W` code is a warning; most `E` codes are errors, and a few are warnings (the Tier 3 notes `E520` to `E525`, and the disclosures `E504`, `E506`, `E539`, `E540` and `E543`):
 
 - **W001**: Typed hole (`?`); reports the expected type and available bindings (warning, not error)
 - **W002**: `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     from vera import ast as _ast
 
@@ -1278,6 +1278,41 @@ def contains_typevar(ty: Type) -> bool:
     if isinstance(ty, RefinedType):
         return contains_typevar(ty.base)
     return False
+
+
+def read_open_as_unknown(
+        ty: Type, rigid: Collection[str],
+        holds: Callable[[str], Collection[int]]) -> Type:
+    """*ty* with every type variable that is not one of *rigid* (the
+    enclosing function's own, by name) read as unknown: one a call left
+    open (`T$3`), a built-in's, or a callee's leaked raw.  What a value of
+    *ty* is once nothing more is known of those variables, so `is_subtype`
+    can judge it where it binds or flows (#1896): the context that fixes an
+    open variable gives it a type of its own, and the enclosing function's
+    variables stand for every type, so they match only themselves.
+
+    A variable is read so only where no compiled behaviour depends on it,
+    the positions `_Join` keeps (#1684): a function type is kept whole, and
+    so is a data type's argument at a position *holds* names, the
+    positions of that data type's parameters a constructor field holds
+    inside a function type (`_behaviour_params`).  The function's
+    behaviour was compiled at a type of its own, which no context fixes
+    afterwards, so a `fn(X -> Int)` or a `Callback<X>` a call left open is
+    no `fn(Int -> Int)` or `Callback<Int>`, and a binder claiming it would
+    apply the function at a type it was not compiled for."""
+    if isinstance(ty, TypeVar):
+        if "$" not in ty.name and ty.name in rigid:
+            return ty
+        return UnknownType()
+    if isinstance(ty, AdtType):
+        held = holds(ty.name)
+        return ty.with_args(tuple(
+            a if i in held else read_open_as_unknown(a, rigid, holds)
+            for i, a in enumerate(ty.type_args)))
+    if isinstance(ty, RefinedType):
+        return RefinedType(read_open_as_unknown(ty.base, rigid, holds),
+                           ty.predicate)
+    return ty
 
 
 def is_unknown_like(ty: Type | None) -> bool:
