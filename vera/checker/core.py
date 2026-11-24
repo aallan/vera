@@ -186,7 +186,7 @@ def _check(checker: TypeChecker, program: ast.Program,
         prelude_source, tables.instantiations)
     checker.errors.extend(judge(
         checker.derivation, tables.semantic, tables.cells, checker.env,
-        checker.file, checker.source))
+        checker.file, checker.source, tables.instantiations))
 
 
 def check_prelude_bodies(checker: TypeChecker) -> list[Diagnostic]:
@@ -913,12 +913,12 @@ class TypeChecker(
         # `ResolutionMixin._literal_soft_type`.
         self._literal_soft_results: dict[
             tuple[int, int, int, int], Type] = {}
-        # #1684: the types an `if` branch or a `match` arm is synthesized
-        # again against because a sibling has them (`_synth_against`):
-        # a sibling's type is no type the value is expected at, so it
-        # fixes no variable a call leaves open
-        # (`ResolutionMixin._expected_bindings`).
-        self._sibling_types: list[Type] = []
+        # #1866: the names of the type variables a constructor minted
+        # (`_ctor_result_type`), the one mark that tells them from a generic
+        # call's.  Read by `ControlFlowMixin._complete_arms` alone: an arm a
+        # join completes takes the joined type for these, never for a
+        # variable a call's instantiation holds.
+        self._constructor_minted: set[str] = set()
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:

@@ -696,9 +696,11 @@ private forall<T> fn bad_some(@Unit -> @Option<T>)
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
     def test_mixed_if_arms_rejected(self) -> None:
-        """Shape (b) ill-typed: `if @Bool.0 then None else Some(3)` types the
-        whole `if` at Option<Int> (the concrete arm wins), so against
-        forall<T> -> @Option<T> it is E121 — None does not force Option<T>."""
+        """Shape (b) ill-typed: against forall<T> -> @Option<T> the branch
+        `None` is an Option<T> and `Some(3)` an Option<Int>, which no `T`
+        makes one type, so the branches are refused (E301), as the `match`
+        arms are (E302).  Before #1866 the `None` branch was checked again
+        against its sibling's Option<Int> and the body refused (E121)."""
         errs = _check_err("""
 private forall<T> fn bad_mixed(@Bool -> @Option<T>)
   requires(true) ensures(true) effects(pure)
@@ -706,8 +708,8 @@ private forall<T> fn bad_mixed(@Bool -> @Option<T>)
   if @Bool.0 then { None } else { Some(3) }
 }
 """, "Option<Int>")
-        assert any(e.error_code == "E121" for e in errs), \
-            f"Expected E121, got: {[e.error_code for e in errs]}"
+        assert [e.error_code for e in errs] == ["E301"], \
+            f"Expected E301, got: {[e.error_code for e in errs]}"
 
     def test_mixed_match_arms_rejected(self) -> None:
         """Shape (c) ill-typed: against forall<T> -> @Option<T> the arm

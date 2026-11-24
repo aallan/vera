@@ -2269,10 +2269,11 @@ def test_e613_a_variable_no_argument_fixes(tmp_path: Path) -> None:
                        'whose arguments choose it.',
           'fix': "No argument of 'none_ord(())' fixes T, so the call "
                  "instantiates 'none_ord' at Bool, nothing giving its result a "
-                 "type: bind its result at a type that supports 'Ord' (a `let` "
-                 "of that type), or give 'none_ord' a parameter that carries T "
-                 "('@T' for example) and pass it a value at a type that "
-                 "supports 'Ord', Int for example.",
+                 "type: bind its result at a type that supports 'Ord', with "
+                 "the block `{ let @Option<Int> = none_ord(()); "
+                 "@Option<Int>.0 }` in the call's place; or give 'none_ord' a "
+                 "parameter that carries T ('@T' for example) and pass it a "
+                 "value at a type that supports 'Ord', Int for example.",
           'spec_ref': 'Chapter 9, Section 9.8 "Abilities"',
           'error_code': 'E613'}])
 
