@@ -970,18 +970,6 @@ _FORM_OWN_CODES = {"user-op-argument": {"E340"},
                    "user-op-clause-param": {"E340"},
                    "user-op-resume": {"E340"}}
 
-#: A handler clause's parameter names its slot by the written type and
-#: binds it at the operation's, the two compared with nothing, at any type
-#: (#1896): a narrower function-typed binder is accepted at check, and the
-#: body reads the slot at the operation's type, so no wrong value comes out
-#: of the clause.  Its own mechanism, not the function-type rule's; the fix
-#: for #1896 refuses the binder (E190).
-_CLAUSE_PARAMETER = (
-    "a handler clause's parameter is bound at the operation's type, its "
-    "written type compared with nothing (#1896)")
-_CLAUSE_FORMS = ("exn-clause-param", "state-clause-param")
-
-
 #: A form that meets the value twice: `resume` hands the state's `get` the
 #: value the handler's state is initialised with.
 _E190_COUNT = {"state-resume": 2}
@@ -1148,13 +1136,7 @@ def binding_form_program(form: str, kind: str, p: str, c: str,
 
 def _binding_cell(form: str, generic: bool, kind: str, p: str,
                   c: str) -> object:
-    refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
     cell_id = "-".join((form, "generic" if generic else "plain", kind, p, c))
-    if refused and form in _CLAUSE_FORMS:
-        return pytest.param(form, generic, kind, p, c, id=cell_id,
-                            marks=pytest.mark.xfail(
-                                strict=True, raises=_KnownVerdict,
-                                reason=_CLAUSE_PARAMETER))
     return pytest.param(form, generic, kind, p, c, id=cell_id)
 
 
@@ -1199,15 +1181,10 @@ def test_every_binding_form_meets_a_function_type(
     source = binding_form_program(form, kind, p, c, generic)
     refused = not (_le(p, c) if kind == "parameter" else _le(c, p))
     own = _FORM_OWN_CODES.get(form, set())
-    # A user effect's handler is refused (E340) before its clause binder
-    # is reached by anything (#1896): the form's own code alone.
-    judged = refused and form != "user-op-clause-param"
-    if refused and form in _CLAUSE_FORMS:
-        # #1896: the binder is compared with nothing, and checks clean.
-        _known(_codes(source), known=[], fixed=lambda g: g == ["E190"])
-        return
+    # A clause parameter is held to the operation's type (#1896), a user
+    # effect's beside its handler's E340.
     assert sorted(_codes(source)) == sorted(
-        ["E190"] * _E190_COUNT.get(form, 1) * judged + list(own)), source
+        ["E190"] * _E190_COUNT.get(form, 1) * refused + list(own)), source
     if not refused and not own:
         verified = pipeline.verify(source, reconcile=True)
         assert verified.ok, (verified.diagnostics, source)
@@ -1545,17 +1522,14 @@ def test_every_rewrite_a_refused_cell_prints_checks_pasted(
            else set())
     errors = pipeline.check(source).errors
     refused = [d for d in errors if d.error_code == "E190"]
-    # Every refused cell is E190 before anything is replayed, bar the
-    # forms whose binder no judge compares (#1896), the user operation's
-    # behind its E340 among them.
-    unjudged = matrix == "binding" and cell[0] in (
-        *_CLAUSE_FORMS, "user-op-clause-param")
+    # Every refused cell is E190 before anything is replayed, a clause
+    # parameter's among them (#1896).
     if matrix == "flows" and _order_cell(*cell):  # type: ignore[arg-type]
         # The whole verdict, not the E190s alone: an unrelated error
         # is no xfail.
         _known([d.error_code for d in errors], known=[],
                fixed=lambda g: g == ["E190"])
-    assert bool(refused) != unjudged, (matrix, cell)
+    assert refused, (matrix, cell)
     for diagnostic in refused:
         rewrites = re.findall(r"`(fn\([^`]*\})`", diagnostic.fix)
         if not rewrites:
@@ -1834,11 +1808,12 @@ def test_repro_another_component_keeps_the_flow_s_own_code_1885() -> None:
         assert _codes(template.replace("FIRST", "true")) == ["E190"], own
 
 
-def test_repro_a_binder_keeps_e190_beside_another_misfit_1885() -> None:
-    """A `match` binder reports nothing of its own beside E190 but the
-    either-direction relatedness test, which passes a `Tuple<IOF, G>`
-    scrutinee at `@Tuple<W, F>` (the reverse direction fits): so the
-    binder keeps E190 whatever the rest of the pair is."""
+def test_repro_a_binder_beside_another_misfit_is_its_own_e314_1885(
+        ) -> None:
+    """A `match` binder holds its value to `is_subtype` (#1896), so a
+    `Tuple<IOF, G>` scrutinee at `@Tuple<W, F>`, whose first component
+    misfits by its effect row, is the binder's own E314, as a `let` of it
+    is its own E170: E190 stands where the narrowing is the one misfit."""
     source = (
         "type IOF = fn(Int -> Int) effects(<IO>);\n"
         "type W = fn(Int -> Int) effects(pure);\n"
@@ -1847,7 +1822,7 @@ def test_repro_a_binder_keeps_e190_beside_another_misfit_1885() -> None:
         + _fn("main(@Tuple<IOF, G> -> @Int)",
               "match @Tuple<IOF, G>.0 {\n    @Tuple<W, F> -> 0\n  }",
               visibility="public"))
-    assert _codes(source) == ["E190"]
+    assert _codes(source) == ["E314"]
 
 
 # =====================================================================
@@ -1910,20 +1885,14 @@ def test_repro_a_closure_written_in_place_is_given_prose_1885(
 
 
 # =====================================================================
-# Outside the narrowing: two judges still pass a misfit that is none
+# Outside the narrowing: every binding position is held to `is_subtype`
 # =====================================================================
 
-_FIT = ("a binding position judged outside `is_subtype` (the join used as "
-        "a fit, a `match` binder's either-direction relatedness) admits a "
-        "type a `let` refuses: an effect row, a type variable: #1896")
-
-
-@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
-    """`@Option<W>` over an `Option<IOF>`: the either-direction test holds
-    (`Option<W>` fits `Option<IOF>`), so the binder takes an `<IO>`
-    function at a pure type, and the run prints from a function declared
-    `effects(pure)`, with no `E542`; at main too."""
+    """`@Option<W>` over an `Option<IOF>`: the either-direction test held
+    (`Option<W>` fits `Option<IOF>`), so the binder took an `<IO>` function
+    at a pure type, and the run printed from a function declared
+    `effects(pure)`.  The binder is held to `is_subtype` (#1896): E314."""
     source = (
         "type W = fn(Int -> Int) effects(pure);\n"
         "type IOF = fn(Int -> Int) effects(<IO>);\n\n"
@@ -1934,30 +1903,30 @@ def test_repro_a_binder_over_an_io_function_s_option_is_refused() -> None:
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  run(Some(fn(@Int -> @Int) effects(<IO>) "
         "{ IO.print(\"leak\\n\"); @Int.0 }))\n}\n")
-    _known(_codes(source), known=[], fixed=lambda g: g != [])
+    assert _codes(source) == ["E314"], source
 
 
-@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_a_binder_over_a_type_variable_s_option_is_refused() -> None:
     """`@Option<Int>` over an `Option<T>` inside `forall<T>`: the binder
-    takes a concrete type no instantiation is held to, and `Some("abc")`
-    returns 4; at main too.  The `let` of it is E170."""
+    took a concrete type no instantiation is held to, and `Some("abc")`
+    returned 4.  The `T` stays rigid (#1896): E314, as the `let` of it is
+    E170."""
     source = (
         _fn("run(@Option<T> -> @Int)",
             "match @Option<T>.0 {\n    @Option<Int> -> "
             "option_unwrap_or(@Option<Int>.0, 0) + 1\n  }").replace(
                 "private fn", "private forall<T> fn")
         + _fn("main(@Unit -> @Int)", 'run(Some("abc"))', visibility="public"))
-    _known(_codes(source), known=[], fixed=lambda g: g != [])
+    assert _codes(source) == ["E314"], source
 
 
-@pytest.mark.xfail(strict=True, raises=_KnownVerdict, reason=_FIT)
 def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         ) -> None:
     """Inside a generic function, a `fn(@P, @T -> @Int)` closure, `P` a
     pure callback, passed where `fn(I, T -> Int)` is expected, `I` the same
-    callback under `<IO>`: accepted, and the run prints from functions
-    declared `effects(pure)`, at main too; with no type variable, E202."""
+    callback under `<IO>`: was accepted, and the run printed from functions
+    declared `effects(pure)`.  The join's fit is held to `is_subtype`
+    (#1896): E202, as with no type variable."""
     source = (
         "type P = fn(Int -> Int) effects(pure);\n"
         "type I = fn(Int -> Int) effects(<IO>);\n"
@@ -1971,7 +1940,7 @@ def test_repro_the_join_passes_a_pure_callback_at_an_io_one_is_refused(
         + "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
         "  effects(<IO>)\n{\n  outer(fn(@Int -> @Int) effects(<IO>) {\n"
         "      IO.print(\"leak\\n\");\n      @Int.0\n    }, 7)\n}\n")
-    _known(_codes(source), known=[], fixed=lambda g: g != [])
+    assert _codes(source) == ["E202"], source
 
 
 # =====================================================================

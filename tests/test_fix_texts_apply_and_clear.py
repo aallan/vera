@@ -455,7 +455,46 @@ CASES: dict[str, _Case] = {
                                    eff="<State<Pos>>"),
         replace("effects(<State<Pos>>)"),
         base=("effects(<IO, State<{@Int | ...}>>)",)),
+    # #1896: a binder over a function type whose variable the call leaves
+    # open names no writable type; the fix fixes the variable with a `let`.
+    "E314-binder-over-an-open-function-type": _Case(
+        "E314", "check", "type II = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @Option<fn(X -> Int) effects(pure)>",
+                  "Some(fn(@X -> @Int) effects(pure) { 40 })", "X")
+        + _fn("@Unit", "@Int", "match mk(()) {\n    Some(@II) -> "
+              "apply_fn(@II.0, 3),\n    None -> 7\n  }"),
+        lambda source, given: _instance_applied(source, given)),
+    # The alias is source: a refinement in the scrutinee is written whole.
+    "E314-binder-over-an-open-function-type-beside-a-refinement": _Case(
+        "E314", "check", POS + "type II = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @fn(X -> Int) effects(pure)",
+                  "fn(@X -> @Int) effects(pure) { 40 }", "X")
+        + _fn("@Pos", "@Int", "match Tuple(@Pos.0, mk(())) {\n"
+              "    Tuple(@Pos, @II) -> apply_fn(@II.0, 3)\n  }"),
+        lambda source, given: _instance_applied(source, given)),
+    # A data type whose parameter a field holds inside a function type.
+    "E314-binder-over-a-data-type-holding-behaviour-open": _Case(
+        "E314", "check",
+        "private data Callback<A> {\n  MkCb(fn(A -> Int) effects(pure))\n}\n\n"
+        "type CI = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @Callback<X>",
+                  "MkCb(fn(@X -> @Int) effects(pure) { 40 })", "X")
+        + _fn("@Unit", "@Int", "match Some(mk(())) {\n    Some(@Callback<Int>) -> "
+              "match @Callback<Int>.0 {\n      MkCb(@CI) -> apply_fn(@CI.0, 3)\n"
+              "    },\n    None -> 7\n  }"),
+        lambda source, given: _instance_applied(source, given)),
 }
+
+
+def _instance_applied(source: str, given: list[str]) -> str:
+    """The open-variable fix's three spans, each where its text says: the
+    alias at the top, the `let` before the `match`, the slot matched."""
+    alias = next(g for g in given if g.startswith("type "))
+    let = next(g for g in given if g.startswith("let "))
+    slot = next(g for g in given if g.startswith("@"))
+    scrutinee = let.split(" = ", 1)[1].rstrip(";")
+    return alias + "\n\n" + _once(source, f"match {scrutinee} {{",
+                                  f"{let}\n  match {slot} {{")
 
 
 #: Refinements over an alias (R121 review): the predicate names its binder
@@ -937,7 +976,10 @@ def test_a_projected_refinement_binding_shows_its_counterexample() -> None:
     out."""
     code, stage, source, _ = WHOLE["E505-projected-clause"]
     description = _the(code, stage, source).description
-    assert "\n  Counterexample:\n      @Bool.0 = True\n" in description, (
+    # The destructure binds `@Bool` again, so the header says whose names
+    # the block lists (#1871).
+    assert ("\n  Counterexample (the function's inputs, as its signature "
+            "names them):\n      @Bool.0 = true\n") in description, (
         description)
 
 

@@ -635,7 +635,7 @@ public fn abs_float(@Float64 -> @Float64)
 
         import z3
 
-        from vera.tester import _fp_value_to_float
+        from vera.literals import z3_float as _fp_value_to_float
         sort = z3.FPSort(11, 53)
         assert math.isnan(_fp_value_to_float(z3.fpNaN(sort)))
         assert _fp_value_to_float(z3.fpPlusInfinity(sort)) == math.inf

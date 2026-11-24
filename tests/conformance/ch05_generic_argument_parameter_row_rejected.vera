@@ -1,0 +1,38 @@
+-- Conformance: a call argument whose type holds a type variable is held to
+-- its parameter by subtyping once the call's variables are known (Chapter 5,
+-- Section 5.9).  Tests: E202 — inside `forall<T> fn outer`, a closure taking
+-- a pure callback, `fn(@P, @T -> @Int)`, is refused where `fn(I, T -> Int)`
+-- is expected, `I` a callback that performs IO: a function type is
+-- contravariant in its parameters, so the closure would be handed an IO
+-- callback it was not written to take, and run it from code declared `pure`
+-- (#1896).  With no type variable in the pair the same argument is E202
+-- too.
+type P = fn(Int -> Int) effects(pure);
+
+type I = fn(Int -> Int) effects(<IO>);
+
+type H<U> = fn(I, U -> Int) effects(pure);
+
+private forall<U> fn helper(@H<U>, @I, @U -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@H<U>.0, @I.0, @U.0)
+}
+
+private forall<T> fn outer(@I, @T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  helper(fn(@P, @T -> @Int) effects(pure) { apply_fn(@P.0, 1) }, @I.0, @T.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  outer(fn(@Int -> @Int) effects(<IO>) { IO.print("leak\n"); @Int.0 }, 7)
+}

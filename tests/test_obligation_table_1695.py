@@ -501,13 +501,11 @@ public fn main(-> @Int)
 """
 
 
-def test_repro_1725_an_arm_binder_narrowing_an_effect_row_is_disclosed() -> None:
-    v = _verified(_EFFECT_ROW)
-    assert _records(v, "effect_bind") == [("tier3_unguarded", 12, 9)], _records(v, "effect_bind")
-    e542 = [d for d in v.warnings if d.error_code == "E542"]
-    assert e542 and "effect row" in e542[0].rationale, [d.rationale[:200] for d in e542]
-    # The fix is the code's own (`_DISCLOSURE_FIXES`), looked up by the code.
-    assert "Bind the field at its own type" in e542[0].fix, e542[0].fix
+def test_repro_1725_an_arm_binder_narrowing_an_effect_row_is_refused() -> None:
+    """Was disclosed at verify (`effect_bind`, E542): the binder is held to
+    `is_subtype` at check (#1896), so no row is listed for it."""
+    checked = pipeline.check(_EFFECT_ROW)
+    assert [d.error_code for d in checked.errors] == ["E314"], checked.errors
 
 
 def test_repro_1582_nothing_inside_an_assume_is_a_row() -> None:
@@ -1258,7 +1256,7 @@ def test_a_former_fallback_class_is_an_ordinary_discharge(cls: str) -> None:
 _TAIL_NAMED = re.compile(r"\(at the self tail call at (\d+):(\d+)\)")
 #: Verification errors that stand at no record of their own: a premise
 #: refusal, the reconciliation's E541, and the disclosures.
-_NO_RECORD_CODES = {"E538", "E539", "E540", "E541", "E542", "E543"}
+_NO_RECORD_CODES = {"E538", "E539", "E540", "E541", "E543"}
 
 
 def _envelope_inconsistencies(v: pipeline.Verified) -> list[object]:

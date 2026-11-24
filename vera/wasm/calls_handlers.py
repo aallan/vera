@@ -111,6 +111,18 @@ class CallsHandlersMixin:
         the rendering emits is spanned at (#1482), since the verifier
         records a rendering's obligation there.
         """
+        # #1870: an argument with no WebAssembly value is evaluated for its
+        # effects, then rendered as its one value, "unit" (or, a `Never`,
+        # not at all: the string after it is never reached).  The rendering
+        # was the constant alone, so `show(IO.print("a"))` never printed
+        # "a".  Keyed on the checked type's erasure (#1077), so an alias of
+        # `Unit` and a `Future` of one take this arm too.
+        if self._holds_nothing(arg) is not None:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None  # pragma: no cover — the [E615] channel
+            offset, length = self.string_pool.intern("unit")
+            return arg_instrs + [f"i32.const {offset}", f"i32.const {length}"]
         vera_type = self._type_name_of(arg)
         if vera_type is None:
             raise CodegenSkip(
@@ -132,14 +144,6 @@ class CallsHandlersMixin:
         # String → identity: show("hello") == "hello"
         if vera_type == "String":
             return self.translate_expr(arg, env)
-
-        # Unit → literal "unit" string.  #1077: keyed on ERASURE, not the
-        # literal name — a bare value of an erases-to-Unit alias type
-        # (`type U = Unit;` fn returning `@U`) otherwise missed this arm and
-        # loud-skipped the function, while literal `Unit` rendered fine.
-        if self._slot_name_erases_to_unit(vera_type):
-            offset, length = self.string_pool.intern("unit")
-            return [f"i32.const {offset}", f"i32.const {length}"]
 
         # Decimal → decimal_to_string host import.  #1321/#1331: unless this
         # namespace declares its own `Decimal`, which is an ADT with a tag
@@ -191,6 +195,14 @@ class CallsHandlersMixin:
         - Unit → i64.const 0
         - String → FNV-1a hash
         """
+        # #1870: an argument with no WebAssembly value is evaluated for its
+        # effects, then hashed as its one value (or, a `Never`, not at all:
+        # the constant after it is never reached).
+        if self._holds_nothing(arg) is not None:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None  # pragma: no cover — the [E615] channel
+            return arg_instrs + ["i64.const 0"]
         vera_type = self._type_name_of(arg)
         if vera_type is None:
             raise CodegenSkip(
@@ -217,18 +229,11 @@ class CallsHandlersMixin:
         if vera_type == "Float64":
             return arg_instrs + ["i64.reinterpret_f64"]
 
-        # Unit → constant 0.  #1077: keyed on erasure, mirroring show above.
-        if self._slot_name_erases_to_unit(vera_type):
-            return ["i64.const 0"]
-
-        # String → FNV-1a hash
-        if vera_type == "String":
-            return self._translate_hash_string(arg_instrs)
-
-        # Composite (#911): fold the constructor tag with each field's own
-        # hash, the field types read off the checked type (see show).
+        # String (FNV-1a over its bytes) and every composite (#911, folding
+        # the constructor tag with each field's own hash, the field types
+        # read off the checked type, see show) take `_hash_value`.
         param_type = vera_type
-        composite = self._hash_value(param_type, arg_instrs, arg)
+        composite = self._hash_value(param_type, arg_instrs, arg)  # pragma: no mutate — equivalent: a hash reads no node (`_hash_value` passes it on only to the `show` helper's `Float64` rendering site)
         if composite is not None:
             return composite
 
