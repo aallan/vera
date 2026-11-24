@@ -48,8 +48,15 @@ CommentProblemKind = Literal[
 #: reads them back.  Named here so the two sides cannot drift apart.
 ANNOTATIONS_ATTR = "vera_annotations"
 
+#: Attribute under which :func:`vera.parser.parse` stashes the file name and
+#: the source text on the Lark tree, so :func:`vera.transform.transform`
+#: can place a transform-stage diagnostic in its file with its source line
+#: (#1636) without taking either as an argument at its call sites.
+ORIGIN_ATTR = "vera_origin"
+
 __all__ = [
     "ANNOTATIONS_ATTR",
+    "ORIGIN_ATTR",
     "AnnotationLabel",
     "CommentKind",
     "CommentProblemKind",

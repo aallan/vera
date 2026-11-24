@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from vera import ast, naming
-from vera.errors import source_lines
-from vera.lexical import blank_comments
+from vera.errors import span_bounds, span_text
+from vera.formatter import format_decl_canonical
 from vera.lowering import (
     ROW_TYPE_ARGUMENT,
     ROW_VARIABLE,
@@ -56,26 +56,6 @@ from vera.types import (
     substitute,
     types_equal,
 )
-
-def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
-    """Where the text *span* covers starts and ends in *source* (1-based,
-    end exclusive)."""
-    if span is None or not source:
-        return None
-    starts = [0]
-    for line in source_lines(source, keepends=True):
-        starts.append(starts[-1] + len(line))
-    if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
-        return None
-    return (starts[span.line - 1] + span.column - 1,
-            starts[span.end_line - 1] + span.end_column - 1)
-
-
-def _span_text(source: str, span: ast.Span | None) -> str | None:
-    """The text of *source* that *span* covers (1-based, end exclusive)."""
-    bounds = _span_bounds(source, span)
-    return None if bounds is None else source[bounds[0]:bounds[1]]
-
 
 def same_type_and_facts(a: Type, b: Type) -> bool:
     """Whether *a* and *b* are one type stating the same facts: equal as
@@ -234,10 +214,10 @@ class ResolutionMixin:
         written: String for a key or an element, which a map compares by
         content, and for a value a one-constructor data type holding the
         array."""
-        written = _span_text(self.source, te.span)
-        component = _span_text(self.source, arg_te.span)
-        outer = _span_bounds(self.source, te.span)
-        inner = _span_bounds(self.source, arg_te.span)
+        written = span_text(self.source, te.span)
+        component = span_text(self.source, arg_te.span)
+        outer = span_bounds(self.source, te.span)
+        inner = span_bounds(self.source, arg_te.span)
         if role == "value":
             advice = ("Store the array by reference, in an Option, which a "
                       "map holds as a value")
@@ -749,8 +729,7 @@ class ResolutionMixin:
                         and decl.name == name):
                     continue
                 label = ".".join(mod.path)
-                text = _declaration_text(mod.source, decl) or (
-                    f"type {name} = ...;")
+                text = format_decl_canonical(tld)
                 return (
                     f"  Module '{label}' declares a type alias '{name}', and "
                     f"an alias is module-local (Chapter 8, Section 8.4.1): "
@@ -1430,9 +1409,9 @@ class ResolutionMixin:
             te = te.base_type
         if not isinstance(arg, ast.AnonFn) or not isinstance(te, ast.NamedType):
             return general
-        whole = _span_bounds(self.source, arg.span)
-        at = _span_bounds(self.source, te.span)
-        ret = _span_bounds(self.source, arg.return_type.span)
+        whole = span_bounds(self.source, arg.span)
+        at = span_bounds(self.source, te.span)
+        ret = span_bounds(self.source, arg.return_type.span)
         if whole is None or at is None or ret is None:
             return general
         close = self.source.find(")", ret[1])
@@ -1637,25 +1616,3 @@ def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
             _overlay_literal_holes(a, b)
             for a, b in zip(soft.type_args, ty.type_args)))
     return ty
-
-
-def _declaration_text(source: str, decl: ast.Node) -> str | None:
-    """*decl*'s source text on one line, or ``None`` without a span.
-
-    Read with its comments blanked: joined onto one line, a ``--`` comment
-    inside a declaration written across lines would swallow the rest of it
-    (PR #1508 review).  :func:`~vera.lexical.blank_comments` shares the
-    parser's scanner, so a ``--`` inside a string literal stays.
-    """
-    span = decl.span
-    if span is None:
-        return None
-    lines = source_lines(blank_comments(source))[
-        span.line - 1:span.end_line]
-    if not lines:
-        return None
-    if len(lines) == 1:
-        return lines[0][span.column - 1:span.end_column - 1].strip() or None
-    lines[0] = lines[0][span.column - 1:]
-    lines[-1] = lines[-1][:span.end_column - 1]
-    return " ".join(line.strip() for line in lines if line.strip()) or None

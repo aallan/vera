@@ -2073,6 +2073,10 @@ def test_1451_a_diagnostic_survives_the_generic_collapse(
     verifier = object.__new__(vmod.ContractVerifier)
     verifier.obligations, verifier.errors = [], []
     verifier.file = "p.vera"
+    # The text a synthesised diagnostic quotes its line from: this
+    # program's, and no module's (#1636).
+    verifier.source = "".join(f"line {n}\n" for n in range(1, 31))
+    verifier._module_files, verifier._module_sources = {}, {}
     diag_line = 10 if same_span else 20
     per_instance = [
         (

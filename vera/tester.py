@@ -27,7 +27,7 @@ import z3
 
 from vera import ast, literals, naming
 from vera.binding import BODY_SUFFIX, SYMBOL_PREFIX
-from vera.errors import Diagnostic, SourceLocation, source_lines
+from vera.errors import Diagnostic, Placed, locate, locate_at
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -415,8 +415,7 @@ class _TestEngine:
                             f"{_ungenerable_reason(decl, self.alias_env)}, "
                             f"so its proof is not exercised."
                         ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
+                        **locate_at(self.file, self.source, decl.span),
                         rationale=(
                             "Contract-driven testing generates each input "
                             "with Z3 from its parameter's type, and encodes "
@@ -449,8 +448,7 @@ class _TestEngine:
                             f"Skipping test generation for '{fn_name}': "
                             f"{reason}."
                         ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
+                        **locate_at(self.file, self.source, decl.span),
                         rationale=(
                             "Contract-driven testing generates inputs with Z3 "
                             "from each parameter's type, its refinement "
@@ -505,8 +503,7 @@ class _TestEngine:
                             f"Cannot run '{fn_name}' to test its proof: "
                             f"{unrunnable}."
                         ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
+                        **locate_at(self.file, self.source, decl.span),
                         rationale=(
                             "`vera test --distrust` executes the functions "
                             "the verifier proved, and this one has no "
@@ -551,8 +548,7 @@ class _TestEngine:
                             f"Cannot test the proof of '{fn_name}': "
                             f"{missing}."
                         ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
+                        **locate_at(self.file, self.source, decl.span),
                         rationale=(
                             "`vera test --distrust` tests a proof by running "
                             "the function against the runtime checks code "
@@ -599,6 +595,7 @@ class _TestEngine:
                     typed=self.typed)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
+                # pragma: no mutate start — unreached: _classify_functions skips an unencodable parameter first; no test reaches these lines (line coverage with test contexts over every test file that runs the tester or imports vera.tester)
                 unsupported_names = _unsupported_type_names(param_types)
                 skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
                 _record_unrun(
@@ -608,8 +605,7 @@ class _TestEngine:
                         f"Cannot generate test inputs for '{fn_name}': "
                         f"parameter types are not Z3-encodable."
                     ),
-                    location=_fn_location(decl, self.file),
-                    source_line=_get_source_line(self.source, decl),
+                    **locate_at(self.file, self.source, decl.span),
                     rationale=(
                         "Contract-driven testing synthesises inputs with Z3 "
                         "from each parameter's type; a type Z3 cannot encode "
@@ -620,6 +616,7 @@ class _TestEngine:
                     error_code="E701",
                 ))
                 continue
+                # pragma: no mutate end
 
             if not inputs:
                 # Precondition is unsatisfiable — or, for a proved function,
@@ -640,8 +637,7 @@ class _TestEngine:
                             f"Cannot generate test inputs for '{fn_name}': "
                             f"{why}, so its proof is not exercised."
                         ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
+                        **locate_at(self.file, self.source, decl.span),
                         rationale=(
                             "Contract-driven testing asks Z3 for inputs that "
                             "satisfy the precondition, drawing `@Int` and "
@@ -702,7 +698,7 @@ class _TestEngine:
                     summary.passed += 1
 
             for trial in refuting[:3]:  # limit to first 3, as for E700
-                where, where_line = self._refuted_location(trial, decl)
+                where = self._refuted_location(trial, decl)  # pragma: no mutate — decl is read only for a refuted clause in another file, which no trial attributes
                 # What the proof took on trust: an `assume` in the function
                 # that owns a refuted record, and whether these arguments
                 # violate it, where the tester can tell.
@@ -713,12 +709,11 @@ class _TestEngine:
                 diagnostics.append(Diagnostic(
                     description=_refutation_description(
                         fn_name, trial, premise),
-                    location=where,
-                    source_line=where_line,
+                    **where,
                     rationale=rationale,
                     fix=fix,
                     spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E703",
                 ))
 
@@ -733,8 +728,7 @@ class _TestEngine:
                         + (f"\n  {trial.attribution}"
                            if trial.attribution else "")
                     ),
-                    location=_fn_location(decl, self.file),
-                    source_line=_get_source_line(self.source, decl),
+                    **locate_at(self.file, self.source, decl.span),
                     rationale=(
                         "Contract-driven testing ran the compiled "
                         "function on Z3-generated inputs satisfying its "
@@ -748,7 +742,7 @@ class _TestEngine:
                         "intended behaviour."
                     ),
                     spec_ref='Chapter 6, "Contracts"',
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E700",
                 ))
 
@@ -818,18 +812,14 @@ class _TestEngine:
 
     def _refuted_location(
         self, trial: TrialResult, decl: ast.FnDecl,
-    ) -> tuple[SourceLocation, str]:
+    ) -> Placed:
         """Where an E703 points: the proved clause that failed when it lies
         in the file under test, and the function's declaration otherwise."""
         first = trial.refutes[0]
-        lines = source_lines(self.source)
-        if first.file == self.file and 1 <= first.line <= len(lines):
-            return (
-                SourceLocation(
-                    file=self.file, line=first.line, column=first.column),
-                lines[first.line - 1],
-            )
-        return _fn_location(decl, self.file), _get_source_line(self.source, decl)
+        placed = locate(self.file, self.source, first.line, first.column)
+        if first.file == self.file and placed["source_line"]:  # pragma: no mutate — a trial refutes only a record of the file under test (a module's refutation is unattributed)
+            return placed
+        return locate_at(self.file, self.source, decl.span)  # pragma: no mutate — unreached: a trial refutes only a record of the file under test, which quotes its line
 
     def _get_targets(
         self,
@@ -2416,21 +2406,3 @@ def _count_slots(env: SlotEnv, type_name: str) -> int:
     """Count how many slots exist for a type name."""
     stack = env._stacks.get(type_name, [])
     return len(stack)
-
-
-def _fn_location(decl: ast.FnDecl, file: str | None) -> SourceLocation:
-    """Build a SourceLocation from a FnDecl."""
-    loc = SourceLocation(file=file)
-    if decl.span:
-        loc.line = decl.span.line
-        loc.column = decl.span.column
-    return loc
-
-
-def _get_source_line(source: str, decl: ast.FnDecl) -> str:
-    """Extract the source line for a function declaration."""
-    if decl.span:
-        lines = source_lines(source)
-        if 1 <= decl.span.line <= len(lines):
-            return lines[decl.span.line - 1]
-    return ""

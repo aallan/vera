@@ -684,6 +684,7 @@ MARKED_FILES = (
     "test_declared_widths_1525.py",
     "test_destructure_checked_against_source_1545.py",
     "test_diagnostic_codes_1490.py",
+    "test_diagnostic_placement_1636.py",
     "test_diagnostic_text_reads_back_1573.py",
     "test_engine_failure_matrix.py",
     "test_entry_and_body_1851.py",
