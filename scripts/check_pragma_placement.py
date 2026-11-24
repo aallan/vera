@@ -17,7 +17,13 @@ its place in the syntax tree:
   leading lines of an ``else``, ``elif``, ``except`` or ``finally`` (above
   the clause and shallower than the indented block it closes, or at any
   indent after a one-line suite, which has no footer), it is read by no
-  visitor;
+  visitor.  A footer runs through its last comment line deep enough for it,
+  so an ordinary comment line below a pragma can make the pragma footer.
+  The indented comment lines that end a module outside every block are one
+  footer line at their first line: the last of them is filed under the
+  first, and the others are read by no visitor;
+- alone on its line after a backslash, it ends the statement the backslash
+  continues, and is filed as that statement's trailing comment (below);
 - on a decorator's line, after the decorator, it is read by no visitor;
 - after code, outside every bracket, a pragma ends a statement and is filed
   under the line the statement starts on: a simple statement's trailing
@@ -102,15 +108,38 @@ CLAUSES = frozenset({"else", "elif", "except", "finally"})
 
 
 def footer_owns(column: int, clause: int, levels: list[int]) -> bool:
-    """Whether a comment line at ``column`` above a clause at column
-    ``clause`` is the footer of the indented block the clause closes, where
-    the engine reads it, rather than the clause's own leading lines, where it
-    does not.  ``levels`` are the indents of the blocks open at the comment.
+    """Whether a comment line above a clause at column ``clause`` is the
+    footer of the indented block the clause closes, where the engine reads
+    it, rather than the clause's own leading lines, where it does not.
+    libcst's footer runs through the last comment line deep enough for it, so
+    ``column`` is the deepest of the line's own and those of the comment lines
+    between it and the clause.  ``levels`` are the indents of the blocks open
+    at the comment.
     The block the clause closes is the shallowest one deeper than the clause;
     a clause after a one-line suite closes none, so nothing above it is a
     footer, at any column."""
     closed = [level for level in levels if level > clause]
     return bool(closed) and column >= min(closed)
+
+
+def module_tail(tokens: list[tokenize.TokenInfo], at: int) -> tuple[int, bool] | None:
+    """Where libcst 1.9 puts an indented comment line in the run of indented
+    comment lines that ends a module outside every block, or None for one in
+    no such run.  libcst keeps the run as one footer line holding the run's
+    last comment, positioned at the run's first line: so (the run's first
+    line, whether this is its last line), and the engine reads the last
+    line under the first and never reads the others."""
+    def indented_comment(t: tokenize.TokenInfo) -> bool:
+        return t.type == tokenize.COMMENT and t.start[1] > 0 and not t.line[:t.start[1]].strip()
+
+    rest = tokens[at + 1:]
+    if not all(indented_comment(t) or t.type in (tokenize.NEWLINE, tokenize.ENDMARKER)
+               or (t.type == tokenize.NL and t.line.strip()) for t in rest):
+        return None
+    first = at
+    while first >= 2 and tokens[first - 1].type == tokenize.NL and indented_comment(tokens[first - 2]):
+        first -= 2
+    return tokens[first].start[0], not any(t.type == tokenize.COMMENT for t in rest)
 
 
 def pragmas(source: str) -> list[Pragma]:
@@ -147,14 +176,24 @@ def pragmas(source: str) -> list[Pragma]:
             token = token_of(tok.string)
             if token is not None:
                 line = tok.start[0]
-                if not tok.line[:tok.start[1]].strip():
-                    following = next((t for t in tokens[at + 1:] if t.type not in skip), None)
+                # A comment line after a backslash ends the logical line it
+                # continues: it is that statement's trailing comment, not alone.
+                if not tok.line[:tok.start[1]].strip() and (depth > 0 or logical_start is None):
+                    rest = tokens[at + 1:]
+                    ahead = next((n for n, t in enumerate(rest) if t.type not in skip), len(rest))
+                    following = rest[ahead] if ahead < len(rest) else None
+                    # libcst's footer runs through the last comment line deep
+                    # enough for it, so a line below this one can make it footer.
+                    run = [t.start[1] for t in rest[:ahead] if t.type == tokenize.COMMENT]
                     if depth > 0:
                         found.append(Pragma(line, token, None, "alone in brackets"))
                     elif after_decorator:
                         found.append(Pragma(line, token, None, "after a decorator"))
+                    elif not levels and tok.start[1] > 0 and (tail := module_tail(tokens, at)) is not None:
+                        filed = tail[0] if tail[1] else None
+                        found.append(Pragma(line, token, filed, "alone" if filed == line else "module tail"))
                     elif (following is not None and following.string in CLAUSES
-                          and not footer_owns(tok.start[1], following.start[1], levels)):
+                          and not footer_owns(max([tok.start[1], *run]), following.start[1], levels)):
                         found.append(Pragma(line, token, None, "above a clause"))
                     else:
                         found.append(Pragma(line, token, line, "alone"))
@@ -182,13 +221,17 @@ def explain(p: Pragma) -> str:
                  "after a decorator": "alone after a decorator",
                  "above a clause": ("alone above an else, elif, except or finally, outside the "
                                     "footer of the block it closes"),
-                 "on a decorator": "on a decorator's line"}[p.how]
+                 "on a decorator": "on a decorator's line",
+                 "module tail": "in the indented comment lines that end the module, above the last"}[p.how]
         fix = ("write it after the code of the line it answers" if p.token == "bare"
                else "write it on a line of its own in a body, outside every bracket")
         return f"a `{p.token}` pragma {where} is read by no visitor: {fix}"
     if p.how == "alone":
         return ("a bare pragma on a line of its own protects no node: "
                 "write it after the code of the line it answers")
+    if p.how == "module tail":
+        return (f"filed under line {p.filed}, the first of the indented comment lines that end the "
+                f"module, not under line {p.line}: write it at column 0")
     return (f"filed under line {p.filed}, where the statement starts, not under line {p.line}: "
             "write it inside the brackets on the line of the node it answers, or make the "
             "statement one line")

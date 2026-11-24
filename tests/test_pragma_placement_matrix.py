@@ -3,9 +3,13 @@ generated matrix whose every source is judged by mutmut's own `PragmaVisitor`.
 
 No expected value is written by hand.  Each cell is one construct (a simple
 statement, or a compound statement with its clauses) in one form (its headers
-on one line or spanning lines; its suites on the header's line or indented),
-in one context (first at module level, or in a function body between two
-statements), with one pragma token (bare, ``block``, ``start``, ``end``).  The
+on one line, spanning lines inside brackets, or continued by a backslash; its
+suites on the header's line or indented), in one context (first at module
+level, or in a function body between two statements), with one pragma token
+(bare, ``block``, ``start``, ``end``), and with or without an ordinary comment
+line just above or just below each pragma alone on its line, at every indent
+a block opens at.  Sources Python refuses (all of them hold a backslash) are
+left out.  The
 cell writes one pragma in every place a comment can go in the construct:
 after the code of each of its lines, and alone on a line in each gap between
 its lines (before the first, after the last) at every indent its lines use,
@@ -69,39 +73,43 @@ Line = tuple[int, str]
 # The constructs: each a function of (span, form) giving its lines
 # ---------------------------------------------------------------------------
 
-#: Each header with an expression, on one line and spanning lines (the
-#: continuation lines' indents are relative to the header's).
-HEADERS: dict[str, tuple[list[Line], list[Line]]] = {
-    "if": ([(0, "if a:")], [(0, "if (a"), (8, "or b):")]),
-    "elif": ([(0, "elif c:")], [(0, "elif (c"), (8, "or d):")]),
-    "while": ([(0, "while a:")], [(0, "while (a"), (8, "or b):")]),
-    "for": ([(0, "for i in xs:")], [(0, "for i in ("), (4, "xs"), (0, "):")]),
-    "with": ([(0, "with m:")], [(0, "with ("), (4, "m"), (0, "):")]),
-    "except": ([(0, "except E:")], [(0, "except (E,"), (8, "F):")]),
-    "def": ([(0, "def f(a):")], [(0, "def f("), (4, "a,"), (0, "):")]),
-    "class": ([(0, "class C(B):")], [(0, "class C("), (4, "B,"), (0, "):")]),
-    "match": ([(0, "match a:")], [(0, "match ("), (4, "a"), (0, "):")]),
-    "case": ([(0, "case 1:")], [(0, "case ("), (4, "1"), (0, "):")]),
-    "else": ([(0, "else:")], [(0, "else:")]),
-    "try": ([(0, "try:")], [(0, "try:")]),
-    "finally": ([(0, "finally:")], [(0, "finally:")]),
+#: Each header with an expression, on one line, spanning lines inside
+#: brackets, and continued by a backslash (the continuation lines' indents
+#: are relative to the header's).
+HEADERS: dict[str, tuple[list[Line], list[Line], list[Line]]] = {
+    "if": ([(0, "if a:")], [(0, "if (a"), (8, "or b):")], [(0, "if a or \\"), (8, "b:")]),
+    "elif": ([(0, "elif c:")], [(0, "elif (c"), (8, "or d):")], [(0, "elif c or \\"), (8, "d:")]),
+    "while": ([(0, "while a:")], [(0, "while (a"), (8, "or b):")], [(0, "while a or \\"), (8, "b:")]),
+    "for": ([(0, "for i in xs:")], [(0, "for i in ("), (4, "xs"), (0, "):")], [(0, "for i in \\"), (4, "xs:")]),
+    "with": ([(0, "with m:")], [(0, "with ("), (4, "m"), (0, "):")], [(0, "with m, \\"), (4, "n:")]),
+    "except": ([(0, "except E:")], [(0, "except (E,"), (8, "F):")], [(0, "except \\"), (4, "E:")]),
+    "def": ([(0, "def f(a):")], [(0, "def f("), (4, "a,"), (0, "):")], [(0, "def f(a) \\"), (4, "-> T:")]),
+    "class": ([(0, "class C(B):")], [(0, "class C("), (4, "B,"), (0, "):")], [(0, "class C \\"), (4, "(B):")]),
+    "match": ([(0, "match a:")], [(0, "match ("), (4, "a"), (0, "):")], [(0, "match a \\"), (4, ":")]),
+    "case": ([(0, "case 1:")], [(0, "case ("), (4, "1"), (0, "):")], [(0, "case 1 \\"), (4, ":")]),
+    "else": ([(0, "else:")], [(0, "else:")], [(0, "else \\"), (4, ":")]),
+    "try": ([(0, "try:")], [(0, "try:")], [(0, "try \\"), (4, ":")]),
+    "finally": ([(0, "finally:")], [(0, "finally:")], [(0, "finally \\"), (4, ":")]),
 }
 
-#: Decorators, on one line and spanning lines.
-DECORATORS: tuple[list[Line], list[Line]] = (
+#: Decorators, the same three ways.
+DECORATORS: tuple[list[Line], list[Line], list[Line]] = (
     [(0, "@d"), (0, "@e(1)")],
-    [(0, "@d"), (0, "@e("), (4, "1,"), (0, ")")]
+    [(0, "@d"), (0, "@e("), (4, "1,"), (0, ")")],
+    [(0, "@d"), (0, "@e \\"), (4, ".f")],
 )
 
-#: Simple statements, on one line and spanning lines.
-SIMPLE: dict[str, tuple[list[Line], list[Line]]] = {
-    "assign": ([(0, "x = f(1, 2)")], [(0, "x = f("), (4, "1,"), (4, "2,"), (0, ")")]),
-    "assign_tight": ([(0, "x = g(1, 2)")], [(0, "x = g("), (4, "1,"), (4, "2)")]),
-    "call": ([(0, "f(1)")], [(0, "f("), (4, "1,"), (0, ")")]),
-    "return": ([(0, "return a or b")], [(0, "return ("), (4, "a"), (4, "or b"), (0, ")")]),
+#: Simple statements, the same three ways.
+SIMPLE: dict[str, tuple[list[Line], list[Line], list[Line]]] = {
+    "assign": ([(0, "x = f(1, 2)")], [(0, "x = f("), (4, "1,"), (4, "2,"), (0, ")")], [(0, "x = f(1) + \\"), (4, "2")]),
+    "assign_tight": ([(0, "x = g(1, 2)")], [(0, "x = g("), (4, "1,"), (4, "2)")], [(0, "x = g(1) \\"), (4, "+ 2")]),
+    # Complete before its backslash: only a comment line below it ends it.
+    "dangling": ([(0, "x = 1")], [(0, "x = 1")], [(0, "x = 1 \\")]),
+    "call": ([(0, "f(1)")], [(0, "f("), (4, "1,"), (0, ")")], [(0, "f \\"), (4, "(1)")]),
+    "return": ([(0, "return a or b")], [(0, "return ("), (4, "a"), (4, "or b"), (0, ")")], [(0, "return a \\"), (4, "or b")]),
 }
 
-SPANS = ("one", "span")
+SPANS = ("one", "span", "backslash")
 FORMS = ("line", "block")
 CONTEXTS = ("module", "body")
 TOKENS = ("bare", "block", "start", "end")
@@ -144,6 +152,9 @@ def construct(name: str, span: str, form: str) -> list[Line]:
         return [*header, *_clause("case", span, form, "x = 0", 4),
                 (4, "case _:" + (" x = 1" if form == "line" else "")),
                 *([] if form == "line" else [(8, "x = 1")])]
+    if name == "if_dangling":
+        # A header complete before its backslash, its suite indented below.
+        return [(0, "if a: \\"), (4, "x = 0")]
     if name == "if_nested_else":
         # The `else` closes the outer block; the inner `if` takes the form.
         return [*HEADERS["if"][SPANS.index(span)], *_clause("if", span, form, "x = 0", 4),
@@ -151,7 +162,7 @@ def construct(name: str, span: str, form: str) -> list[Line]:
     raise AssertionError(name)
 
 
-CONSTRUCTS = (*SIMPLE, "if", "if_else", "if_elif_else", "if_nested_else", "for_else", "while_else",
+CONSTRUCTS = (*SIMPLE, "if", "if_dangling","if_else", "if_elif_else", "if_nested_else", "for_else", "while_else",
               "with", "try_except", "try_except_else_finally", "try_finally", "def", "class",
               "decorated_def", "decorated_class", "match")
 
@@ -160,10 +171,17 @@ def _text(token: str) -> str:
     return "# pragma: no mutate" + ("" if token == "bare" else f" {token}")
 
 
-def sources(name: str, span: str, form: str, context: str, token: str) -> list[tuple[str, str, int, bool]]:
+#: An ordinary comment line beside each pragma alone on its line: none, one
+#: just above it, or one just below it, at every indent a block opens at.
+COMPANIONS = ("none", "above", "below")
+
+Cell = tuple[str, str, str, str, str, str]
+
+
+def sources(*cell: str) -> list[tuple[str, str, int, bool]]:
     """Every source of a cell that Python parses."""
     out = []
-    for where, source, line, alone in written(name, span, form, context, token):
+    for where, source, line, alone in written(*cell):
         try:
             ast.parse(source)
         except SyntaxError:
@@ -172,9 +190,12 @@ def sources(name: str, span: str, form: str, context: str, token: str) -> list[t
     return out
 
 
-def written(name: str, span: str, form: str, context: str, token: str) -> list[tuple[str, str, int, bool]]:
+def written(
+    name: str, span: str, form: str, context: str, token: str, companion: str
+) -> list[tuple[str, str, int, bool]]:
     """Every source a cell writes: (where, source, the pragma's line,
-    whether it is alone on its line)."""
+    whether it is alone on its line).  A cell with a companion writes only
+    the pragmas alone on their line, each beside one ordinary comment line."""
     lines = construct(name, span, form)
     before: list[Line] = []
     after: list[Line] = []
@@ -190,22 +211,31 @@ def written(name: str, span: str, form: str, context: str, token: str) -> list[t
         source = "".join(" " * indent + text + "\n" for indent, text in [*before, *body, *after])
         out.append((where, source, len(before) + line, alone))
 
-    for i, (indent, text) in enumerate(lines):
-        emit(f"after_line_{i + 1}", [*lines[:i], (indent, f"{text}  {comment}"), *lines[i + 1:]], i + 1, False)
+    if companion == "none":
+        for i, (indent, text) in enumerate(lines):
+            emit(f"after_line_{i + 1}", [*lines[:i], (indent, f"{text}  {comment}"), *lines[i + 1:]], i + 1, False)
     for gap in range(len(lines) + 1):
         for column in columns:
-            emit(f"gap_{gap}_col_{column}", [*lines[:gap], (column, comment), *lines[gap:]], gap + 1, True)
+            if companion == "none":
+                emit(f"gap_{gap}_col_{column}", [*lines[:gap], (column, comment), *lines[gap:]], gap + 1, True)
+                continue
+            for other in levels:
+                pair = [(other, "# a note"), (column, comment)]
+                if companion == "below":
+                    pair.reverse()
+                emit(f"gap_{gap}_col_{column}_note_{companion}_col_{other}", [*lines[:gap], *pair, *lines[gap:]],
+                     gap + 1 + (companion == "above"), True)
     return out
 
 
-def _cells() -> list[tuple[str, str, str, str, str]]:
+def _cells() -> list[Cell]:
     cells, seen = [], set()
-    for name, span, form, context, token in itertools.product(CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS):
-        key = tuple(source for _, source, _, _ in sources(name, span, form, context, token))
+    for cell in itertools.product(CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS, COMPANIONS):
+        key = tuple(source for _, source, _, _ in sources(*cell))
         if key in seen:  # A simple statement has no suite: its two forms are one.
             continue
         seen.add(key)
-        cells.append((name, span, form, context, token))
+        cells.append(cell)
     return cells
 
 
@@ -234,10 +264,10 @@ def engine_reading(source: str) -> tuple[int | None, set[int]]:
     return (min(marked) if marked else None), marked
 
 
-def disagreements(cell: tuple[str, str, str, str, str]) -> tuple[int, list[str]]:
+def disagreements(cell: Cell) -> tuple[int, list[str]]:
     """How many sources the cell has, and each one where the gate and the
     engine differ, described."""
-    token = cell[-1]
+    token = cell[4]
     found = sources(*cell)
     wrong = []
     for where, source, line, alone in found:
@@ -254,19 +284,24 @@ def disagreements(cell: tuple[str, str, str, str, str]) -> tuple[int, list[str]]
     return len(found), wrong
 
 
-@pytest.mark.parametrize(("construct", "span", "form", "context", "token"), CELLS)
+@pytest.mark.parametrize(("construct", "span", "form", "context", "token", "companion"), CELLS)
 def test_the_gate_reads_every_place_of_a_pragma_as_the_engine_does(
-    construct: str, span: str, form: str, context: str, token: str
+    construct: str, span: str, form: str, context: str, token: str, companion: str
 ) -> None:
-    count, wrong = disagreements((construct, span, form, context, token))
+    count, wrong = disagreements((construct, span, form, context, token, companion))
     assert count > 0
     assert not wrong, "\n".join(wrong)
 
 
-def test_the_matrix_spans_every_construct_and_drops_none() -> None:
-    """Every construct, span, form, context and token is in some cell, and
-    every source a cell writes parses: none is left out."""
-    for n, dimension in enumerate((CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS)):
+def test_the_matrix_spans_every_dimension_and_drops_only_what_python_refuses() -> None:
+    """Every value of every dimension is in some cell, and the only sources
+    Python refuses hold a backslash: a comment after one on its line, or a
+    comment line ending the statement it continues too early, or no comment
+    line ending a statement complete before it."""
+    for n, dimension in enumerate((CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS, COMPANIONS)):
         assert {cell[n] for cell in CELLS} == set(dimension)
     for cell in CELLS:
-        assert len(sources(*cell)) == len(written(*cell)) > 2 * len(construct(*cell[:3])), cell
+        kept = {source for _, source, _, _ in sources(*cell)}
+        assert kept, cell
+        for where, source, _, _ in written(*cell):
+            assert source in kept or "\\\n" in source or "\\  #" in source, (cell, where, source)

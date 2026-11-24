@@ -117,6 +117,34 @@ def test_repro_a_pragma_above_a_clause_after_a_one_line_suite_is_read_by_no_visi
     assert (q.filed, q.misplaced) == (3, False)
 
 
+def test_repro_a_comment_line_after_a_backslash_ends_the_statement_it_continues() -> None:
+    """The engine files it under the statement's first line, as a trailing
+    comment, though nothing but the comment is on its own line."""
+    (p,) = gate.pragmas(f"x = 1 \\\n    {P} block\n")
+    assert (p.filed, p.how, p.misplaced) == (1, "statement", True)
+
+
+def test_repro_a_comment_line_below_a_pragma_makes_it_footer() -> None:
+    """libcst's footer runs through the last comment line deep enough for
+    the block, so an ordinary comment below the pragma decides; without it
+    the same pragma is the clause's own leading line."""
+    (p,) = gate.pragmas(f"if a:\n    x = 1\n{P} block\n    # a note\nelse:\n    x = 2\n")
+    assert (p.filed, p.misplaced) == (3, False)
+    (q,) = gate.pragmas(f"if a:\n    x = 1\n{P} block\n# a note\nelse:\n    x = 2\n")
+    assert (q.filed, q.misplaced) == (None, True)
+
+
+def test_repro_the_indented_comment_lines_ending_a_module_are_one_line_at_their_first() -> None:
+    """libcst keeps the run as one footer line, the run's last comment at
+    the run's first line: the last is filed one line up, the others nowhere."""
+    (p,) = gate.pragmas(f"x = 1\n    # a note\n  {P} block\n")
+    assert (p.filed, p.misplaced) == (2, True)
+    (q,) = gate.pragmas(f"x = 1\n  {P} block\n    # a note\n")
+    assert (q.filed, q.misplaced) == (None, True)
+    (r,) = gate.pragmas(f"x = 1\n  {P} block\n")
+    assert (r.filed, r.misplaced) == (2, False)
+
+
 def test_the_message_names_the_line_the_engine_files_it_under() -> None:
     (p,) = gate.check_source(SHAPES["after_a_call_that_spans_lines"][0])
     assert "filed under line 1" in gate.explain(p) and "not under line 3" in gate.explain(p)
