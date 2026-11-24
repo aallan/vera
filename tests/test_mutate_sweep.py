@@ -616,6 +616,36 @@ class TestFindState:
             sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--gh", sys.executable, str(fake)])
         assert "run=" not in capsys.readouterr().out
 
+    @pytest.mark.parametrize(("change", "ok"), [
+        ({}, True), ({"head_branch": "tooling/x"}, True), ({"event": "pull_request"}, False),
+        ({"status": "in_progress"}, False), ({"head_repo": 666}, False),
+        ({"path": ".github/workflows/ci.yml"}, False)])
+    def test_a_named_run_is_checked_as_the_lookup_checks_one_any_branchs(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], change: dict[str, Any], ok: bool,
+    ) -> None:
+        """A dispatch's `state_run` (a redraw's second night carries on from
+        its first, on a branch): this workflow's, completed, of the schedule
+        or a dispatch, on this repository; never a fallback to the lookup."""
+        fields = dict(change)
+        head_repo = fields.pop("head_repo", REPO_ID)
+        branch = fields.pop("head_branch", None)
+        run = _run(77, "2026-11-24T21:00:00Z", head_repo=head_repo)
+        run.update(fields)
+        if branch is not None:
+            run["head_branch"] = branch
+        fake = tmp_path / "fake_gh.py"
+        arts = {"artifacts": [{"name": "mutation-sweep-state", "expired": False}]}
+        fake.write_text(
+            "import json, sys\n"
+            f"run = {run!r}\narts = {arts!r}\n"
+            "print(json.dumps(arts if 'artifacts' in sys.argv[2] else run))\n", encoding="utf-8")
+        code = sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--run", "77",
+                        "--gh", sys.executable, str(fake)])
+        out = capsys.readouterr()
+        assert (code, out.out) == ((0, "run=77\n") if ok else (2, ""))
+        assert sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--run", "77; x",
+                        "--gh", sys.executable, str(fake)]) == 2
+
     def test_the_command_asks_for_this_workflows_completed_runs_on_main(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -1640,6 +1670,161 @@ class TestStitch:
 
 
 # ---------------------------------------------------------------------------
+# A redraw: a closed cycle's sample decided again under the declared oracle
+# ---------------------------------------------------------------------------
+
+
+ORACLE = {"rule": sw.md.ORACLE_RULE, "modules": {"vera/a.py": ["tests/test_a.py"], "vera/b.py": ["tests/test_b.py"]}}
+
+
+def _closed_cycle_one() -> dict[str, Any]:
+    """Cycle 1 closed over A, B and C (every mutant sampled): every mutant
+    killed but B's second, which survived (its line 21, B starting at 20)."""
+    state = _state(f=4, m=3, g=5)
+    state, night = _stitch([_record(0, 1, {A.ident: _res(A, killed=4),
+                                           B.ident: _res(B, killed=2, survived=1, survivors=("2@2:survived",)),
+                                           C.ident: _res(C, killed=5)})], state, jobs=1)
+    assert night["closed"] and state["cycle"] == 2
+    assert state["last_complete"]["survivors"] == [f"vera.a.x{SEP}C{SEP}m__mutmut_2@21:survived"]
+    return state
+
+
+class TestRedraw:
+    def test_repro_a_redraw_decides_the_closed_cycles_sample_again_and_reports_the_differential(self) -> None:
+        """#1838's proof: cycle 1's sample, decided again under the declared
+        oracle, against what the cycle decided under each mutant's covering
+        tests.  A mutant killed then and survived or reached by no declared
+        test now is a flip, with the killer its slice named; one survived
+        then and killed now is counted apart.  A redraw closes no cycle."""
+        state = _closed_cycle_one()
+        rec = _record(0, 1, {A.ident: _res(A, killed=3, survived=1, survivors=("4@4:survived",)),
+                             B.ident: _res(B, killed=3),
+                             C.ident: _res(C, killed=4, no_tests=1)})
+        rec["killers"] = {"vera.a.x_f__mutmut_4": "tests/test_x.py::test_k",
+                          "vera.b.x_g__mutmut_5": "not named: no test of the covered selection fails with it"}
+        report: dict[str, Any] = {}
+        out, night = sw.stitch(state, "none", [rec], jobs=1, head=HEAD, units=UNITS, today="2026-10-18",
+                               oracle=ORACLE, redraw=1, report=report)
+        assert night["problems"] == [] and not night["closed"] and out["cycle"] == 1
+        assert out["redraw"]["units"] == sorted(u.ident for u in UNITS)
+        diff = report["differential"]
+        assert diff["totals"] == {"decided": 12, "kills_then": 11, "flips": 2, "flips_pct": 18.18,
+                                  "killers_named": 1, "survived_killed": 1}
+        row_a, row_b = diff["modules"]["vera/a.py"], diff["modules"]["vera/b.py"]
+        assert (row_a["killed_killed"], row_a["flips"], row_a["survived_killed"]) == (5, 1, 1)
+        assert row_a["flipped"] == [{"mutant": "vera.a.x_f__mutmut_4", "line": 4, "now": "survived",
+                                     "killer": "tests/test_x.py::test_k"}]
+        assert row_a["killers"] == {"tests/test_x.py": 1}
+        assert (row_b["flips"], row_b["flipped"][0]["now"], row_b["killers"]) == (1, "no tests", {})
+        sw.check_state(json.loads(json.dumps(out)))
+        table = sw.render_differential(diff)
+        assert "| `vera/a.py` | 7 | 5 | 1 | 1 | 0 | `tests/test_x.py` 1 |" in table
+        assert "| `vera/b.py` | 5 | 4 | 1 | 0 | 0 | 1 not named |" in table
+
+    def test_a_redraw_compares_only_the_units_whose_code_is_unchanged_and_spans_nights(self) -> None:
+        """A unit whose code moved since the cycle closed is not compared, so
+        it is neither planned nor counted; a second night on the first's
+        state carries on, its outcomes joining the first's."""
+        state = _closed_cycle_one()
+        moved = _u("vera/b.py", "x_g", 1, code="f" * 16)
+        units = [A, B, moved]
+        redrawn = sw.take_state(state, 1, units, ORACLE, "2026-10-18")
+        assert redrawn["redraw"]["units"] == sorted([A.ident, B.ident])
+        assert redrawn["calibration"] == 1.0 and redrawn["cycle"] == 1
+        planned = sw.reconcile(redrawn, units, "3.8.0")
+        planned["units"][moved.ident].update(mutants=5, lines=_lines(5))
+        (bin_,) = sw.plan(planned, units, jobs=1, budget_s=1e9)
+        assert [p.unit for p in bin_] == [A, B]
+        first, _ = sw.stitch(state, "none", [_record(0, 1, {A.ident: _res(A, killed=4)})], jobs=1, head=HEAD,
+                             units=units, today="2026-10-18", oracle=ORACLE, redraw=1)
+        report: dict[str, Any] = {}
+        second, night = sw.stitch(first, "none", [_record(0, 1, {B.ident: _res(B, killed=3)})], jobs=1, head=HEAD,
+                                  units=units, today="2026-10-19", oracle=ORACLE, redraw=1, report=report)
+        assert set(second["redraw"]["outcomes"]) == {A.ident, B.ident}
+        assert report["differential"]["totals"]["decided"] == 7 and not night["closed"]
+        assert "the night planned nothing while the cycle is open" not in night["problems"]
+
+    def test_a_redraw_needs_its_closed_cycle_and_a_redraw_state_needs_its_redraw(self) -> None:
+        state = _closed_cycle_one()
+        with pytest.raises(sw.StateError, match="keeps no closed cycle 3"):
+            sw.take_state(state, 3, UNITS, ORACLE, "2026-10-18")
+        redrawn = sw.take_state(state, 1, UNITS, ORACLE, "2026-10-18")
+        with pytest.raises(sw.StateError, match="is a redraw of cycle 1"):
+            sw.take_state(redrawn, 0, UNITS, ORACLE, "2026-10-18")
+        with pytest.raises(sw.StateError, match="not of cycle 2"):
+            sw.take_state(redrawn, 2, UNITS, ORACLE, "2026-10-18")
+        assert sw.take_state(redrawn, 1, UNITS, ORACLE, "2026-10-19") == redrawn
+
+    def test_a_slices_flips_are_named_by_their_windowed_runs_names(self) -> None:
+        state = sw.take_state(_closed_cycle_one(), 1, UNITS, ORACLE, "2026-10-18")
+        (bin_,) = sw.plan(state, UNITS, jobs=1, budget_s=1e9)
+        results = {A.ident: _res(A, killed=3, survived=1, survivors=("4@4:survived",)),
+                   B.ident: _res(B, killed=1, survived=2, survivors=("1@1:survived", "2@2:survived")),
+                   C.ident: _res(C, killed=4, no_tests=1)}
+        # B's second survived in cycle 1 too: no flip.
+        assert sw.redraw_flips(state, bin_, results) == [
+            "vera.a.x_f__mutmut_4", f"vera.a.x{SEP}C{SEP}m__mutmut_1", "vera.b.x_g__mutmut_5"]
+
+    def test_a_probe_runs_the_files_its_modules_oracle_leaves_out_and_names_the_first_failure(
+        self, tmp_path: Path,
+    ) -> None:
+        """No mutmut run (no stats pass): pytest in the generated tree with
+        the flip active, stopping at the first failure, which the oracle
+        plugin writes down; the bin's other modules' oracles first."""
+        calls: list[dict[str, Any]] = []
+        killers = tmp_path / "killers.txt"
+
+        def run(argv: list[str], **kw: Any) -> Any:
+            calls.append({"argv": argv, **kw})
+            if kw["env"]["MUTANT_UNDER_TEST"] == "vera.a.x_f__mutmut_4":
+                killers.write_text("vera.a.x_f__mutmut_4\ttests/test_b.py::test_y\n", encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 1)
+            return subprocess.CompletedProcess(argv, 0)
+
+        oracle = {"rule": "r", "modules": {"vera/a.py": ["tests/test_a.py"], "vera/b.py": ["tests/test_b.py"]}}
+        env = {sw.CAP_ENV: "2400", sw.md.ORACLE_MAP_ENV: "map.json", "KEEP": "1"}
+        out = sw.probe_flips(tmp_path, ["vera.a.x_f__mutmut_4", "vera.a.x_f__mutmut_5"], oracle,
+                             ["vera/a.py", "vera/b.py"], ["tests/test_a.py", "tests/test_b.py", "tests/test_z.py"],
+                             ["-p", "tests.mutation_oracle", "--matrix-seed=cycle-1"], env, 100.0, killers, run=run)
+        assert out == {"vera.a.x_f__mutmut_4": "tests/test_b.py::test_y",
+                       "vera.a.x_f__mutmut_5": "not named: no test of the covered selection fails with it"}
+        first = calls[0]
+        assert first["argv"][-2:] == ["tests/test_b.py", "tests/test_z.py"]  # its own module's file left out
+        assert "-x" in first["argv"] and "--matrix-seed=cycle-1" in first["argv"]
+        assert first["cwd"] == str(tmp_path / "mutants")
+        assert first["env"]["MUTANT_UNDER_TEST"] == "vera.a.x_f__mutmut_4" and first["env"]["KEEP"] == "1"
+        assert sw.CAP_ENV not in first["env"] and sw.md.ORACLE_MAP_ENV not in first["env"]
+        assert first["env"][sw.KILLERS_ENV] == str(killers)
+        assert sw.KILLERS_ENV == "MUTATION_ORACLE_KILLERS"
+
+    def test_a_probe_out_of_time_names_why(self, tmp_path: Path) -> None:
+        def run(argv: list[str], **kw: Any) -> Any:
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+        out = sw.name_killers(tmp_path, ["vera.a.x_f__mutmut_1"], ["tests/test_a.py"], [], {}, 100.0,
+                              tmp_path / "k.txt", cap_s=5.0, run=run)
+        assert out == {"vera.a.x_f__mutmut_1": "not named: no test failed in the probe's 5 s"}
+        assert sw.name_killers(tmp_path, ["vera.a.x_f__mutmut_1"], [], [], {}, 0.0, tmp_path / "k.txt",
+                               run=run) == {"vera.a.x_f__mutmut_1": "not named: the slice's time for probes ran out"}
+
+    def test_a_real_probe_names_the_test_that_fails_with_the_flip_active(self, tmp_path: Path) -> None:
+        """The probe through pytest and the oracle plugin themselves: the
+        test that fails only with the flip active is named."""
+        tests = tmp_path / "mutants" / "tests"
+        tests.mkdir(parents=True)
+        shutil.copyfile(ROOT / "tests" / "mutation_oracle.py", tests / "mutation_oracle.py")
+        (tests / "test_k.py").write_text(
+            "import os\n\ndef test_ok():\n    pass\n\n"
+            "def test_k():\n    assert os.environ.get('MUTANT_UNDER_TEST') != 'vera.a.x_f__mutmut_4'\n",
+            encoding="utf-8")
+        out = sw.name_killers(tmp_path / "mutants", ["vera.a.x_f__mutmut_4", "vera.a.x_f__mutmut_5"],
+                              ["tests/test_k.py"], ["-p", "tests.mutation_oracle"], dict(os.environ), 120.0,
+                              tmp_path / "killers.txt", cap_s=60.0)
+        assert out == {"vera.a.x_f__mutmut_4": "tests/test_k.py::test_k",
+                       "vera.a.x_f__mutmut_5": "not named: no test of the covered selection fails with it"}
+
+
+# ---------------------------------------------------------------------------
 # Closing a cycle, and the committed summary
 # ---------------------------------------------------------------------------
 
@@ -1818,6 +2003,19 @@ class TestWorkflow:
         (step,) = [s for s in self._steps("setup") if s.get("id") == "state"]
         assert "scripts/mutate_sweep.py find-state" in step["run"] and '--repo-id "$REPO_ID"' in step["run"]
         assert step["env"]["REPO_ID"] == "${{ github.repository_id }}"
+
+    def test_a_dispatch_can_redraw_a_closed_cycle_from_a_named_run(self) -> None:
+        """#1838's proof night: `redraw` reaches the slices and the stitch,
+        `state_run` the lookup, which checks the run it names."""
+        inputs = self._wf()[True]["workflow_dispatch"]["inputs"]
+        assert inputs["redraw"] == {"description": inputs["redraw"]["description"], "type": "number", "default": 0}
+        assert inputs["state_run"]["type"] == "string" and inputs["state_run"]["default"] == ""
+        (state,) = [s for s in self._steps("setup") if s.get("id") == "state"]
+        assert '--run "$STATE_RUN"' in state["run"] and state["env"]["STATE_RUN"] == "${{ inputs.state_run }}"
+        (start,) = [s for s in self._steps("sweep") if "scripts/mutate_sweep.py start" in s.get("run", "")]
+        (fold,) = [s for s in self._steps("stitch") if "scripts/mutate_sweep.py stitch" in s.get("run", "")]
+        for step in (start, fold):
+            assert '--redraw "$REDRAW"' in step["run"] and step["env"]["REDRAW"] == "${{ inputs.redraw || 0 }}"
 
     def test_a_setup_lookup_that_fails_fails_the_step(self) -> None:
         """bash with pipefail, and the command's output taken into a variable

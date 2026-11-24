@@ -45,6 +45,14 @@ on:
         description: "Post the night's comment on the standing results issue (a dispatched night posts nothing otherwise)"
         type: boolean
         default: false
+      redraw:
+        description: "A closed cycle to draw again under the declared oracle, for its differential (0: none; MUTATION.md § A redraw)"
+        type: number
+        default: 0
+      state_run:
+        description: "The run whose state the night carries on from, in place of the lookup (any branch's; empty: the lookup)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -92,15 +100,19 @@ jobs:
       # run on a branch named main, or another workflow's, could upload an
       # artifact of the same name); none before the first night.  A lookup
       # that fails fails the night: "no state" comes only from listings that
-      # succeeded, so an API error never restarts the cycle.
+      # succeeded, so an API error never restarts the cycle.  A dispatch
+      # may name the run instead (`state_run`, a redraw's second night on a
+      # branch): it is checked as the lookup checks a run, any branch's, and
+      # one that fails the check fails the night.
       - id: state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           REPO_ID: ${{ github.repository_id }}
+          STATE_RUN: ${{ inputs.state_run }}
         run: |
-          found=$(python3 scripts/mutate_sweep.py find-state --repo "$REPO" --repo-id "$REPO_ID")
+          found=$(python3 scripts/mutate_sweep.py find-state --repo "$REPO" --repo-id "$REPO_ID" --run "$STATE_RUN")
           echo "$found" >> "$GITHUB_OUTPUT"
 
   sweep:
@@ -174,11 +186,13 @@ jobs:
         env:
           SLICE: ${{ matrix.slice }}
           JOBS: ${{ needs.setup.outputs.jobs }}
+          REDRAW: ${{ inputs.redraw || 0 }}
         run: >-
           python scripts/mutate_sweep.py start
           --slice "$SLICE" --live "$RUNNER_TEMP/live"
           --
           --slice "$SLICE" --of "$JOBS"
+          --redraw "$REDRAW"
           --state "$RUNNER_TEMP/state-in"
           --budget 16200
           --max-children 2
@@ -442,9 +456,11 @@ jobs:
           JOBS: ${{ needs.setup.outputs.jobs }}
           SWEEP_RESULT: ${{ needs.sweep.result }}
           MUTATION_SWEEP_GENERATION: ${{ github.run_id }}
+          REDRAW: ${{ inputs.redraw || 0 }}
         run: >-
           python scripts/mutate_sweep.py stitch
           --sweep-result "$SWEEP_RESULT"
+          --redraw "$REDRAW"
           --state "$RUNNER_TEMP/state-in"
           --slices "$RUNNER_TEMP/slices"
           --of "$JOBS"

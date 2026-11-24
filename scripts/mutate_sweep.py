@@ -122,6 +122,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -1150,11 +1151,24 @@ def check_state(data: Any) -> dict[str, Any]:
 def check_redraw(redraw: Any) -> None:
     """A redraw (:func:`redraw_state`): the closed cycle it draws again, and
     the units it compares, by ident."""
-    rec = _keys(redraw, {"cycle", "units"}, "the redraw")
+    optional = {k for k in ("outcomes", "killers") if isinstance(redraw, dict) and k in redraw}
+    rec = _keys(redraw, {"cycle", "units"} | optional, "the redraw")
     _int(rec["cycle"], 1, 10**6, "the redrawn cycle")
     _check(isinstance(rec["units"], list) and len(rec["units"]) <= MAX_MUTANTS, "the redraw's units")
     for ident in rec["units"]:
         _text(ident, _IDENT, "a redrawn unit")
+    if "outcomes" in rec:
+        _check(isinstance(rec["outcomes"], dict) and set(rec["outcomes"]) <= set(rec["units"]),
+               "the redraw's outcomes")
+        for ident, decided in rec["outcomes"].items():
+            _check_decided(decided, MAX_MUTANTS, f"the redraw of {ident}")
+    if "killers" in rec:
+        _check(isinstance(rec["killers"], dict) and len(rec["killers"]) <= MAX_LISTED, "the redraw's killers")
+        for key, killer in rec["killers"].items():
+            ident, _, number = str(key).rpartition("#")
+            _text(ident, _IDENT, "a flip's unit")
+            _check(_NUMBER.fullmatch(number) is not None, f"a flip's number {number!r}")
+            _text(killer, _TESTID, f"{key}'s killer")
 
 
 def check_record(record: Any) -> None:
@@ -1206,6 +1220,12 @@ def check_record(record: Any) -> None:
     ages = record.get("in_flight_s", {})
     _check(isinstance(ages, dict) and set(ages) <= set(in_flight) and all(
         type(s) in (int, float) and 0 <= s < 1e6 for s in ages.values()), "its mutants' time in flight")
+    # A redraw's flips, each with the test that killed it or why none was
+    # named (name_killers).
+    killers = record.get("killers", {})
+    _check(isinstance(killers, dict) and len(killers) <= MAX_LISTED and all(
+        isinstance(n, str) and _MUTANT.fullmatch(n) and isinstance(k, str) and _TESTID.fullmatch(k)
+        for n, k in killers.items()), "its flips' killers")
     _check(isinstance(record.get("engine_running", False), bool), "its engine's state is not a flag")
     _check(isinstance(record.get("budget_stopped", False), bool), "its budget's stop is not a flag")
     results = record.get("results")
@@ -1488,6 +1508,152 @@ def redraw_units(state: Mapping[str, Any]) -> frozenset[str] | None:
     outside a redraw."""
     redraw = state.get("redraw")
     return frozenset(redraw["units"]) if redraw else None
+
+
+def closed_record(state: Mapping[str, Any], cycle: int) -> Mapping[str, Any] | None:
+    """Closed cycle ``cycle``'s record, the last closed or a kept one."""
+    last = state.get("last_complete")
+    if last and int(last["cycle"]) == cycle:
+        return last
+    return next((c["record"] for c in state.get("comments") or [] if int(c["cycle"]) == cycle), None)
+
+
+def redraw_state(state: Mapping[str, Any], cycle: int, units: Sequence[SweepUnit],
+                 oracle: Mapping[str, Any] | None, today: str) -> dict[str, Any]:
+    """The state for a redraw of closed cycle ``cycle``: its sample drawn
+    again over the units still comparable (in the tree at the head with the
+    hash the state holds, so the same lines and mutants), every window
+    undecided, under the declared oracle at calibration 1.0, so a night
+    decides again what the cycle decided against each mutant's covering
+    tests (:func:`differential`).  A state that is already that redraw is
+    taken as it is, so a second night carries on from the first's.  A
+    redraw never closes a cycle; its state is a branch's (the workflow's
+    ``redraw`` input), never one a night on main reads."""
+    current = state.get("redraw")
+    if current:
+        if int(current["cycle"]) != cycle:
+            raise StateError(f"the state is a redraw of cycle {current['cycle']}, not of cycle {cycle}")
+        return json.loads(json.dumps(state))  # a copy: the stitch adds to its redraw
+    if closed_record(state, cycle) is None:
+        raise StateError(f"the state keeps no closed cycle {cycle} to redraw")
+    out = json.loads(json.dumps(state))
+    held = {u.ident: u for u in units}
+    compared = []
+    for ident, rec in out["units"].items():
+        unit = held.get(ident)
+        if (unit is not None and unit.path not in md.UNDECLARED and rec.get("hash") == unit.hash and rec.get("lines")
+                and any(in_sample(cycle, ident, int(line)) for line in rec["lines"])):
+            compared.append(ident)
+        rec["window"] = rec["partial"] = None
+        rec.pop("losses", None)
+    out.update(cycle=cycle, cycle_started=today, calibration=1.0, redraw={"cycle": cycle, "units": sorted(compared)})
+    out.pop("calibration_cycle", None)
+    if oracle is not None:
+        out["oracle_rule"] = oracle["rule"]
+        out["oracles"] = oracle_digests(oracle)
+    return out
+
+
+#: A redraw's outcome of a killed mutant (``caught by type check`` is mutmut's
+#: other kill), and the outcomes a flip is: the declared oracle leaves it.
+KILLS = frozenset({"killed", "caught by type check"})
+FLIPS = frozenset({"survived", "no tests"})
+
+
+def absorb_redraw(state: dict[str, Any], records: Sequence[Mapping[str, Any]]) -> None:
+    """Keep in the redraw each compared mutant's outcome as a night's
+    records decided it, by window number (a decided window keeps only its
+    listed mutants by number), and each flip's killer the slice named
+    (:func:`name_killers`), so the differential spans every night of the
+    redraw."""
+    redraw = state["redraw"]
+    only = frozenset(redraw["units"])
+    outcomes = redraw.setdefault("outcomes", {})
+    killers = redraw.setdefault("killers", {})
+    for record in records:
+        for ident, result in (record.get("results") or {}).items():
+            rec = state["units"].get(ident)
+            if ident not in only or rec is None or result.get("hash") != rec["hash"]:
+                continue
+            mine = outcomes.setdefault(ident, {})
+            for number, status in result.get("decided", {}).items():
+                mine.setdefault(str(number), status)
+        for name, killer in (record.get("killers") or {}).items():
+            found = mutant_of(name)
+            if found is None:
+                continue
+            ident = next((i for i in only if i.endswith(f"::{found[1]}")
+                          and md.module_name(i.split("::", 1)[0]) == found[0]), None)
+            if ident is not None:
+                killers[f"{ident}#{found[2]}"] = str(killer)[:LISTED_MAX]
+
+
+def differential(state: Mapping[str, Any], units: Sequence[SweepUnit]) -> dict[str, Any]:
+    """The redraw against the closed cycle it draws again, per module: the
+    compared mutants decided, killed then and now, killed then and left now
+    (a flip: survived, or reached by no test of the module's declared
+    oracle), survived then and killed now, and every flip with the killer
+    the slice named, by file.  A mutant the cycle decided ``no tests`` is
+    not listed in its record, so it reads as killed then; a flip of one
+    names no killer, since no test reaches it either way."""
+    redraw = state["redraw"]
+    cycle = int(redraw["cycle"])
+    then: dict[tuple[str, str, int], str] = {}
+    for entry in (closed_record(state, cycle) or {}).get("survivors", []):
+        name, _, status = entry.rpartition(":")
+        found = mutant_of(name.partition("@")[0])
+        if found is not None:
+            then[found] = status
+    by_ident = {u.ident: u for u in units}
+    modules: dict[str, dict[str, Any]] = {}
+    for ident, decided in sorted((redraw.get("outcomes") or {}).items()):
+        unit = by_ident.get(ident)
+        if unit is None:
+            continue
+        lines, counts, before = window_counts(state, unit)
+        pick = Pick(unit=unit, lines=lines, counts=counts, before=before)
+        row = modules.setdefault(unit.path, {"decided": 0, "killed_killed": 0, "flips": 0, "survived_killed": 0,
+                                             "other": 0, "flipped": [], "killers": {}})
+        for number, now in sorted(decided.items(), key=lambda kv: int(kv[0])):
+            n = pick.full_number(int(number))
+            old = then.get((unit.module, unit.key, n), "killed")
+            row["decided"] += 1
+            if old == "killed" and now in KILLS:
+                row["killed_killed"] += 1
+            elif old == "killed" and now in FLIPS:
+                row["flips"] += 1
+                killer = (redraw.get("killers") or {}).get(f"{ident}#{number}")
+                row["flipped"].append({"mutant": f"{unit.module}.{unit.key}__mutmut_{n}",
+                                       "line": unit.start + pick.line_of(int(number)) - 1, "now": now,
+                                       "killer": killer})
+                if killer and "::" in killer:
+                    file = killer.split("::", 1)[0]
+                    row["killers"][file] = row["killers"].get(file, 0) + 1
+            elif old in ("survived", "timeout") and now in KILLS:
+                row["survived_killed"] += 1
+            else:
+                row["other"] += 1
+    kills = sum(r["killed_killed"] + r["flips"] for r in modules.values())
+    flips = sum(r["flips"] for r in modules.values())
+    named = sum(1 for r in modules.values() for f in r["flipped"] if f["killer"] and "::" in f["killer"])
+    return {"cycle": cycle, "compared": len(redraw["units"]), "modules": modules,
+            "totals": {"decided": sum(r["decided"] for r in modules.values()), "kills_then": kills,
+                       "flips": flips, "flips_pct": round(100 * flips / kills, 2) if kills else 0.0,
+                       "killers_named": named,
+                       "survived_killed": sum(r["survived_killed"] for r in modules.values())}}
+
+
+def take_state(state: Mapping[str, Any], redraw: int, units: Sequence[SweepUnit],
+               oracle: Mapping[str, Any] | None, today: str) -> dict[str, Any]:
+    """The loaded state as a night plans and stitches it: a redraw's
+    (:func:`redraw_state`) when ``redraw`` names a closed cycle; otherwise
+    the state as it is, which must not be a redraw's."""
+    if redraw:
+        return redraw_state(state, redraw, units, oracle, today)
+    if state.get("redraw"):
+        raise StateError(f"the state is a redraw of cycle {state['redraw']['cycle']}: a night on it "
+                         "is a redraw of that cycle")
+    return dict(state)
 
 
 
@@ -2286,6 +2452,104 @@ def mutant_seconds(tree: Path, paths: Iterable[str]) -> dict[str, tuple[float | 
     return out
 
 
+#: In a redraw, the seconds of a slice's budget kept back from the engine to
+#: name its flips' killers (:func:`name_killers`), and the most one flip's
+#: probe may take.
+PROBE_RESERVE_S = 1800.0
+PROBE_CAP_S = 600.0
+#: The variable naming the file ``tests/mutation_oracle.py`` appends each
+#: mutant's first failing test to (its ``KILLERS_ENV``).
+KILLERS_ENV = "MUTATION_ORACLE_KILLERS"
+
+
+def redraw_flips(state: Mapping[str, Any], picks: Sequence[Pick], results: Mapping[str, Any]) -> list[str]:
+    """The slice's flips in a redraw: each mutant it decided survived or
+    reached by no declared test (``FLIPS``) that the redrawn cycle killed,
+    by the name the windowed run gave it."""
+    cycle = int(state["redraw"]["cycle"])
+    then = set()
+    for entry in (closed_record(state, cycle) or {}).get("survivors", []):
+        found = mutant_of(entry.rpartition(":")[0].partition("@")[0])
+        if found is not None:
+            then.add(found)
+    flips = []
+    for pick in picks:
+        for number, status in sorted((results.get(pick.unit.ident) or {}).get("decided", {}).items(),
+                                     key=lambda kv: int(kv[0])):
+            n = pick.full_number(int(number))
+            if status in FLIPS and (pick.unit.module, pick.unit.key, n) not in then:
+                flips.append(mutant_name(pick, int(number)))
+    return flips
+
+
+def name_killers(mutants_dir: Path, flips: Sequence[str], tests: Sequence[str], pytest_args: Sequence[str],
+                 env: Mapping[str, str], budget_s: float, killers_file: Path, *,
+                 cap_s: float = PROBE_CAP_S,
+                 run: Callable[..., Any] = subprocess.run) -> dict[str, str]:
+    """Each flip's killer: pytest run in the engine's generated tree with the
+    flip active (``MUTANT_UNDER_TEST``, as mutmut runs a mutant) over
+    ``tests`` (the files the flip's own module's oracle leaves out, the
+    covered selection's rest) until the first failure, which the oracle
+    plugin names (``KILLERS_ENV``).  No mutmut run, so no stats pass: each
+    probe costs the tests up to its killer, at most ``cap_s``, all of them
+    at most ``budget_s``.  A flip no test fails is named why instead."""
+    out: dict[str, str] = {}
+    started = time.monotonic()
+    for name in flips:
+        left = budget_s - (time.monotonic() - started)
+        if left <= 1:
+            out[name] = "not named: the slice's time for probes ran out"
+            continue
+        child = {k: v for k, v in env.items() if k not in (CAP_ENV, SLOW_ENV, INFLIGHT_ENV, md.ORACLE_MAP_ENV)}
+        child.update({"MUTANT_UNDER_TEST": name, KILLERS_ENV: str(killers_file),
+                      "PYTHONPATH": str(mutants_dir)})
+        try:
+            done = run([sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *pytest_args, *tests],
+                       cwd=str(mutants_dir), env=child, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=min(cap_s, left), check=False)
+            code = done.returncode
+        except subprocess.TimeoutExpired:
+            code = None
+        named = {}
+        if killers_file.exists():
+            for line in killers_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                mutant, _, nodeid = line.partition("\t")
+                if mutant and nodeid:
+                    named.setdefault(mutant, nodeid)
+        if name in named:
+            out[name] = named[name][:LISTED_MAX]
+        elif code is None:
+            out[name] = f"not named: no test failed in the probe's {min(cap_s, left):.0f} s"
+        elif code == 0:
+            out[name] = "not named: no test of the covered selection fails with it"
+        else:
+            out[name] = f"not named: the probe exited {code} with no test failing"
+    return out
+
+
+def probe_flips(tree: Path, flips: Sequence[str], oracle: Mapping[str, Any], files: Sequence[str],
+                admitted: Sequence[str], pytest_args: Sequence[str], env: Mapping[str, str], budget_s: float,
+                killers_file: Path, *, run: Callable[..., Any] = subprocess.run) -> dict[str, str]:
+    """Each of a slice's flips named its killer (:func:`name_killers`),
+    module by module: the files its module's declared oracle holds ran
+    already and left it, so a probe runs every other admitted file, the
+    bin's other modules' oracles first, then the rest in the tree's order."""
+    bin_union = md.oracle_of(oracle, files)
+    out: dict[str, str] = {}
+    started = time.monotonic()
+    by_module: dict[str, list[str]] = {}
+    for name in flips:
+        module = md.unit_of_mutant(name)[0]
+        by_module.setdefault(module, []).append(name)
+    for module, names in by_module.items():
+        path = next((f for f in files if md.module_name(f) == module), None)
+        own = set(oracle["modules"].get(path, [])) if path else set()
+        tests = [t for t in bin_union if t not in own] + [t for t in admitted if t not in own and t not in bin_union]
+        out.update(name_killers(tree / "mutants", names, tests, pytest_args, env,
+                                budget_s - (time.monotonic() - started), killers_file, run=run))
+    return out
+
+
 def listed_after_stop(ended: float, stop_at: float | None) -> bool:
     """Whether a listing whose child exited at ``ended`` reads as after the
     budget's stop, sent at ``stop_at`` (None: not sent): by the two times,
@@ -2327,11 +2591,12 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     state_path = Path(args.state) if args.state else None
     sources = vera_sources(repo, head)
     units = inventory(sources)
-    state = reconcile(load_state(state_path, today), units, version)
     # The declared oracle at the head, read from the checkout (its tests and
     # vera/ are the head's), as the stitch reads it: the plan is the state's
-    # under it (adopt_oracle).
+    # under it (adopt_oracle), or a redraw's (take_state).
     oracle = md.oracle_map(repo)
+    redraw = int(getattr(args, "redraw", 0) or 0)
+    state = reconcile(take_state(load_state(state_path, today), redraw, units, oracle, today), units, version)
     adopt_oracle(state, oracle, today)
     counts = engine_counts(engine, env, sources, uncounted(state, units))
     apply_counts(state, counts)
@@ -2521,10 +2786,12 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     # the engine and the engine to the slice's own process: a preference
     # weighed with the memory each holds, not a guarantee.
     lower = ["choom", "-n", str(ENGINE_OOM_SCORE), "--"] if bound else []
+    # A redraw keeps back the time to name its flips' killers (name_killers).
+    engine_budget = max(float(args.budget) - PROBE_RESERVE_S, float(args.budget) / 2) if redraw else args.budget
     try:
         run, log, dropped = md.run_dropping(
             [*lower, *engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
-            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
+            tree=tree, pyproject=pyproject, budget_s=engine_budget, workdir=workdir, env=env,
             config_for=lambda dropped: md.rewrite_config(
                 config, only_mutate=files, selection=selection, extra_tests=(), also_copy=also_copy,
                 extra_args=[f"--matrix-seed={seed}",
@@ -2589,6 +2856,22 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         record["results"] = last_read["results"]
         record["results_at"] = last_read["at"]
     record["stopped"] = stopped
+    if redraw and record["results"] and (tree / "mutants").is_dir():
+        flips = redraw_flips(state, picks, record["results"])
+        if flips:
+            probe_started = time.monotonic()
+            try:
+                record["killers"] = probe_flips(
+                    tree, flips, oracle, files, md.oracle_tests(
+                        sorted(p.relative_to(tree).as_posix() for p in (tree / "tests").glob("test_*.py")),
+                        tree)[0],
+                    [*tomllib.loads(config)["tool"]["mutmut"].get("pytest_add_cli_args", []),
+                     f"--matrix-seed={seed}", *(f"--deselect={test}" for test in [*deselected, *dropped])],
+                    env, max(float(args.budget) - (time.monotonic() - started), 0.0),
+                    workdir / "oracle-killers.txt")
+            except Exception as exc:  # noqa: BLE001 -- the slice's decisions stand; each flip says why
+                record["killers"] = {name: f"not named: the probe failed: {exc}"[:LISTED_MAX] for name in flips}
+            record["probe_s"] = round(time.monotonic() - probe_started, 1)
     if stopped not in (None, "budget") and not record["engine_tail"]:
         record["engine_tail"] = md._tail(log)
     record["elapsed_s"] = round(time.monotonic() - started, 1)
@@ -2838,8 +3121,10 @@ def tally(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> dict[str, dic
 
 
 def complete(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> bool:
-    """Whether every unit's lines are known and every sampled window decided."""
-    return all(sampled_undecided(state, u) == 0 for u in units)
+    """Whether every unit's lines are known and every sampled window decided
+    (in a redraw, every unit it compares)."""
+    only = redraw_units(state)
+    return all(sampled_undecided(state, u) == 0 for u in units if only is None or u.ident in only)
 
 
 def keep_closed(state: dict[str, Any], record: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -3040,7 +3325,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
            jobs: int, head: str, units: Sequence[SweepUnit], today: str,
            legs: Sequence[Mapping[str, Any]] = (), cancelled: bool = False,
            at_import: frozenset[str] = frozenset(), report: dict[str, Any] | None = None,
-           oracle: Mapping[str, Any] | None = None,
+           oracle: Mapping[str, Any] | None = None, redraw: int = 0,
            ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The night's records folded into the state: the new state and the
     night's line (what each slice did, and what the night failed at).
@@ -3063,7 +3348,10 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
 
     With ``oracle`` (``oracle_map``'s at the head, as every slice read it),
     the state is first taken under it (:func:`adopt_oracle`), as each slice
-    planned it."""
+    planned it.  With ``redraw``, the night is that closed cycle's redraw
+    (:func:`take_state`): it closes no cycle, and the report holds the
+    differential (:func:`differential`)."""
+    state_in = take_state(state_in, redraw, units, oracle, today)
     problems: list[str] = []
     taken: list[tuple[str, int, str]] = []
     valid: list[Mapping[str, Any]] = []
@@ -3178,6 +3466,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
             # mutant by mutant, and the rest is planned again.
             notes.append(f"slice {record['slice']}: stopped by the budget with {decided_count(record)} "
                          f"mutant(s) decided; the rest of its bin waits for the next night")
+    if state.get("redraw"):
+        absorb_redraw(state, [*valid, *taken_legs])
     undeclared = decide_undeclared(state, units, taken)
     if undeclared:
         notes.append(f"{undeclared} sampled mutant(s) of {_listed(sorted(md.UNDECLARED))} decided undeclared: "
@@ -3193,10 +3483,15 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         problems.append("the night planned nothing while the cycle is open")
     calibrate(state, [*valid, *taken_legs], {u.ident: u for u in units})
     if report is not None:
-        report.update(night_report(state, units, taken, at_import))  # before the close resets the windows
+        only = redraw_units(state)
+        report.update(night_report(state, [u for u in units if only is None or u.ident in only], taken,
+                                   at_import))  # before the close resets the windows
+        if only is not None:
+            report["differential"] = differential(state, units)
     # Only validated records merge, so a lost or failed slice cannot close
     # a cycle wrongly: the cycle closes when its sample is decided.
-    closed = close_cycle(state, units, head=head, today=today)
+    # A redraw closes no cycle: its state is a branch's comparison.
+    closed = False if state.get("redraw") else close_cycle(state, units, head=head, today=today)
     night = {"date": today, "head": head, "jobs": jobs, "moved": added, "lost": lost, "schema": SCHEMA,
              "slices": [{"slice": r["slice"], "planned": len(r.get("planned", [])),
                          "decided": decided_count(r), "stopped": r.get("stopped"),
@@ -3473,6 +3768,30 @@ def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
 STANDING_TITLE = "Mutation sweep results (standing)"
 #: The file the stitch writes beside the state: what the night took.
 REPORT_FILE = "night-report.json"
+#: A redraw's differential, beside the state it was read from.
+DIFFERENTIAL_FILE = "differential.json"
+
+
+def render_differential(diff: Mapping[str, Any]) -> str:
+    """The stitch summary's table of a redraw's differential, per module."""
+    totals = diff["totals"]
+    out = [f"### The redraw of cycle {diff['cycle']}: the declared oracle against each mutant's covering tests",
+           "",
+           f"{totals['decided']} of the compared mutants decided; of the {totals['kills_then']} the cycle killed "
+           f"and the night decided, {totals['flips']} flipped ({totals['flips_pct']}%), "
+           f"{totals['killers_named']} with a killer named; {totals['survived_killed']} survived then and are "
+           "killed now.",
+           "",
+           "| Module | Decided | Killed, killed | Flips | Survived, killed | Other | Flips' killers by file |",
+           "|---|---|---|---|---|---|---|"]
+    for module, row in sorted(diff["modules"].items()):
+        killers = ", ".join(f"`{f}` {n}" for f, n in sorted(row["killers"].items())) or ""
+        unnamed = sum(1 for f in row["flipped"] if not (f["killer"] and "::" in f["killer"]))
+        if unnamed:
+            killers = (killers + ", " if killers else "") + f"{unnamed} not named"
+        out.append(f"| `{module}` | {row['decided']} | {row['killed_killed']} | {row['flips']} | "
+                   f"{row['survived_killed']} | {row['other']} | {killers} |")
+    return "\n".join(out) + "\n"
 #: A comment's most characters, under GitHub's 65,536 with room to spare.
 COMMENT_LIMIT = 60_000
 #: The night comment's line budget.
@@ -4091,13 +4410,19 @@ def cmd_stitch(args: argparse.Namespace) -> int:
     at_import = at_import_at(repo, head, sources)
     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
                           units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled",
-                          at_import=at_import, report=taken, oracle=md.oracle_map(repo))
+                          at_import=at_import, report=taken, oracle=md.oracle_map(repo),
+                          redraw=int(args.redraw or 0))
     out = Path(args.out)
     save_state(state, out)
+    diff = taken.pop("differential", None)
     (out / REPORT_FILE).write_text(json.dumps(taken, indent=1) + "\n", encoding="utf-8")
     if night["closed"]:
         write_summary(state, out, at_import)
     report = render_night(state, night, units)
+    if diff is not None:
+        # Beside the state, so the state's artifact carries it.
+        (out / DIFFERENTIAL_FILE).write_text(json.dumps(diff, indent=1) + "\n", encoding="utf-8")
+        report += "\n" + render_differential(diff)
     print(report)
     _write(args.summary, report)
     return 2 if night["problems"] else 0
@@ -4314,10 +4639,44 @@ def _gh(gh: Sequence[str], path: str) -> Any:
     return json.loads(result.stdout)
 
 
+_RUN_ID = re.compile(r"[1-9][0-9]{0,19}")
+
+
+def named_run_ok(run: Mapping[str, Any], repo_id: int) -> bool:
+    """Whether a run named to carry on from (``state_run``) is one whose
+    state a night may take: this workflow's, completed, started by the
+    schedule or a dispatch, on this repository (not a fork's), on any
+    branch, so a redraw's second night carries on from its first."""
+    return (run.get("event") in STATE_EVENTS and run.get("status") == "completed"
+            and isinstance(run.get("head_repository"), dict) and run["head_repository"].get("id") == repo_id
+            and isinstance(run.get("repository"), dict) and run["repository"].get("id") == repo_id
+            and str(run.get("path", "")).endswith(f"/{WORKFLOW}"))
+
+
+def _named_state_run(args: argparse.Namespace, gh: Sequence[str]) -> int:
+    """``find-state --run``: print ``run=<id>`` for a named run that
+    :func:`named_run_ok` takes and that holds an unexpired state; refuse any
+    other, never falling back to the lookup."""
+    if not _RUN_ID.fullmatch(str(args.run)):
+        print(f"error: state_run must be a run id, not {args.run!r}", file=sys.stderr)
+        return 2
+    run = _gh(gh, f"repos/{args.repo}/actions/runs/{args.run}")
+    artifacts = _gh(gh, f"repos/{args.repo}/actions/runs/{args.run}/artifacts?name={STATE_ARTIFACT}")["artifacts"]
+    held = any(a.get("name") == STATE_ARTIFACT and a.get("expired") is False for a in artifacts)
+    if not isinstance(run, dict) or not named_run_ok(run, args.repo_id) or not held:
+        print(f"error: run {args.run} is not a completed run of {WORKFLOW} on this repository holding an "
+              f"unexpired {STATE_ARTIFACT}", file=sys.stderr)
+        return 2
+    print(f"run={args.run}")
+    return 0
+
+
 def cmd_find_state(args: argparse.Namespace) -> int:
     """Print ``run=<id>``: the run whose state artifact the night carries on
     from (``pick_state_run``), or ``run=`` when there is none yet."""
     gh = list(args.gh) if args.gh else ["gh"]
+    if args.run:
+        return _named_state_run(args, gh)
     runs = _gh(gh, f"repos/{args.repo}/actions/workflows/{WORKFLOW}/runs"
                    "?branch=main&status=completed&per_page=100")["workflow_runs"]
 
@@ -4404,6 +4763,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     night.add_argument("--summary", help="append the Markdown summary here")
     night.add_argument("--engine", nargs="+", help="the mutmut command")
     night.add_argument("--live", help="a directory for the slice's partial record and its state while it runs")
+    night.add_argument("--redraw", type=int, default=0,
+                       help="a closed cycle to draw again under the declared oracle (0: none)")
     night.add_argument("--require-bound", action="store_true",
                        help="stop as a lane failure unless this process runs under a memory bound")
     start = sub.add_parser("start", help="start a night's slice in the background under the memory bound")
@@ -4439,6 +4800,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     stitch_p.add_argument("--out", required=True, help="the directory for the new state")
     stitch_p.add_argument("--repo", default=str(ROOT), help="the repository (default: this one)")
     stitch_p.add_argument("--summary", help="append the Markdown summary here")
+    stitch_p.add_argument("--redraw", type=int, default=0,
+                          help="the closed cycle the night drew again (0: none)")
     stitch_p.add_argument("--sweep-result", default="",
                           help="the sweep job's result (needs.sweep.result): `cancelled` charges no loss")
     summary = sub.add_parser("summary", help="write the last closed cycle's committed files")
@@ -4468,6 +4831,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     find.add_argument("--repo", required=True, help="owner/name")
     find.add_argument("--repo-id", type=int, required=True, help="the repository's numeric id")
     find.add_argument("--gh", nargs="+", help="the gh command (default: gh)")
+    find.add_argument("--run", default="", help="a run named to carry on from (a dispatch's state_run): "
+                      "checked as the lookup checks a run, a branch's included")
     matrix = sub.add_parser("matrix", help="print the workflow's matrix outputs")
     matrix.add_argument("--event", required=True, help="the event that started the run")
     matrix.add_argument("--requested", default="", help="the dispatch's jobs input")
