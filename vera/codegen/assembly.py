@@ -67,6 +67,37 @@ _WAT_FUNC_IMPORT_RE = re.compile(
 )
 
 
+# #1900: what a module's text holds, read token by token.  A string (a data
+# segment, an import or export name), a comment and an identifier are each
+# consumed whole, so text inside them that looks like an instruction is
+# never read as one; only what is left can match `instr`.  A block comment
+# is read to its first `;)`: the compiler nests none.
+_WAT_MEMORY_SCAN_RE = re.compile(
+    r'"(?:[^"\\]|\\.)*"'
+    r"|;;[^\n]*"
+    r"|\(;.*?;\)"
+    r"|\$[^\s()]+"
+    r"|(?P<instr>(?<![\w.])(?:"
+    r"(?:i32|i64|f32|f64|v128)\.(?:load|store)\w*"
+    r"|memory\.(?:size|grow|copy|fill|init)"
+    r"|data\.drop"
+    r")(?![\w.]))",
+    re.DOTALL,
+)
+
+
+def holds_memory_instruction(wat: str) -> bool:
+    """Whether *wat* holds an instruction that reads or writes linear memory.
+
+    A load, a store and the `memory.*` instructions name memory 0
+    implicitly, so assembly resolves no name for them and a module that
+    holds one without declaring memory assembles and does not validate
+    (#1900).  The module's memory is therefore derived from these
+    instructions, the text that states the need, where it is assembled.
+    """
+    return any(m.group("instr") for m in _WAT_MEMORY_SCAN_RE.finditer(wat))
+
+
 class AssemblyMixin:
     """Methods for assembling the WAT module."""
 
@@ -97,7 +128,10 @@ class AssemblyMixin:
             if row.needs_alloc:
                 self._needs_alloc = True
             if row.needs_memory:
-                self._needs_memory = True
+                # Implied by `needs_alloc` on every such row (the allocator's
+                # text declares the memory), which a test pins; the census
+                # with this set removed moves no module (#1900).
+                self._needs_memory = True  # pragma: no mutate
             if row.needs_wrap_table:
                 # #573: the 64 KiB wrap table, `$register_wrapper`, phase 2c
                 # of `$gc_collect` and the two helpers declared below.
@@ -172,10 +206,9 @@ class AssemblyMixin:
                 f"  (tag $exn_{mangle_type_name(type_name)} (param {wasm_t}))"
             )
 
-        # Memory (for string data and heap)
-        if self._needs_memory or self.string_pool.has_strings():
-            parts.append(
-                f'  (memory (export "{runtime_export("memory")}") 1)')
+        # Memory: declared below, once the module's text is assembled, at
+        # this position (before the data segments that need it).
+        memory_at = len(parts)
 
         # Data section (string constants)
         for value, offset, _length in self.string_pool.entries():
@@ -436,6 +469,20 @@ class AssemblyMixin:
             parts.append(coll_wat)
         for name in sorted(self._collection_exports):
             parts.append(f'  (export "{name}" (func ${name}))')
+
+        # #1900: the module declares memory when its text holds an
+        # instruction that reads or writes it, a data segment (the string
+        # pool's), or when its host contract says so (`_needs_memory`: a
+        # memory effect in a function's row, or a host import whose row
+        # says so), whatever its code holds.  The instructions are read
+        # from the text itself, so no emitter has a flag to set, and the
+        # module's validation (`compile_program`) refuses any module this
+        # derivation gets wrong.
+        if (self._needs_memory or self.string_pool.has_strings()
+                or any(holds_memory_instruction(part) for part in parts)):
+            parts.insert(
+                memory_at,
+                f'  (memory (export "{runtime_export("memory")}") 1)')
 
         parts.append(")")
         return "\n".join(parts)

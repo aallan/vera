@@ -278,8 +278,12 @@ class ClosureLiftingMixin:
                     self._closure_sigs[sig_content] = sig_name
             if new_closure_fns_wat:
                 self._needs_table = True
+                # The closures' bodies allocate on their own contexts, which
+                # no merge reads, and the function that made them can be
+                # dropped after this commit and before its own merge (a
+                # postcondition that skips, E602): this set is then what
+                # declares the allocator and `$gc_sp` their code uses.
                 self._needs_alloc = True
-                self._needs_memory = True
 
         # #1245: hand the id counter back to the context.  A closure this
         # function registers LATER — while `_compile_postconditions` lowers

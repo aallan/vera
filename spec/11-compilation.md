@@ -40,6 +40,8 @@ self-contained JS bundle (Section 12.9), and
 imports are implemented over WASI 0.2 interfaces, covering the IO and
 Random host families (Chapter 13).
 
+Every module the compiler writes is valid WebAssembly, checked before it is written: the core module is validated where it is assembled and a `--target wasi-p2` component where it is built, and one that does not validate is a compiler defect reported as `E699`, with no file written, because a program is written to be mechanically checked (DESIGN.md, "Checkability over correctness") and a module no loader accepts is a failure the compiler can find itself.
+
 ## 11.2 Type Mapping
 
 Vera types map to WASM value types as follows:
