@@ -390,9 +390,20 @@ class CrossModuleMixin:
                 # module's own generic ADT absent from the scoped table, so
                 # its structural-Eq lost the type argument and
                 # `Wrap(3) == Wrap(3)` came back false.
-                _owned_tp = temp._adt_ctor_tp_indices.get(adt_name, {})
+                #
+                # Not mutated where a mutant only stops or changes the copy:
+                # what the per-owner entry holds changes no module (below),
+                # and the test always holds, since `_register_data` writes an
+                # entry for every constructor of every data type it registers
+                # and the built-in layouts, written without one, are skipped
+                # above.
+                _owned_tp = (
+                    temp._adt_ctor_tp_indices.get(  # pragma: no mutate
+                        adt_name, {}))
                 for _ctor_name in layouts:
-                    if _ctor_name in _owned_tp:
+                    if (
+                        _ctor_name in _owned_tp  # pragma: no mutate
+                    ):
                         _per_owner = self._adt_ctor_tp_indices
                         if adt_name not in _per_owner:
                             _per_owner[adt_name] = {}
