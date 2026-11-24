@@ -1669,7 +1669,7 @@ class TestWorkflow:
                         "actions/upload-artifact@v7", "actions/github-script@v9"}
 
     def test_a_night_never_cancels_another(self) -> None:
-        assert self._wf()["concurrency"] == {"group": "mutation-nightly", "cancel-in-progress": False}
+        assert self._wf()["concurrency"] == {"group": "mutation-nightly-${{ github.ref }}", "cancel-in-progress": False}
 
     def test_the_budget_fits_the_job_and_the_job_fits_the_cap(self) -> None:
         import re
@@ -2184,6 +2184,29 @@ class TestEndToEnd:
         assert cfg["tool"]["mutmut"]["also_copy"] == ["README.md", "pyproject.toml", "tests"]
         assert cfg["tool"]["mutmut"]["pytest_add_cli_args_test_selection"] == ["tests/test_m.py"]
         assert cfg["tool"]["mutmut"]["only_mutate"] == ["vera/m.py"]
+
+    def test_repro_a_slice_runs_its_modules_declared_oracle_under_the_cycles_seed(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """#1838: the slice's selection is its bin's modules' declared
+        oracles, not every admitted file; an admitted file that declares no
+        module of the bin is left out; the plugin is handed the map; and the
+        matrices are sampled under the cycle's seed, so every night of a
+        cycle runs the same cells."""
+        (repo / "tests" / "test_other.py").write_text("import vera\n\ndef test_o():\n    pass\n",
+                                                      encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "an admitted file of no module")
+        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: killed\n")
+        import tomllib
+
+        cfg = tomllib.loads((tmp_path / "work1" / "tree" / "pyproject.toml").read_text(encoding="utf-8"))
+        assert cfg["tool"]["mutmut"]["pytest_add_cli_args_test_selection"] == ["tests/test_m.py"]
+        assert "--matrix-seed=cycle-1" in cfg["tool"]["mutmut"]["pytest_add_cli_args"]
+        oracle = json.loads((tmp_path / "work1" / "oracle-map.json").read_text(encoding="utf-8"))
+        assert oracle["modules"]["vera/m.py"] == ["tests/test_m.py"]
+        plugin = tmp_path / "work1" / "tree" / "tests" / "mutation_oracle.py"
+        assert plugin.read_bytes() == (ROOT / "tests" / "mutation_oracle.py").read_bytes()
 
     def test_a_test_that_fails_in_the_copy_is_dropped_and_reported(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

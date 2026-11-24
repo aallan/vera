@@ -49,11 +49,13 @@ on:
 permissions:
   contents: read
 
-# One night at a time, and a running night is never cancelled: the next one
-# plans from the state this one leaves.  A night still waiting in the group
-# gives way to a newer one, which loses nothing: it has planned nothing yet.
+# One night at a time on each ref, and a running night is never cancelled:
+# the next one plans from the state this one leaves.  A night still waiting
+# in the group gives way to a newer one, which loses nothing: it has planned
+# nothing yet.  A dispatched night on a branch is a group of its own, so it
+# neither waits behind nor displaces a night on main.
 concurrency:
-  group: mutation-nightly
+  group: mutation-nightly-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

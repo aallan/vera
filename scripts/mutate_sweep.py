@@ -2228,9 +2228,22 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         keep = {p.unit.key for p in picks if p.unit.path == path}
         source = (tree / path).read_text(encoding="utf-8")
         (tree / path).write_text(md.narrow(source, keep), encoding="utf-8")
-    tests = sorted(p.relative_to(tree).as_posix() for p in (tree / "tests").glob("test_*.py"))
-    selection, _ = md.oracle_tests(tests, tree)
+    # The bin's modules' declared oracles (MUTATION.md § Oracle), each
+    # function's tests confined to its own module's by the plugin, which is
+    # this checkout's; every matrix at its sample under the cycle's seed, so
+    # every night of a cycle runs the same cells.
+    plugin = Path(__file__).resolve().parent.parent / "tests" / "mutation_oracle.py"
+    if plugin.is_file() and (tree / "tests").is_dir():
+        shutil.copyfile(plugin, tree / "tests" / "mutation_oracle.py")
+    oracle = md.oracle_map(tree)
+    selection = md.oracle_of(oracle, files)
+    map_file = workdir / "oracle-map.json"
+    map_file.write_text(json.dumps(oracle, indent=1) + "\n", encoding="utf-8")
+    env[md.ORACLE_MAP_ENV] = str(map_file)
+    seed = f"cycle-{state['cycle']}"
     record["selection"] = len(selection)
+    record["oracle"] = {"rule": oracle["rule"], "matrix_seed": seed,
+                        "undeclared": sorted(f for f in files if not oracle["modules"].get(f))}
     pyproject = tree / "pyproject.toml"
     config = pyproject.read_text(encoding="utf-8")
     also_copy = _whole_tree(tree)
@@ -2364,8 +2377,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
             [*lower, *engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
             tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
             config_for=lambda dropped: md.rewrite_config(
-                config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
-                extra_args=[f"--deselect={test}" for test in [*deselected, *dropped]]),
+                config, only_mutate=files, selection=selection, extra_tests=(), also_copy=also_copy,
+                extra_args=[f"--matrix-seed={seed}",
+                            *(f"--deselect={test}" for test in [*deselected, *dropped])]),
             before_stop=before_stop)
     finally:
         if beat is not None:
