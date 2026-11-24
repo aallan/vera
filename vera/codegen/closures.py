@@ -278,12 +278,12 @@ class ClosureLiftingMixin:
                     self._closure_sigs[sig_content] = sig_name
             if new_closure_fns_wat:
                 self._needs_table = True
-                # Implied on every path a check-green program reaches: the
-                # `AnonFn` each lifted closure was made from allocated its
-                # record, which set its context's `needs_alloc`, merged
-                # after the second lift.  Only a function dropped between
-                # the two lifts keeps its closures without that merge.
-                self._needs_alloc = True  # pragma: no mutate
+                # The closures' bodies allocate on their own contexts, which
+                # no merge reads, and the function that made them can be
+                # dropped after this commit and before its own merge (a
+                # postcondition that skips, E602): this set is then what
+                # declares the allocator and `$gc_sp` their code uses.
+                self._needs_alloc = True
 
         # #1245: hand the id counter back to the context.  A closure this
         # function registers LATER — while `_compile_postconditions` lowers

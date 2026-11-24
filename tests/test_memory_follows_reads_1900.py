@@ -734,6 +734,40 @@ def test_repro_text_the_assembler_refuses_is_its_own_e699(
     assert result.wasm_bytes == b""
 
 
+def test_repro_a_closure_kept_from_a_dropped_function_has_its_allocator(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`f`'s closure is lifted and committed, then `f` is dropped before its
+    own merge (its postcondition's `hash` of a `Decimal` skips, E602).  The
+    closure stays in the module and its body allocates, so the closure
+    lift's own `_needs_alloc` is what declares `$alloc` and `$gc_sp`:
+    without it the module does not assemble (E699)."""
+    from vera.cli import cmd_compile
+
+    source = (
+        "type Mk = fn(Int -> Option<Int>) effects(pure);\n\n"
+        "public fn f(@Decimal, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(hash(@Decimal.0) == 0)\n  effects(pure)\n{\n"
+        "  let @Mk = fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) };\n"
+        "  match apply_fn(@Mk.0, @Int.0) {\n    None -> 0,\n"
+        "    Some(@Int) -> @Int.0\n  }\n}\n\n"
+        "public fn main(-> @Int)\n" + _C + "{\n  7\n}\n")
+    result = pipeline.compile(source, file="fixture.vera").result
+    assert [(d.severity, d.error_code) for d in result.diagnostics] == [
+        ("warning", "E602")]
+    assert result.exports == ["main"]
+    assert "call $alloc" in result.wat
+    assert "(func $alloc" in result.wat
+    wasmtime.Module.validate(_engine(), result.wasm_bytes)
+    assert pipeline.run(result, "main").execution.value == 7
+    src = tmp_path / "kept.vera"
+    src.write_text(source, encoding="utf-8")
+    out = tmp_path / "kept.wasm"
+    assert cmd_compile(str(src), output=str(out)) == 0
+    assert out.read_bytes() == result.wasm_bytes
+    capsys.readouterr()
+
+
 def test_repro_the_server_world_writes_its_own_component(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
