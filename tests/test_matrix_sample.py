@@ -699,6 +699,7 @@ MARKED_FILES = (
     "test_function_type_instance_1783.py",
     "test_gc_free_blocks_1718.py",
     "test_gc_mark_width_1510.py",
+    "test_handler_value_guards_1542.py",
     "test_index_nothing_types_1862.py",
     "test_join_recorded_type_1716.py",
     "test_keyed_string_hash_1736.py",
