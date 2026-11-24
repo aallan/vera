@@ -593,6 +593,9 @@ class TypeChecker(
         # and message are indistinguishable to the reader — to a single
         # entry, preserving first-occurrence order (PR #938 review).
         self._seen_diag_keys: set[tuple[str, ...]] = set()
+        # Each key above in the order it was first seen, so a synthesis
+        # the context replaces withdraws its own (`_synth_held`, #1812).
+        self._diag_keys_added: list[tuple[str, ...]] = []
         # The calls a diagnostic reported now is about, innermost last, by
         # `id` (`_about_the_call`): one at a piped call is placed at its
         # stage.
@@ -1331,6 +1334,7 @@ class TypeChecker(
         if key in self._seen_diag_keys:
             return
         self._seen_diag_keys.add(key)
+        self._diag_keys_added.append(key)
         # A module's data type is typed by its identity (#1694); a reader is
         # shown the type's name.
         description, rationale, fix = display_type_names(

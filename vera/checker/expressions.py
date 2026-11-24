@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from vera import ast, fold, naming
 from vera.formatter import (
@@ -66,6 +66,10 @@ from vera.types import (
     written_effect,
     written_effect_instance,
 )
+
+if TYPE_CHECKING:
+    from vera.checker.core import HoleSite
+    from vera.errors import Diagnostic
 
 # Machine bounds for the integer types (#812): `@Int` is i64 and `@Nat` its
 # non-negative half (spec §2.2).  An integer literal must fit — otherwise
@@ -133,11 +137,16 @@ class Held:
     """An expression's first synthesis, before the type its position's
     context names is known (`ExpressionsMixin._synth_held`, #1812): its
     type, the refusals of an index it could not type, held, and whether it
-    reported no error of its own."""
+    reported no error of its own.  *notes* are the warnings it reported,
+    with the keys that collapse a duplicate of each, and *holes* the typed
+    holes it recorded: a synthesis against the context replaces them."""
 
     ty: Type | None
     refusals: tuple[tuple[ast.IndexExpr, bool], ...]
     clean: bool
+    notes: tuple[Diagnostic, ...] = ()
+    keys: tuple[tuple[str, ...], ...] = ()
+    holes: tuple[HoleSite, ...] = ()
 
 
 def _type_variable_names(ty: Type) -> set[str]:
@@ -1196,14 +1205,21 @@ class ExpressionsMixin:
         is known (a generic call's or an ability operation's argument, a
         tuple's component, an array literal's element, a `match`
         scrutinee), with the refusal of an index it could not type held
-        for :meth:`_settle`."""
+        for :meth:`_settle`, and the warnings and typed holes it recorded,
+        which a synthesis against the context replaces."""
         before = self._errors_raised
+        notes, keys = len(self.errors), len(self._diag_keys_added)
+        holes = self.hole_sites if self.hole_sites is not None else []
+        first_hole = len(holes)
         self._held_refusals.append([])
         try:
             ty = self._synth_expr(expr)
         finally:
             held = self._held_refusals.pop()
-        return Held(ty, tuple(held), self._errors_raised == before)
+        return Held(ty, tuple(held), self._errors_raised == before,
+                    tuple(self.errors[notes:]),
+                    tuple(self._diag_keys_added[keys:]),
+                    tuple(holes[first_hole:]))
 
     def _settle(self, expr: ast.Expr, held: Held, target: Type | None, *,
                 foreign: frozenset[str] = frozenset()) -> Type | None:
@@ -1218,6 +1234,15 @@ class ExpressionsMixin:
                 and self._closes(target, foreign)
                 and (held.ty is None or contains_unknown(held.ty)
                      or self._leaves_open(held.ty))):
+            # The first synthesis's warnings and typed holes are withdrawn:
+            # this one reports them at the type the context names (a hole's
+            # `expected Int`, not `expected unknown`).
+            self.errors[:] = [d for d in self.errors
+                              if not any(d is n for n in held.notes)]
+            self._seen_diag_keys.difference_update(held.keys)
+            if self.hole_sites is not None:
+                self.hole_sites[:] = [h for h in self.hole_sites
+                                      if not any(h is n for n in held.holes)]
             return self._synth_expr(expr, expected=target)
         self._release(held)
         return held.ty

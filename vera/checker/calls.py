@@ -1629,10 +1629,10 @@ class CallsMixin:
         arg_types: list[Type | None] = []
         for i, arg in enumerate(rest):
             exp: Type | None = None
-            if i < len(fn_ty.params):
-                pt = fn_ty.params[i]
-                if not contains_typevar(pt):
-                    exp = pt
+            # A formal the enclosing function's own variables close is the
+            # argument's type too (#1812: `apply_fn(@Endo<T>.0, [][0])`).
+            if i < len(fn_ty.params) and self._closes(fn_ty.params[i]):
+                exp = fn_ty.params[i]
             arg_types.append(self._synth_expr(arg, expected=exp))
 
         # Arity: every argument after the function value maps to one
@@ -2862,7 +2862,30 @@ class CallsMixin:
     @_reported_at_the_stage
     def _check_constructor_call(self, expr: ast.ConstructorCall, *,
                                 expected: Type | None = None) -> Type | None:
-        """Type-check a constructor call: Ctor(args)."""
+        """Type-check a constructor call: Ctor(args).
+
+        An argument no field type is handed down to is synthesized before
+        the constructor's inference closes its field (`_synth_held`), and
+        settled against the field as the inference instantiates it
+        (`_settle`, #1812): `Box([][0])` at `Box`'s `Int`, `MkW([][0], "s")`
+        at `W<T>`'s written `Int`, `MkP([][0], 1)` at the `Int` the `1`
+        fixes.  An argument the check leaves unsettled has its held
+        refusals made."""
+        helds: list[Held | None] = []
+        try:
+            return self._check_constructor_args(expr, helds,
+                                                expected=expected)
+        finally:
+            for held in helds:
+                if held is not None:
+                    self._release(held)
+
+    def _check_constructor_args(self, expr: ast.ConstructorCall,
+                                helds: list[Held | None], *,
+                                expected: Type | None = None,
+                                ) -> Type | None:
+        """`_check_constructor_call`'s check, each argument no field type
+        is handed down to held in *helds* until it is settled."""
         # Tuple is a variadic built-in constructor — handle specially
         if expr.name == "Tuple":
             return self._check_tuple_constructor(expr, expected=expected)
@@ -2924,14 +2947,6 @@ class CallsMixin:
         if ci.field_types is not None and expected_mapping:
             field_types_for_expected = tuple(
                 substitute(ft, expected_mapping) for ft in ci.field_types)
-        # A data type with no type parameters writes its field types whole:
-        # each is the type its argument's position names, and checks an
-        # argument that leaves a part open against it (`_settle`, #1812):
-        # `Box([][0])` takes `Box`'s `Int`.
-        written_fields = (ci.field_types
-                          if ci.field_types is not None
-                          and not ci.parent_type_params else None)
-
         # Synth arg types, passing resolved field type as expected
         arg_types: list[Type | None] = []
         for i, arg in enumerate(expr.args):
@@ -2962,10 +2977,12 @@ class CallsMixin:
                     # sees a name mismatch, mints fresh, and the field-type
                     # check then rejects the genuinely ill-typed nesting).
                     field_expected = ft
-            if written_fields is not None and i < len(written_fields):
-                arg_types.append(self._settle(
-                    arg, self._synth_held(arg), written_fields[i]))
+            if field_expected is None:
+                held = self._synth_held(arg)
+                helds.append(held)
+                arg_types.append(held.ty)
             else:
+                helds.append(None)
                 arg_types.append(
                     self._synth_expr(arg, expected=field_expected))
 
@@ -3021,6 +3038,15 @@ class CallsMixin:
         field_types = ci.field_types
         if mapping:
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
+        # Each held argument checked against its field as the inference
+        # instantiates it, where that closes a part it leaves open.
+        unfixed = frozenset(v for v in ci.parent_type_params or ()
+                            if v not in mapping)
+        for i, held in enumerate(helds):
+            if held is not None:
+                helds[i] = None
+                arg_types[i] = self._settle(expr.args[i], held,
+                                            field_types[i], foreign=unfixed)
 
         # #747, at the constructor door: record each argument's INSTANTIATED
         # field type as its target, whatever the expected type came from.
@@ -3220,6 +3246,7 @@ class CallsMixin:
         all of it is restored."""
         before = len(self.errors)
         seen = set(self._seen_diag_keys)
+        keys = len(self._diag_keys_added)
         aliases = set(self._reported_alias_errors)
         reserved = set(self._reported_reserved_type_refs)
         try:
@@ -3227,6 +3254,7 @@ class CallsMixin:
         finally:
             del self.errors[before:]
             self._seen_diag_keys = seen
+            del self._diag_keys_added[keys:]
             self._reported_alias_errors = aliases
             self._reported_reserved_type_refs = reserved
 
