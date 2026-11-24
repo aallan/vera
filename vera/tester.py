@@ -17,8 +17,6 @@ spec/00-introduction.md, Section 0.5.6 "Contract-Driven Testing".
 
 from __future__ import annotations
 
-import json
-import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -27,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import z3
 
-from vera import ast, naming
+from vera import ast, literals, naming
 from vera.binding import BODY_SUFFIX, SYMBOL_PREFIX
 from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.obligations.cache import walk_nodes
@@ -58,7 +56,10 @@ class TrialResult:
     """Outcome of a single test trial."""
 
     fn_name: str
-    args: dict[str, int | float | str]  # {"@Int.0": 5, "@String.0": "hello"}
+    #: Each argument by its slot reference, as the Vera value it is (#1768):
+    #: a `Bool` is ``True`` / ``False``, not the 1 / 0 the compiled function
+    #: receives.  {"@Int.0": 5, "@Bool.0": True, "@String.0": "hello"}
+    args: dict[str, bool | int | float | str]
     # "pass" | "fail" | "error"; under --distrust a trial of a proved function
     # can also be "refuted" (its trap contradicts a Tier-1 proof) or
     # "unattributed" (its trap could not be pinned on an obligation).
@@ -1374,14 +1375,14 @@ def _describe_obligation(record: ProofObligation, tested: str) -> str:
     )
 
 
-def _render_args(args: dict[str, int | float | str]) -> str:
-    """A trial's arguments in the slot form `_run_trials` names them by."""
+def render_args(args: dict[str, bool | int | float | str]) -> str:
+    """A trial's arguments in the slot form `_run_trials` names them by,
+    each value as its literal (#1768): the one rendering of a trial's
+    arguments, which the text report and E703 both print."""
     if not args:
         return "no arguments"
     return ", ".join(
-        f"{slot} = "
-        + (json.dumps(value, ensure_ascii=False)
-           if isinstance(value, str) else str(value))
+        f"{slot} = {literals.value_text(value)}"
         for slot, value in args.items()
     )
 
@@ -1485,9 +1486,15 @@ def _assume_on_arguments(
         if bt == BOOL:
             pairs.append((var, z3.BoolVal(bool(value))))
         elif bt == STRING:
-            pairs.append((var, z3.StringVal(str(value))))
+            term = literals.string_term(str(value))
+            if term is None:
+                return None
+            pairs.append((var, term))
         elif bt == FLOAT64:
-            pairs.append((var, z3.FPVal(float(value), var.sort())))
+            pairs.append((var, z3.FPVal(
+                float(value),
+                var.sort(),  # pragma: no mutate — equivalent: a `Float64` parameter's sort is z3's default FP sort, FPSort(11, 53), the one FPVal takes without it
+            )))
         else:
             pairs.append((var, z3.IntVal(int(value))))
     answer = z3.simplify(z3.substitute(predicate, *pairs))
@@ -1580,7 +1587,7 @@ def _refutation_description(
     return (
         f"Tier 1 proof refuted in '{fn_name}': {what} "
         f"{'was proved' if one else 'were each proved'}, but the trial on "
-        f"{_render_args(trial.args)} failed {'it' if one else 'one of them'} "
+        f"{render_args(trial.args)} failed {'it' if one else 'one of them'} "
         f"at run time: {trap}{rests}"
     )
 
@@ -2234,8 +2241,10 @@ def _seed_boundaries(
     for i, (var, bt) in enumerate(zip(z3_vars, var_types)):
         if bt == STRING:
             for sval in _BOUNDARY_STRING:
+                term = literals.string_term(sval)
+                assert term is not None, sval  # noqa: S101 — ASCII seeds
                 smt.solver.push()
-                smt.solver.add(var == z3.StringVal(sval))
+                smt.solver.add(var == term)
                 if smt.solver.check() == z3.sat:
                     model = smt.solver.model()
                     values = _extract_values(model, z3_vars, var_types)
@@ -2290,21 +2299,6 @@ def _seed_boundaries(
             smt.solver.pop()
 
 
-def _fp_value_to_float(val: z3.FPRef) -> float:
-    """Convert a Z3 FloatingPoint model value to a Python float (#797).
-
-    The model value is an ``FPNumRef``: NaN / +/-Inf map to their Python
-    counterparts, and a finite value goes through ``fpToReal`` (exact), with the
-    sign of zero preserved.
-    """
-    if val.isNaN():
-        return math.nan
-    if val.isInf():
-        return -math.inf if val.isNegative() else math.inf
-    f = float(z3.simplify(z3.fpToReal(val)).as_fraction())
-    return -0.0 if (f == 0.0 and val.isNegative()) else f
-
-
 def _extract_values(
     model: z3.ModelRef,
     z3_vars: list[z3.ExprRef],
@@ -2318,9 +2312,9 @@ def _extract_values(
             # Convert to 0/1 for WASM
             values.append(1 if z3.is_true(val) else 0)
         elif bt == STRING:
-            values.append(z3.simplify(val).as_string())
+            values.append(literals.z3_string(val))
         elif bt == FLOAT64:
-            values.append(_fp_value_to_float(val))
+            values.append(literals.z3_float(val))
         else:
             values.append(int(str(val)))
     return values
@@ -2362,8 +2356,14 @@ def _run_trials(
     ]
 
     results: list[TrialResult] = []
+    bases = [base_type(pt) for pt in param_types]
     for args in inputs:
-        arg_dict: dict[str, int | float | str] = dict(zip(labels, args))
+        # The function is called with the WebAssembly values; the trial
+        # records the Vera values, which every report prints (#1768).
+        arg_dict: dict[str, bool | int | float | str] = {
+            label: bool(value) if bt == BOOL else value
+            for label, value, bt in zip(labels, args, bases)
+        }
 
         try:
             if needs_raw:

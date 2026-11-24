@@ -316,7 +316,7 @@ SLOTS = (
         {"@Int.2": "3", "@Int.1": "4", "@Int.0": "5"}),
     Slots("interleaved", {"main.vera": _fn(
         "@Int, @Bool, @Int", "@Int.1 == 3 && @Int.0 == 4 && @Bool.0")},
-        {"@Int.1": "3", "@Int.0": "4", "@Bool.0": "True"}),
+        {"@Int.1": "3", "@Int.0": "4", "@Bool.0": "true"}),
     Slots("two_types_twice", {"main.vera": _fn(
         "@Nat, @Int, @Nat, @Int",
         "@Nat.1 == 3 && @Int.1 == 4 && @Nat.0 == 5 && @Int.0 == 6")},
