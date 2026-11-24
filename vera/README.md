@@ -837,7 +837,7 @@ Every diagnostic has a unique code grouped by compiler phase, or, for E8xx and E
 | E001–E008 | Parse | `errors.py` factory functions |
 | E009 | Transform: string escapes | `transform.py` |
 | E010 | Transform: unhandled rule | `transform.py` |
-| E011–E013 | Resolve: module imports | `resolver.py` |
+| E011–E015 | Resolve: module imports | `resolver.py` |
 | E020, E021, E023 | Parse: malformed comments (lexical) | `lexical.py` scan + `errors.py` factory |
 | E024 | Read: a source file that is not UTF-8 | `parser.py` `decode_source()` + `errors.py` factory |
 | E030, E031 | Parse: `old()`/`new()` applied to an expression | `errors.py` factory |
