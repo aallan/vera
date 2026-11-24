@@ -543,3 +543,37 @@ def test_a_quotient_stand_in_carries_the_range() -> None:
     rows = [(o.kind, o.status) for o in pipeline.verify(source, file=FILE).obligations
             if o.kind == "int_overflow"]
     assert rows == [("int_overflow", "verified")], rows
+
+
+_MIN_QUOTIENT = """\
+type IntToInt = fn(Int -> Int) effects(pure);
+
+public fn make(@Int -> @IntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 / -1 }
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(make(0), @Int.0)
+}
+"""
+
+
+def test_a_quotient_stand_in_does_not_prove_its_own_row() -> None:
+    """The other side of the quotient's stand-in: where `INT_MIN / -1` is
+    reachable, the row is not proved by the range the stand-in carries, and
+    the run at `INT_MIN` traps; at 6 it returns -6."""
+    rows = [(o.kind, o.status) for o in pipeline.verify(
+        _MIN_QUOTIENT, file=FILE).obligations if o.kind == "int_overflow"]
+    assert rows and all(status != "verified" for _, status in rows), rows
+    compiled = pipeline.compile(_MIN_QUOTIENT, file=FILE)
+    ran = pipeline.run(compiled, "go", [INT_MIN])
+    assert not ran.ok and isinstance(ran.trap, WasmTrapError), ran
+    assert pipeline.run(compiled, "go", [6]).value == -6
