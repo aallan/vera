@@ -699,9 +699,11 @@ MARKED_FILES = (
     "test_function_type_instance_1783.py",
     "test_gc_free_blocks_1718.py",
     "test_gc_mark_width_1510.py",
+    "test_handler_value_guards_1542.py",
     "test_index_nothing_types_1862.py",
     "test_join_recorded_type_1716.py",
     "test_keyed_string_hash_1736.py",
+    "test_let_destruct_link_name.py",
     "test_literal_branch_join_1756.py",
     "test_literal_typing_from_context_1541_1565.py",
     "test_lowering_boundary.py",
@@ -733,6 +735,7 @@ MARKED_FILES = (
     "test_tail_call_guards_1849.py",
     "test_termination_rule.py",
     "test_trial_argument_labels_1757.py",
+    "test_type_invariant_1814.py",
     "test_type_renderer_1505.py",
     "test_typed_program_1525.py",
     "test_typed_program_1679.py",
@@ -741,8 +744,6 @@ MARKED_FILES = (
     "test_verifier_reads_the_typed_program_1525.py",
     "test_zero_size_operands_1870.py",
     "test_binders_held_to_is_subtype_1896.py",
-    "test_type_invariant_1814.py",
-    "test_let_destruct_link_name.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
