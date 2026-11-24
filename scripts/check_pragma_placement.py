@@ -13,9 +13,11 @@ its place in the syntax tree:
   module's header or footer, a statement's leading line in a body, or a
   block's footer: there ``start``, ``end`` and ``block`` open and close
   their regions, and a bare one protects no node, since none starts on a
-  line that holds only a comment.  Alone after a decorator, or above an
-  ``else``, ``elif``, ``except`` or ``finally`` at that clause's indent (the
-  clause's own leading lines), it is read by no visitor;
+  line that holds only a comment.  Alone after a decorator, or in the own
+  leading lines of an ``else``, ``elif``, ``except`` or ``finally`` (above
+  the clause and shallower than the indented block it closes, or at any
+  indent after a one-line suite, which has no footer), it is read by no
+  visitor;
 - on a decorator's line, after the decorator, it is read by no visitor;
 - after code, outside every bracket, a pragma ends a statement and is filed
   under the line the statement starts on: a simple statement's trailing
@@ -36,9 +38,10 @@ reads.  The fix is to write the comment inside the brackets on the line of
 the node it answers (after a comma, or before a closing bracket put on a line
 of its own), or to make the statement one line.
 
-It runs without the engine.  ``tests/test_check_pragma_placement.py`` holds it
-to mutmut's own visitor where mutmut is installed (the Mutation (diff) lane's
-self-test step).
+It runs without the engine.  ``tests/test_check_pragma_placement.py`` (its
+named shapes) and ``tests/test_pragma_placement_matrix.py`` (a generated
+matrix of every place a comment can go) hold it to mutmut's own visitor where
+mutmut is installed (the Mutation (diff) lane's self-test step).
 
 Usage:
     python scripts/check_pragma_placement.py            # every .py file under vera/
@@ -92,10 +95,22 @@ def token_of(comment: str) -> str | None:
     return word if word in ("block", "start", "end") else "bare"
 
 
-#: The clauses that own the comment lines above them at their own indent
-#: (libcst's ``leading_lines`` of ``else``, ``elif``, ``except`` and
-#: ``finally``), which no visitor of the engine scans.
+#: The clauses whose own leading lines (libcst's ``leading_lines`` of
+#: ``else``, ``elif``, ``except`` and ``finally``) no visitor of the engine
+#: scans.
 CLAUSES = frozenset({"else", "elif", "except", "finally"})
+
+
+def footer_owns(column: int, clause: int, levels: list[int]) -> bool:
+    """Whether a comment line at ``column`` above a clause at column
+    ``clause`` is the footer of the indented block the clause closes, where
+    the engine reads it, rather than the clause's own leading lines, where it
+    does not.  ``levels`` are the indents of the blocks open at the comment.
+    The block the clause closes is the shallowest one deeper than the clause;
+    a clause after a one-line suite closes none, so nothing above it is a
+    footer, at any column."""
+    closed = [level for level in levels if level > clause]
+    return bool(closed) and column >= min(closed)
 
 
 def pragmas(source: str) -> list[Pragma]:
@@ -106,8 +121,8 @@ def pragmas(source: str) -> list[Pragma]:
     A comment alone on its line is read where it is a module's header or
     footer, a statement's leading line in a body, or a block's footer; it is
     read nowhere inside brackets, after a decorator (between decorators, or
-    between the last one and its ``def`` or ``class``), or above a clause at
-    the clause's indent.  A comment after code is read on a statement, a
+    between the last one and its ``def`` or ``class``), or in a clause's own
+    leading lines (``footer_owns``).  A comment after code is read on a statement, a
     compound header, a one-line suite or a ``match`` header, and nowhere on a
     decorator's line."""
     ast.parse(source)
@@ -116,6 +131,7 @@ def pragmas(source: str) -> list[Pragma]:
     logical_start: int | None = None
     logical_first: str | None = None
     after_decorator = False
+    levels: list[int] = []
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
             tokenize.ENCODING, tokenize.ENDMARKER)
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
@@ -138,7 +154,7 @@ def pragmas(source: str) -> list[Pragma]:
                     elif after_decorator:
                         found.append(Pragma(line, token, None, "after a decorator"))
                     elif (following is not None and following.string in CLAUSES
-                          and tok.start[1] <= following.start[1]):
+                          and not footer_owns(tok.start[1], following.start[1], levels)):
                         found.append(Pragma(line, token, None, "above a clause"))
                     else:
                         found.append(Pragma(line, token, line, "alone"))
@@ -152,6 +168,10 @@ def pragmas(source: str) -> list[Pragma]:
         elif tok.type == tokenize.NEWLINE:
             after_decorator = logical_first == "@"
             logical_start = logical_first = None
+        elif tok.type == tokenize.INDENT:
+            levels.append(tok.end[1])
+        elif tok.type == tokenize.DEDENT:
+            levels.pop()
     return found
 
 
@@ -160,7 +180,8 @@ def explain(p: Pragma) -> str:
     if p.filed is None:
         where = {"brackets": "inside brackets after code", "alone in brackets": "alone inside brackets",
                  "after a decorator": "alone after a decorator",
-                 "above a clause": "alone above an else, elif, except or finally at its indent",
+                 "above a clause": ("alone above an else, elif, except or finally, outside the "
+                                    "footer of the block it closes"),
                  "on a decorator": "on a decorator's line"}[p.how]
         fix = ("write it after the code of the line it answers" if p.token == "bare"
                else "write it on a line of its own in a body, outside every bracket")

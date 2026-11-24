@@ -107,6 +107,16 @@ def test_a_bare_pragma_alone_on_its_line_is_refused() -> None:
     assert p.misplaced and "protects no node" in gate.explain(p)
 
 
+def test_repro_a_pragma_above_a_clause_after_a_one_line_suite_is_read_by_no_visitor() -> None:
+    """A one-line suite has no footer, so libcst gives a comment line below
+    it to the next clause's own leading lines, which no visitor scans, at
+    any indent; an indented block's footer above the same clause is read."""
+    (p,) = gate.pragmas(f"if a: x = 1\n    {P} block\nelse: x = 2\n")
+    assert (p.filed, p.how, p.misplaced) == (None, "above a clause", True)
+    (q,) = gate.pragmas(f"if a:\n    x = 1\n    {P} block\nelse:\n    x = 2\n")
+    assert (q.filed, q.misplaced) == (3, False)
+
+
 def test_the_message_names_the_line_the_engine_files_it_under() -> None:
     (p,) = gate.check_source(SHAPES["after_a_call_that_spans_lines"][0])
     assert "filed under line 1" in gate.explain(p) and "not under line 3" in gate.explain(p)

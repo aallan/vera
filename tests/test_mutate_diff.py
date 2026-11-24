@@ -3563,6 +3563,7 @@ class TestWorkflow:
             "scripts/mutate_diff.py", "scripts/mutate_sweep.py", "scripts/mutation_report.py",
             "tests/mutation_oracle.py", "tests/test_mutate_diff.py", "tests/test_mutate_sweep.py",
             "scripts/check_pragma_placement.py", "tests/test_check_pragma_placement.py",
+            "tests/test_pragma_placement_matrix.py",
             ".github/workflows/mutation-diff.yml", ".github/workflows/mutation-nightly.yml"]
 
     def test_every_script_a_lane_loads_is_in_the_filter(self) -> None:
@@ -3619,7 +3620,8 @@ class TestWorkflow:
         names = [s.get("name") for s in steps]
         (test,) = [s for s in steps if s.get("name") == "Test the lane against the engine it installs"]
         assert test["run"] == ("pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py "
-                               "tests/test_check_pragma_placement.py -q")
+                               "tests/test_check_pragma_placement.py tests/test_pragma_placement_matrix.py "
+                               "-q --matrix=full")
         assert names.index("Install dependencies") < names.index(test["name"]) < names.index(
             "Mutate the functions this pull request changes")
 
