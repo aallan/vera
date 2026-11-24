@@ -707,6 +707,11 @@ INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
         "after `wasi:cli/exit`, which never returns",
     ),
     InternalTrap(
+        "wasm/context.py:_end_never", "compiler_bug", 1,
+        "after an expression of type `Never` whose code does not already "
+        "end where control stops, which does not complete (#1870)",
+    ),
+    InternalTrap(
         "wasm/calls_handlers.py:_translate_handle_exn", "compiler_bug", 1,
         "after a `handle[Exn]` whose body and clause both diverge",
     ),
