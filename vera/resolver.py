@@ -119,16 +119,17 @@ _Rename = tuple[Path, Path, tuple[int, int]]
 _Rewrites = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[str, ...]]
 
 #: What a walk of the program gives: each import by its importer's key and
-#: path (as written, before a rewrite) to the file it reaches; the imports
-#: that reach no file; each file's identity to the entries it is reached by;
-#: and the paths that name two files and the files under two paths.
+#: path (as written, before a rewrite) to the file it reaches; the files
+#: (by key) with an import that reaches no file; each file's identity to the
+#: entries it is reached by; and the paths that name two files and the
+#: files under two paths.
 _Edges = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[int, int]]
 
 
 @dataclass(frozen=True)
 class _Walk:
     edges: _Edges
-    missing: frozenset[tuple[tuple[int, int], tuple[str, ...]]]
+    missing: frozenset[tuple[int, int]]
     entries: dict[tuple[int, int], frozenset[Path]]
     conflicts: frozenset[tuple[object, ...]]
 
@@ -208,6 +209,11 @@ class ModuleResolver:
     _document_imports: tuple[tuple[str, ...], ...] = ()
     _document_program: ast.Program | None = None
     _baseline: _Walk | None = None
+    #: What resolution showed, which a repair may leave and nothing more:
+    #: the conflicts its refusals reported, and the files whose imports it
+    #: looked up (each missing import of one is an E012 it reported).
+    _reported: frozenset[tuple[object, ...]] = frozenset()
+    _read: frozenset[tuple[int, int]] = frozenset()
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -600,11 +606,18 @@ class ModuleResolver:
         conflict this diagnostic reports is gone, every import the repair
         does not edit reaches the file it reached before (by identity),
         every import it edits reaches the file it reached before, and no
-        other path names two files or file has two paths that did not
-        already.  It is composed only inside the domain where that can be
+        import is refused that resolution did not already refuse.  It is
+        composed only inside the domain where that can be
         checked without modelling links (:meth:`_in_domain`).  Elsewhere,
         and whenever composing it meets a filesystem error, the fix is the
         rule in prose, and the diagnostic is as resolution recorded it."""
+        # Taken before any repair is composed: composing reads refused
+        # files' programs, which resolution never read.
+        self._read = frozenset(self._programs) | {_DOCUMENT}
+        self._reported = frozenset(
+            ("path", r.imp.path) if r.diagnostic.error_code == "E014"
+            else ("file", r.bound.ident)
+            for r in self._refusals)
         for refusal in self._refusals:
             e014 = refusal.diagnostic.error_code == "E014"
             try:
@@ -667,7 +680,7 @@ class ModuleResolver:
             return None
 
         edges: _Edges = {}
-        missing: set[tuple[tuple[int, int], tuple[str, ...]]] = set()
+        missing: set[tuple[int, int]] = set()
         entries: dict[tuple[int, int], set[Path]] = {}
         paths: dict[tuple[str, ...], set[tuple[int, int]]] = {}
         files: dict[tuple[int, int], set[tuple[str, ...]]] = {}
@@ -681,7 +694,7 @@ class ModuleResolver:
                 path = rewrites.get((key, written), written)
                 hit = find(path, importer)
                 if hit is None:
-                    missing.add((key, written))
+                    missing.add(key)
                     continue
                 place, ident = hit
                 edges[(key, written)] = ident
@@ -694,9 +707,9 @@ class ModuleResolver:
                 # A renamed file's program is read before the walk, from
                 # its old name (`_e014_fix`); every other is read here.
                 program = self._program_of(ident, place)
-                home = place if rename is not None and ident == rename[2] \
-                    else place.resolve()
-                queue.append((ident, home, tuple(
+                # A renamed file's new name does not exist; resolving it
+                # resolves its directory and keeps the name.
+                queue.append((ident, place.resolve(), tuple(
                     imp.path for imp in program.imports) if program else ()))
         conflicts: set[tuple[object, ...]] = {
             ("path", p) for p, s in paths.items() if len(s) > 1}
@@ -716,14 +729,25 @@ class ModuleResolver:
     ) -> bool:
         """Whether the repair keeps the invariant of spec §8.6.2: the
         conflict is gone; every import, edited or not, reaches the file it
-        reached before, and no import that found a file finds none; no
-        path or file conflict is new."""
+        reached before (so none that found a file finds none); and no
+        import is refused that resolution did not already refuse.
+
+        The walk reads further than resolution did: a refused import's
+        file, and the files it imports.  A repair makes resolution read
+        them, so the comparison of files reached covers them, but what the
+        repair may leave is only what resolution SHOWED: a conflict one of
+        its refusals reported, and an import finding no file in a file it
+        read (an E012 it reported).  A conflict or a missing import met
+        only through a refused import would be refused for the first time
+        once the repair is applied (#1904)."""
         base, after = self._base(), self._walk(rename, rewrites)
         if conflict in after.conflicts:
             return False
-        if after.edges != base.edges or after.missing != base.missing:
+        if after.edges != base.edges:
             return False
-        return after.conflicts <= base.conflicts
+        if any(key not in self._read for key in after.missing):
+            return False
+        return after.conflicts <= self._reported  # pragma: no mutate (< is equivalent: the refusal's own conflict is in _reported and not in after)
 
     def _in_domain(self, ident: tuple[int, int]) -> bool:
         """Whether a repair of the file *ident* can be checked without
@@ -758,9 +782,11 @@ class ModuleResolver:
 
     #: The guarantee a concrete repair carries, said where it is offered.
     _GUARANTEE = (
-        " Applied as written, this clears this conflict, and every other "
-        "import reaches the file it reaches now; any other error the "
-        "program has is still there.")
+        " Applied as written, this clears this conflict, every other "
+        "import reaches the file it reaches now, and no import is refused "
+        "that is not refused now. It is about imports, not errors: a "
+        "module this lets an import bind, and each call into it, may show "
+        "errors of its own.")
 
     def _e014_fix(self, refusal: _Refusal) -> str | None:
         """Rename the file this import found, beside itself, and change the

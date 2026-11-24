@@ -41,6 +41,7 @@ import pytest
 from tests import pipeline
 from vera.lsp.features import analyze, to_lsp_diagnostics
 from vera.obligations.session import VerificationSession
+from vera.resolver import ModuleResolver
 
 # A class instrument (tests/matrix_sample.py): a pull request runs a sample
 # of its parametrised cells, and all of them when it changes this file or a
@@ -1014,7 +1015,9 @@ def test_a_refusal_applies_to_the_document_however_its_name_is_spelled(
 
 def _snapshot(root: pathlib.Path) -> dict[str, bytes]:
     return {p.relative_to(root).as_posix(): p.read_bytes()
-            for p in sorted(root.rglob("*.vera")) if p.is_file()}
+            for p in sorted(root.rglob("*.vera"))
+            # A symbolic link is the file it names, which is listed itself.
+            if p.is_file() and not p.is_symlink()}
 
 
 def _apply_fix(diag: dict, root: pathlib.Path) -> set[str]:
@@ -1213,9 +1216,96 @@ def _shape_e015_qualified(r: pathlib.Path) -> tuple[pathlib.Path, str]:
                  + main_fn(["word(())", "w2(())"])), "22"
 
 
+def _shape_refused_subtree_conflict(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """The refused `a/lib.vera` imports `n.inner`, whose `util` finds
+    `n/util.vera`; `main.vera` imports the root `util.vera`.  Resolution
+    never reads `a/lib.vera`, so it reports no conflict on `util`; a rename
+    would make it read, and `main.vera`'s clean `import util` would be
+    refused.  No rename keeps the guarantee."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/lib.vera", "import n.inner(wi);\n\n" + fn("word", "wi(())"))
+    write(r, "n/inner.vera", "import util(u);\n\n" + fn("wi", "u(())"))
+    write(r, "n/util.vera", fn("u", "6"))
+    write(r, "util.vera", fn("u", "4"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import lib(word);\nimport a.mid(w2);\nimport util(u);\n\n"
+                 + main_fn(["word(())", "w2(())", "u(())"])), "164"
+
+
+def _shape_refused_own_conflict(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """The refused `a/lib.vera` itself imports `dep`, which finds
+    `a/dep.vera` beside it where `main.vera`'s finds the root's: renamed and
+    read, its import would be refused."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "dep.vera", fn("d", "7"))
+    write(r, "a/dep.vera", fn("d", "5"))
+    write(r, "a/lib.vera", "import dep(d);\n\n" + fn("word", "d(())"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import lib(word);\nimport dep(d);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "d(())", "w2(())"])), "175"
+
+
+def _shape_refused_subtree_missing(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """The refused `a/lib.vera` imports `nosuch`, which no file holds:
+    renamed and read, that import would be `E012`, which resolution never
+    reported."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/lib.vera", "import nosuch;\n\n" + fn("word", "2"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import lib(word);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "12"
+
+
+def _shape_linked_importer(r: pathlib.Path) -> tuple[pathlib.Path, str] | None:
+    """`b/link.vera` links to `a/other.vera`, whose `lib2` is looked up from
+    `a/` (resolution reads a module's imports from the directory of the
+    file it resolves to): renaming `a/lib.vera` to `a/lib2.vera` would
+    capture it, so the fix takes `lib3`.  The file in play is plain."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "lib2.vera", fn("w8", "8"))
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/other.vera", "import lib2(w8);\n\n" + fn("wx", "w8(())"))
+    (r / "b").mkdir(parents=True)
+    try:
+        os.symlink(r / "a" / "other.vera", r / "b" / "link.vera")
+    except (OSError, NotImplementedError):
+        return None
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import lib(word);\nimport a.mid(w2);\nimport b.link(wx);\n\n"
+                 + main_fn(["word(())", "w2(())", "wx(())"])), "128"
+
+
+def _shape_refused_in_linked_module(r: pathlib.Path) -> tuple[pathlib.Path, str] | None:
+    """`b/link.vera` links to `a/other.vera`, whose `lib` resolution looks
+    up from `a/` and finds `a/lib.vera`: E014 there.  The file in play is
+    plain, so the rename is offered, and the check reads the new import
+    from `a/` too, where the rename puts the file."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/other.vera", "import lib(word);\n\n" + fn("wx", "word(())"))
+    (r / "b").mkdir(parents=True)
+    try:
+        os.symlink(r / "a" / "other.vera", r / "b" / "link.vera")
+    except (OSError, NotImplementedError):
+        return None
+    return write(r, "main.vera", "import lib(word);\nimport b.link(wx);\n\n"
+                 + main_fn(["word(())", "wx(())"])), "12"
+
+
+def _shape_e015_other_qualified(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """E015's second branch: `a/mid.vera` binds the file as `lib` and calls
+    `lib::word`; the fix rewrites that import, and that call, in
+    `a/mid.vera`."""
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/mid.vera", "import lib;\n\n" + fn("w2", "lib::word(())"))
+    return write(r, "main.vera", "import a.mid(w2);\nimport a.lib(word);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "22"
+
+
 #: In-domain shapes whose every candidate fails the check: the fix is then
 #: the prose, and nothing is applied.
-MAY_VERIFY_NONE = {"unedited_fallback"}
+MAY_VERIFY_NONE = {"unedited_fallback", "refused_subtree_conflict",
+                   "refused_own_conflict", "refused_subtree_missing"}
 
 REPAIR_SHAPES = {
     "issue": _shape_issue,
@@ -1234,6 +1324,12 @@ REPAIR_SHAPES = {
     "bound_shared_path": _shape_bound_shared_path,
     "e015_this_import": _shape_e015_here,
     "e015_other_import": _shape_e015_there,
+    "refused_subtree_conflict": _shape_refused_subtree_conflict,
+    "refused_own_conflict": _shape_refused_own_conflict,
+    "refused_subtree_missing": _shape_refused_subtree_missing,
+    "linked_importer": _shape_linked_importer,
+    "refused_in_linked_module": _shape_refused_in_linked_module,
+    "e015_other_qualified_calls": _shape_e015_other_qualified,
 }
 
 
@@ -1244,6 +1340,15 @@ def test_every_repair_applied_as_written_clears(tmp_path: pathlib.Path, shape: s
         pytest.skip("this platform or account cannot make the link")
     entry, value = built
     (d,) = refusals(check_json(entry))
+    # Each code's fix leads with its own rule, concrete or prose; a
+    # concrete one names an edit in every sentence it opens, and ends with
+    # the guarantee it carries.
+    lead = ("Give one of the two modules another path" if d["error_code"] == "E014"
+            else "Import `")
+    assert d["fix"].startswith(lead), d["fix"]
+    assert "write ." not in d["fix"], d["fix"]
+    if "write `" in d["fix"]:
+        assert d["fix"].endswith(ModuleResolver._GUARANTEE), d["fix"]
     before = _snapshot(tmp_path)
     if shape in MAY_VERIFY_NONE and "write `" not in d["fix"]:
         # In the domain, a shape may verify no repair (the unedited
@@ -1327,7 +1432,22 @@ def test_an_offered_repair_leaves_the_programs_other_errors(tmp_path: pathlib.Pa
         "import lib(word);", "import lib(word);\nimport b.far(w3);")
     entry.write_text(text, encoding="utf-8")
     (d,) = [x for x in check_json(entry) if x["error_code"] == "E014"]
-    assert "any other error the program has is still there" in d["fix"], d["fix"]
+    assert "no import is refused that is not refused now" in d["fix"], d["fix"]
+    _apply_fix(d, tmp_path)
+    got = [x["error_code"] for x in check_json(entry)]
+    assert got == ["E012"], got
+
+
+def test_an_e012_in_the_document_does_not_withhold_a_repair(tmp_path: pathlib.Path) -> None:
+    """The document's own `import nosuch` is an E012 resolution reported:
+    the repair may leave it, so it is offered, and applied leaves the E012
+    alone."""
+    entry = _issue_tree(tmp_path, a_mid_first=True)
+    text = entry.read_text(encoding="utf-8").replace(
+        "import lib(word);", "import lib(word);\nimport nosuch;")
+    entry.write_text(text, encoding="utf-8")
+    (d,) = [x for x in check_json(entry) if x["error_code"] == "E014"]
+    assert "write `" in d["fix"], d["fix"]
     _apply_fix(d, tmp_path)
     got = [x["error_code"] for x in check_json(entry)]
     assert got == ["E012"], got
@@ -1355,3 +1475,98 @@ def test_a_lookup_that_raises_while_composing_keeps_the_refusal(
         os.chmod(tmp_path / "locked", 0o755)
     assert d["error_code"] == "E014"
     assert "A repair is not composed here" in d["fix"], d["fix"]
+
+
+def test_a_repair_that_leaves_a_third_plain_path_to_the_file_is_not_offered(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`a/b/lib.vera` imported as `a.b.lib` (`main.vera`), `lib`
+    (`a/b/m.vera`) and `b.lib` (`a/m.vera`), every name a plain file: one
+    import changed leaves the file under two paths, so neither E015 offers
+    a repair."""
+    write(tmp_path, "a/b/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/b/m.vera", "import lib(word);\n\n" + fn("w1", "word(())"))
+    write(tmp_path, "a/m.vera", "import b.lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.b.lib(word);\nimport a.b.m(w1);\nimport a.m(w2);\n\n"
+                  + main_fn(["word(())", "w1(())", "w2(())"]))
+    found = refusals(check_json(entry))
+    assert [d["error_code"] for d in found] == ["E015", "E015"], found
+    assert all(_offers_nothing(d) and "Neither '" in d["fix"] for d in found), \
+        [d["fix"] for d in found]
+
+
+@pytest.mark.parametrize("which", ["E014", "E015"])
+def test_a_repair_may_leave_another_reported_conflict(
+    tmp_path: pathlib.Path, which: str,
+) -> None:
+    """An E014 on `lib` and an unrelated E015 on `c/k.vera`: each is a
+    conflict resolution reported, so each one's repair may leave the
+    other, and applied leaves exactly the other."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    write(tmp_path, "c/k.vera", fn("wk", "3"))
+    write(tmp_path, "c/m.vera", "import k(wk);\n\n" + fn("wm", "wk(())"))
+    entry = write(tmp_path, "main.vera",
+                  "import lib(word);\nimport a.mid(w2);\nimport c.k(wk);\nimport c.m(wm);\n\n"
+                  + main_fn(["word(())", "w2(())", "wk(())", "wm(())"]))
+    found = refusals(check_json(entry))
+    assert sorted(d["error_code"] for d in found) == ["E014", "E015"], found
+    (d,) = [x for x in found if x["error_code"] == which]
+    assert "write `" in d["fix"], d["fix"]
+    _apply_fix(d, tmp_path)
+    other = {"E014": "E015", "E015": "E014"}[which]
+    assert [x["error_code"] for x in refusals(check_json(entry))] == [other]
+
+
+def test_a_name_too_long_while_composing_keeps_the_refusal(tmp_path: pathlib.Path) -> None:
+    """The refused `a/lib.vera` imports a module whose name no filesystem
+    holds: the repair check's lookup raises `ENAMETOOLONG`, an `OSError`
+    that is not a `PermissionError`, and the fix is the prose."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", f"import {'x' * 300};\n\n" + fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\nimport a.mid(w2);\n\n"
+                  + main_fn(["word(())", "w2(())"]))
+    (d,) = refusals(check_json(entry))
+    assert d["error_code"] == "E014"
+    assert "A repair is not composed here" in d["fix"], d["fix"]
+
+
+def test_a_spelling_that_differs_in_case_takes_the_repair_out_of_the_domain(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`a/mid.vera` imports `liB`, which a filesystem that ignores case
+    finds as `a/lib.vera`, the file `main.vera` imports as `a.lib`: E015,
+    and the name `a/liB.vera` is not in the directory's listing, so the fix
+    is the prose."""
+    if not _case_insensitive(tmp_path):
+        pytest.skip("this filesystem tells names apart by case")
+    write(tmp_path, "a/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import liB(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.lib(word);\nimport a.mid(w2);\n\n"
+                  + main_fn(["word(())", "w2(())"]))
+    (d,) = refusals(check_json(entry))
+    assert d["error_code"] == "E015"
+    assert "A repair is not composed here" in d["fix"], d["fix"]
+
+
+def test_the_documents_calls_are_read_from_the_program_handed_in(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The language server hands the resolver the buffer's program, which
+    calls `lib::word` where the file on disk does not: E014's fix renames
+    the buffer's call with the import."""
+    from vera.parser import parse
+    from vera.transform import transform
+
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.mid(w2);\nimport lib(word);\n\n"
+                  + main_fn(["word(())", "w2(())"]))
+    buffer = "import a.mid(w2);\nimport lib;\n\n" + main_fn(["lib::word(())", "w2(())"])
+    resolver = ModuleResolver(_root=tmp_path)
+    resolver.resolve_imports(transform(parse(buffer, file=str(entry))), entry)
+    (d,) = [x for x in resolver.errors if x.error_code == "E014"]
+    assert "`lib2::word` in place of `lib::word`" in d.fix, d.fix
