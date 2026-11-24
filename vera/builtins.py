@@ -116,6 +116,10 @@ class Inline:
     emitter: str
     binding: Binding = Binding.ARGS
     extra: tuple[str, ...] = ()
+    #: The type variables a value of which the emitter holds in a local, as
+    #: a generic's body reads `@T.n` (#1870): instantiated at a zero-size
+    #: type, which has no local, the call is refused (E206).
+    reads: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -287,7 +291,8 @@ BUILTINS: Mapping[str, BuiltinSpec] = _table(
     _fn("array_filter", (_array(T), _pure_fn((T,), BOOL)), _array(T),
         forall=("T",), since="0.0.91", lowering=Inline("_translate_array_filter")),
     _fn("array_fold", (_array(T), U, _pure_fn((U, T), U)), U,
-        forall=("T", "U"), since="0.0.91", lowering=Inline("_translate_array_fold")),
+        forall=("T", "U"), since="0.0.91",
+        lowering=Inline("_translate_array_fold", reads=("U",))),
     _fn("array_mapi", (_array(A), _pure_fn((A, NAT), B)), _array(B),
         forall=("A", "B"), since="0.0.117", lowering=Inline("_translate_array_mapi")),
     _fn("array_reverse", (_array(T),), _array(T),
