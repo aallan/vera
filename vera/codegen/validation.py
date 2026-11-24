@@ -71,7 +71,9 @@ def _function_named(wasm_bytes: bytes | bytearray) -> str | None:
     except wasmtime.WasmtimeError as exc:
         found = _FUNCTION_RE.search(str(exc))
         if found:
-            return found.group(1).rsplit(":", 1)[-1] or found.group(1)
+            # The name after its last `:`, or the whole name when that
+            # leaves nothing (one that ends in `:`).
+            return found.group(1).rpartition(":")[2] or found.group(1)
     return None
 
 
@@ -121,7 +123,9 @@ def assembly_error(msg: str, file: str | None) -> Diagnostic:
         description=(
             f"Internal compiler error while assembling the module: {msg}"
         ),
-        **locate(file, ""),
+        # Line 0, no position: the source is never read, so what it holds
+        # changes nothing.
+        **locate(file, ""),  # pragma: no mutate
         rationale=(
             "Code generation produced a module WebAssembly "
             "cannot load. That is a bug in the compiler, not "
@@ -135,6 +139,5 @@ def assembly_error(msg: str, file: str | None) -> Diagnostic:
             "program at https://github.com/aallan/vera/issues"
         ),
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-        severity="error",
         error_code="E699",
     )

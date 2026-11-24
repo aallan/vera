@@ -400,8 +400,11 @@ class CrossModuleMixin:
                     # namespace by `_namespace_ctor_projection`
                     if _ctor_name in temp._ctor_adt_tp_indices:
                         # ctor-owner-exempt: the flat mirror carried
-                        # alongside the per-owner copy above (#1436)
-                        self._ctor_adt_tp_indices.setdefault(
+                        # alongside the per-owner copy above (#1436).
+                        # Not mutated: no generator reads its own flat
+                        # mirror (a context is built from the projection),
+                        # so what it holds changes no module.
+                        self._ctor_adt_tp_indices.setdefault(  # pragma: no mutate
                             _ctor_name,
                             # ctor-owner-exempt: the flat mirror carried
                             # alongside the per-owner copy above (#1436)

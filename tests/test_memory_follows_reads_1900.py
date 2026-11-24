@@ -25,6 +25,8 @@ declares memory, and runs where it can be called.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -476,3 +478,345 @@ def test_repro_the_host_runs_the_component_it_checked(
         '  effects(<IO>)\n{\n  IO.print("checked\\n")\n}\n', encoding="utf-8")
     assert cmd_run(str(src), target="wasi-p2") == 0
     assert "checked" in capsys.readouterr().out
+
+
+# =====================================================================
+# What `vera compile` reports and writes, each asserted whole
+# =====================================================================
+
+#: A `main` whose second arm is unreachable: an E310 warning at line 8,
+#: column 5, which every refusal and every success must carry with it.
+_MAIN_WARNS = (
+    "public fn main(-> @Int)\n" + _C
+    + "{\n  match 0 {\n    _ -> 1,\n    0 -> 2\n  };\n  42\n}\n"
+)
+
+#: The same warning ahead of a call of a host family wasi-p2 lacks.
+_HTTP_WARNS = (
+    "public fn main(-> @Unit)\n  requires(true)\n  ensures(true)\n"
+    "  effects(<IO, Http>)\n{\n  match 0 {\n    _ -> 1,\n    0 -> 2\n  };\n"
+    '  match Http.get("http://localhost/x") {\n'
+    "    Ok(@String) -> IO.print(@String.0),\n"
+    "    Err(@String) -> IO.print(@String.0)\n  }\n}\n"
+)
+
+_E699_RATIONALE = (
+    "Code generation produced a module WebAssembly cannot load. That is a "
+    "bug in the compiler, not something to change in the program: a "
+    "program the checker should have refused was not, or a valid one was "
+    "compiled under a clashing name or into a module that does not "
+    "validate."
+)
+_E699_FIX = (
+    "Please file a bug report with the offending program at "
+    "https://github.com/aallan/vera/issues"
+)
+_SPEC_0_5_1 = 'Chapter 0, Section 0.5.1 "Diagnostic Structure"'
+
+
+def _refusal(build: Callable[[], object]) -> str:
+    """wasmtime's refusal of what *build* constructs, on one line, as the
+    diagnostic quotes it.  Read from wasmtime, not written here, so the
+    tests hold whatever version reports it."""
+    with pytest.raises(wasmtime.WasmtimeError) as refused:
+        build()
+    return " ".join(str(refused.value).split())
+
+
+def _e310(src: Path) -> dict[str, object]:
+    return {
+        "severity": "warning",
+        "description": (
+            "Unreachable match arm: pattern after catch-all will never "
+            "match."),
+        "location": {"line": 8, "column": 5, "file": str(src)},
+        "source_line": "    0 -> 2",
+        "rationale": (
+            "A wildcard or binding pattern already matches all remaining "
+            "values."),
+        "fix": "Remove this arm or move it before the catch-all.",
+        "spec_ref": 'Chapter 4, Section 4.9.3 "Redundancy"',
+        "error_code": "E310",
+    }
+
+
+def _e310_text(src: Path) -> str:
+    return (
+        f"warning: [E310] Warning at {src}, line 8, column 5:\n\n"
+        "        0 -> 2\n        ^\n\n"
+        "  Unreachable match arm: pattern after catch-all will never match."
+        "\n\n  A wildcard or binding pattern already matches all remaining "
+        "values.\n\n  Fix:\n\n    Remove this arm or move it before the "
+        'catch-all.\n\n  See: Chapter 4, Section 4.9.3 "Redundancy"\n'
+    )
+
+
+def _e699(src: Path, message: str) -> dict[str, object]:
+    return {
+        "severity": "error",
+        "description": (
+            "Internal compiler error while assembling the module: " + message),
+        "location": {"line": 0, "column": 0, "file": str(src)},
+        "rationale": _E699_RATIONALE,
+        "fix": _E699_FIX,
+        "spec_ref": _SPEC_0_5_1,
+        "error_code": "E699",
+    }
+
+
+def _e699_text(src: Path, message: str) -> str:
+    return (
+        f"[E699] Error at {src}:\n\n"
+        f"  Internal compiler error while assembling the module: {message}"
+        f"\n\n  {_E699_RATIONALE}\n\n  Fix:\n\n    {_E699_FIX}\n\n"
+        f"  See: {_SPEC_0_5_1}\n"
+    )
+
+
+def _listing(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir())
+
+
+@pytest.mark.usefixtures("scan_disabled", "bad_component")
+def test_repro_e699_is_one_whole_diagnostic_for_a_module_and_a_component(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`assembly_error` is the one E699 for an artifact that does not
+    validate: the core module (through `compile_program`) and the wasi-p2
+    component (through `vera compile`), each refused through the real
+    command, in `--json` and in text, every field whole.  The location
+    names the file and no position; nothing is written."""
+    from wasmtime.component import Component
+
+    from vera.cli import cmd_compile
+
+    core = tmp_path / "unwrap.vera"
+    core.write_text(_UNWRAP_OR, encoding="utf-8")
+    wat = pipeline.compile(_UNWRAP_OR, file="fixture.vera").result.wat
+    core_message = (
+        "the module does not validate: "
+        + _refusal(lambda: wasmtime.Module.validate(
+            _engine(), wasmtime.wat2wasm(wat)))
+        + ", in the function `unwrap_or`. No loader accepts it, so it is "
+        "not written.")
+    component = tmp_path / "main.vera"
+    component.write_text(_MAIN_WARNS, encoding="utf-8")
+    component_message = (
+        "the wasi-p2 component does not validate: "
+        + _refusal(lambda: Component(
+            _engine(), wasmtime.wat2wasm(_BAD_COMPONENT)))
+        + ". No loader accepts it, so it is not written.")
+    cases: list[tuple[Path, str, dict[str, str], list[dict[str, object]], str]] = [
+        (core, core_message, {}, [], ""),
+        (component, component_message, {"target": "wasi-p2"},
+         [_e310(component)], _e310_text(component)),
+    ]
+    for src, message, target, warnings, warning_text in cases:
+        assert cmd_compile(str(src), as_json=True, **target) == 1
+        assert json.loads(capsys.readouterr().out) == {
+            "ok": False, "file": str(src),
+            "diagnostics": [_e699(src, message)], "warnings": warnings,
+        }
+        assert cmd_compile(str(src), **target) == 1
+        assert capsys.readouterr() == ("", warning_text + _e699_text(src, message))
+    assert _listing(tmp_path) == ["main.vera", "unwrap.vera"]
+
+
+def test_repro_a_family_wasi_p2_lacks_is_refused_whole(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The emitter's family gate, the refusal just ahead of the
+    component's check: E908 with the warnings, in `--json` and in text,
+    and no file."""
+    from vera.cli import cmd_compile
+
+    src = tmp_path / "prog.vera"
+    src.write_text(_HTTP_WARNS, encoding="utf-8")
+    description = (
+        "--target wasi-p2: --target wasi-p2 does not support the following "
+        "host family: http (http_get). Supported families: IO, Random.")
+    rationale = (
+        "A target needs something of the program: `--target browser` calls "
+        "`main` when the page loads, `--target wasi-p2` hosts only the host "
+        "families it implements, and `vera serve` calls "
+        "`handle(@Request -> @Response)` for each request.")
+    fix = (
+        "Give the program what the target needs, as the description says, "
+        "or build it for the default target:")
+    assert cmd_compile(str(src), target="wasi-p2", as_json=True) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False, "file": str(src),
+        "diagnostics": [{
+            "severity": "error", "description": description,
+            "location": {"line": 0, "column": 0, "file": str(src)},
+            "rationale": rationale,
+            "fix": fix + "\n\n  vera run program.vera",
+            "spec_ref": _SPEC_0_5_1, "error_code": "E908",
+        }],
+        "warnings": [_e310(src)],
+    }
+    assert cmd_compile(str(src), target="wasi-p2") == 1
+    assert capsys.readouterr() == ("", _e310_text(src) + (
+        f"[E908] Error at {src}:\n\n  {description}\n\n  {rationale}\n\n"
+        f"  Fix:\n\n    {fix}\n    \n      vera run program.vera\n\n"
+        f"  See: {_SPEC_0_5_1}\n"))
+    assert _listing(tmp_path) == ["prog.vera"]
+
+
+def test_repro_vera_compile_writes_each_artifact_where_it_says(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A component that validates is written, to `--output` when one is
+    given and beside the source as `.wasm` when not, and is the component;
+    the core target's `--wat` prints the module's text and its default
+    writes the module's bytes.  Each report is whole, warnings included."""
+    from wasmtime.component import Component
+
+    from vera.cli import cmd_compile
+
+    home = tmp_path / "src"
+    home.mkdir()
+    src = home / "prog.vera"
+    src.write_text(_MAIN_WARNS, encoding="utf-8")
+    elsewhere = tmp_path / "out"
+    elsewhere.mkdir()
+    named = elsewhere / "artifact.component"
+
+    assert cmd_compile(str(src), target="wasi-p2", output=str(named)) == 0
+    assert capsys.readouterr() == (
+        f"Compiled (WASI Preview 2 component): {named}\n", _e310_text(src))
+    assert _listing(home) == ["prog.vera"]
+    assert _listing(elsewhere) == ["artifact.component"]
+
+    assert cmd_compile(str(src), target="wasi-p2") == 0
+    default = home / "prog.wasm"
+    assert capsys.readouterr() == (
+        f"Compiled (WASI Preview 2 component): {default}\n", _e310_text(src))
+    assert _listing(home) == ["prog.vera", "prog.wasm"]
+    binary = default.read_bytes()
+    assert binary == named.read_bytes()
+    # The component layer's preamble, not a core module's.
+    assert binary[:8] == b"\0asm\x0d\x00\x01\x00"
+    Component(_engine(), binary)
+
+    module = pipeline.compile(src.read_text(encoding="utf-8"), file=str(src)).result
+    assert cmd_compile(str(src), wat=True) == 0
+    assert capsys.readouterr() == (module.wat + "\n", _e310_text(src))
+    assert cmd_compile(str(src)) == 0
+    assert capsys.readouterr() == (
+        f"Compiled: {default} (1 function exported)\n", _e310_text(src))
+    assert default.read_bytes() == module.wasm_bytes
+
+
+def test_repro_text_the_assembler_refuses_is_its_own_e699(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other branch beside `assembly_error`: text `wat2wasm` refuses
+    (a call of a function the module does not hold) is an E699 quoting the
+    assembler, located at the file with no position, and no bytes."""
+    bad = "(module\n  (func $f\n    call $missing\n  )\n)\n"
+    monkeypatch.setattr("vera.codegen.core.strip_check_markers", lambda wat: bad)
+    result = pipeline.compile(_MAIN, file="fixture.vera").result
+    quoted = str(pytest.raises(
+        wasmtime.WasmtimeError, wasmtime.wat2wasm, bad).value)
+    assert [d.to_dict() for d in result.diagnostics] == [{
+        "severity": "error",
+        "description": f"WAT compilation failed: {quoted}",
+        "location": {"line": 0, "column": 0, "file": "fixture.vera"},
+        "rationale": (
+            "Code generation produced WebAssembly text the assembler "
+            "refuses. That is a bug in the compiler, not something to "
+            "change in the program."),
+        "fix": _E699_FIX,
+        "spec_ref": _SPEC_0_5_1,
+        "error_code": "E699",
+    }]
+    assert result.wasm_bytes == b""
+
+
+def test_repro_the_server_world_writes_its_own_component(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--world server` reaches the emitter: the file written is the server
+    world's component, byte for byte, and the report says how to run it."""
+    from vera.cli import cmd_compile
+    from vera.codegen.wasi import emit_wasi_component
+
+    source = (
+        "public fn handle(@Request -> @Response)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<HttpServer>)\n{\n"
+        '  Response(200, map_new(), "served")\n}\n')
+    src = tmp_path / "server.vera"
+    src.write_text(source, encoding="utf-8")
+    out = tmp_path / "server.component"
+    assert cmd_compile(
+        str(src), target="wasi-p2", world="server", output=str(out)) == 0
+    assert capsys.readouterr() == (
+        "Compiled (WASI Preview 2 server component (run with: wasmtime "
+        f"serve <file>)): {out}\n", "")
+    result = pipeline.compile(source, file=str(src)).result
+    assert out.read_bytes() == bytes(wasmtime.wat2wasm(
+        emit_wasi_component(result, world="server")))
+
+
+def test_repro_an_imported_data_type_brings_the_allocator_as_a_declared_one_does(
+    tmp_path: Path,
+) -> None:
+    """A module whose data type is only read, never built: declared in the
+    entry file (`_register_data`) or imported (`_register_modules`), the
+    module holds the allocator and exports it, so an embedder can build
+    the argument the exported reader takes."""
+    from vera.runtime import runtime_export
+
+    lib = (
+        "module lib;\n\npublic data Box {\n  MkBox(Int)\n}\n\n"
+        "public fn unbox(@Box -> @Int)\n" + _C
+        + "{\n  match @Box.0 {\n    MkBox(@Int) -> @Int.0\n  }\n}\n")
+    imported = (
+        "import lib(Box, unbox);\n\npublic fn f(@Box -> @Int)\n" + _C
+        + "{\n  unbox(@Box.0)\n}\n")
+    declared = (
+        "private data Box {\n  MkBox(Int)\n}\n\npublic fn f(@Box -> @Int)\n"
+        + _C + "{\n  match @Box.0 {\n    MkBox(@Int) -> @Int.0\n  }\n}\n")
+    for name, files in (
+        ("imported", {"lib.vera": lib, "main.vera": imported}),
+        ("declared", {"main.vera": declared}),
+    ):
+        root = tmp_path / name
+        main = pipeline.write_tree(root, files)
+        result = pipeline.compile(main, root=root).result
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        module = wasmtime.Module(_engine(), result.wasm_bytes)
+        exports = sorted(e.name for e in module.exports)
+        assert runtime_export("alloc") in exports, (name, exports)
+        assert "f" in exports, (name, exports)
+
+
+def test_repro_the_function_a_refusal_names() -> None:
+    """`_function_named` reads the name after the last `:` of the function
+    wasmtime's compile names (a user function's starts `:`, a runtime
+    function's has none), keeps a name that ends in `:` whole, and names
+    none when the function has no name; `validate_module` quotes the
+    validator, adds the name only when there is one, and refuses."""
+    from vera.codegen.validation import _function_named, validate_module
+    from vera.skip import CodegenInvariantError
+
+    def failing(name: str) -> bytes:
+        return bytes(wasmtime.wat2wasm(
+            f"(module (func {name} (result i32) i32.const 0 i32.load))"))
+
+    named = {
+        "$:unwrap_or": "unwrap_or", "$alloc": "alloc",
+        "$a:b:c": "c", "$f:": "f:", "": None,
+    }
+    for name, expected in named.items():
+        assert _function_named(failing(name)) == expected, name
+        quoted = _refusal(lambda: wasmtime.Module.validate(
+            _engine(), failing(name)))
+        with pytest.raises(CodegenInvariantError) as refused:
+            validate_module(failing(name))
+        assert refused.value.msg == (
+            "the module does not validate: " + quoted
+            + (f", in the function `{expected}`" if expected else "")
+            + ". No loader accepts it, so it is not written."), name
+    assert _function_named(wasmtime.wat2wasm("(module (func $:f))")) is None

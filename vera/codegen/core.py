@@ -2520,7 +2520,8 @@ class CodeGenerator(
             else:
                 self.diagnostics.append(Diagnostic(
                     description=f"WAT compilation failed: {exc}",
-                    **locate(self.file, ""),
+                    # Line 0, no position: the source is never read.
+                    **locate(self.file, ""),  # pragma: no mutate
                     rationale=(
                         "Code generation produced WebAssembly text the "
                         "assembler refuses. That is a bug in the compiler, "

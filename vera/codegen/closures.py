@@ -278,7 +278,12 @@ class ClosureLiftingMixin:
                     self._closure_sigs[sig_content] = sig_name
             if new_closure_fns_wat:
                 self._needs_table = True
-                self._needs_alloc = True
+                # Implied on every path a check-green program reaches: the
+                # `AnonFn` each lifted closure was made from allocated its
+                # record, which set its context's `needs_alloc`, merged
+                # after the second lift.  Only a function dropped between
+                # the two lifts keeps its closures without that merge.
+                self._needs_alloc = True  # pragma: no mutate
 
         # #1245: hand the id counter back to the context.  A closure this
         # function registers LATER — while `_compile_postconditions` lowers
