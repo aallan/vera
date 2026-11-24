@@ -22,6 +22,7 @@ does not validate is a compiler defect, reported as E699
 from __future__ import annotations
 
 import re
+import threading
 from typing import TYPE_CHECKING
 
 import wasmtime
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from wasmtime.component import Component
 
 _ENGINE: wasmtime.Engine | None = None
+_ENGINE_LOCK = threading.Lock()
 
 #: How wasmtime names a function in a compile error:
 #: ``wasm[0]::function[3]:::unwrap_or`` (the name after the last ``::`` is the
@@ -44,13 +46,17 @@ def engine() -> wasmtime.Engine:
     """The engine every artifact is checked with: the feature set
     ``execute()`` and the wasi-p2 host run modules under (``handle[Exn]``
     lowers to the exception-handling proposal, which wasmtime leaves off by
-    default).  Built once per process."""
+    default).  Built once per process, under a lock, so two threads that
+    both find none built get one engine.  Lazily rather than at import:
+    building one takes milliseconds, which every command would pay, a
+    `vera check` that compiles nothing included."""
     global _ENGINE
-    if _ENGINE is None:
-        config = wasmtime.Config()
-        config.wasm_exceptions = True
-        _ENGINE = wasmtime.Engine(config)
-    return _ENGINE
+    with _ENGINE_LOCK:
+        if _ENGINE is None:
+            config = wasmtime.Config()
+            config.wasm_exceptions = True
+            _ENGINE = wasmtime.Engine(config)
+        return _ENGINE
 
 
 def _one_line(text: str) -> str:
@@ -94,15 +100,18 @@ def build_component(wat: str) -> tuple[bytes, wasmtime.Engine, "Component"]:
     from wasmtime.component import Component
 
     binary = bytes(wasmtime.wat2wasm(wat))
+    # Read once: the component and the store a caller makes from the
+    # returned engine must share it.
+    built_with = engine()
     try:
-        component = Component(engine(), binary)
+        component = Component(built_with, binary)
     except wasmtime.WasmtimeError as exc:
         raise CodegenInvariantError(
             "the wasi-p2 component does not validate: "
             + _one_line(str(exc))
             + ". No loader accepts it, so it is not written."
         ) from exc
-    return binary, engine(), component
+    return binary, built_with, component
 
 
 def assembly_error(msg: str, file: str | None) -> Diagnostic:

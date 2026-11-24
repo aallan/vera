@@ -409,6 +409,60 @@ def test_a_valid_wasi_p2_component_is_written(tmp_path: Path) -> None:
     assert out.read_bytes()[:4] == b"\0asm"
 
 
+def test_repro_build_component_returns_the_engine_it_built_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine `build_component` returns is the one it constructed the
+    component with, read once: a caller makes its store from it."""
+    from vera.codegen import validation
+
+    engines = [validation.engine(), _engine()]
+    calls = iter(engines)
+    monkeypatch.setattr(validation, "engine", lambda: next(calls))
+    wat = (
+        "(component\n  (core module $m\n    (func (export \"f\") (result i32)\n"
+        "      i32.const 7)))\n")
+    _binary, returned, _component = validation.build_component(wat)
+    assert returned is engines[0]
+    # Read once: the construction took the same engine, not a second one.
+    assert next(calls) is engines[1]
+
+
+def test_repro_racing_callers_share_one_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`engine()` builds the process's engine once whoever races it: two
+    threads that both find none built get the same object.  The engine's
+    construction is slowed so both are inside it at once."""
+    import threading
+    import time
+
+    from vera.codegen import validation
+
+    real = wasmtime.Engine
+
+    def slow(config: wasmtime.Config | None = None) -> wasmtime.Engine:
+        time.sleep(0.05)
+        return real(config)
+
+    monkeypatch.setattr(validation, "_ENGINE", None)
+    monkeypatch.setattr(validation.wasmtime, "Engine", slow)
+    got: list[wasmtime.Engine] = []
+    start = threading.Barrier(2)
+
+    def call() -> None:
+        start.wait()
+        got.append(validation.engine())
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(got) == 2
+    assert got[0] is got[1]
+
+
 def test_repro_the_host_runs_the_component_it_checked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
