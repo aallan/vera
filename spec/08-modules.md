@@ -22,7 +22,7 @@ Every module may optionally declare its identity with a `module` statement at th
 module vera.math;
 ```
 
-The module path is a dot-separated sequence of lowercase identifiers. The path conventionally mirrors the file's location on disk relative to the project root (e.g., `vera.math` corresponds to `vera/math.vera`), but this is not enforced.
+The module path is a dot-separated sequence of lowercase identifiers. The path conventionally mirrors the file's location on disk relative to the project root (e.g., `vera.math` corresponds to `vera/math.vera`), but this is not enforced. A module is named in a program by the path its imports use (§8.6.2), not by this declaration.
 
 The grammar for module declarations is:
 
@@ -559,9 +559,18 @@ For example, if `examples/modules.vera` imports `vera.math`, the resolver looks 
 
 Each resolved module is parsed and transformed exactly once. Subsequent imports of the same module path return the cached result. The cache key is the module path tuple (e.g., `("vera", "math")`).
 
+Every later stage links a module by its path, so a module's path and its file name each other one to one in a program: a module path names one file, and a file is one module, under one path. Each import is still looked up from its own importing file (§8.6.1), and a program whose lookups break either half is refused at the import that meets the conflict:
+
+- **E014**: an import finds a file for a path that another import in the program found as a different file (`main.vera` imports `lib` as `lib.vera`, and `a/mid.vera` imports `lib` as `a/lib.vera`, the file beside it). The fix states the rule: give one of the two modules another path, and change its imports, its own `module` line and the calls qualified by its old path to match.
+- **E015**: an import reaches, by one path, a file that another import in the program reaches by another (`main.vera` imports `a/lib.vera` as `a.lib`, and `a/mid.vera` imports the same file as `lib`). The fix states the rule: import the file by one path everywhere, one that reaches it from both importers. A module's own imports are looked up from the directory of its file's one entry, a symbolic link followed, so an import that reaches the file by the same path through an entry in another directory (a second hard link) is E015 too, in either order, and an import that differs in both its path and its directory is one E015 whose fix asks for both. The first entry to reach the file is the one it is read from, and what that read reports stands: with two hard links in two directories, an import the file makes that only one directory satisfies is E012 when the other entry is read first.
+- An import that breaks both halves at once, its path bound to another file and its file to another path, is one refusal and is reported once, as **E014**, at that import.
+- An import that is refused binds nothing, whatever module another import of the same path binds: a name its importer calls from it is unresolved.
+
+Whether two names are one file is the filesystem's answer: a symbolic link is the file it points at, two hard links are one file, and on a filesystem that compares names without case two spellings that differ only in case are one file. Whether a program is refused does not depend on the order its imports are resolved in, and a program with one conflict is refused with the same code in either order. The order decides which import a diagnostic names first and, in a program with more than one conflict, which of them are reported: an import that is refused binds nothing and is not read, so another conflict it takes part in may go unreported, and the program is told of one or more of its conflicts, by E014, E015 or both. Each import a diagnostic names is a real conflict.
+
 ### 8.6.3 Circular Import Detection
 
-The resolver tracks modules that are currently being resolved (in-progress set). If a module is encountered while it is already in progress, a circular import error is reported:
+The resolver tracks the files that are currently being resolved (in-progress set). If an import reaches a file while it is already in progress, by its own path or by another, a circular import error is reported:
 
 ```
 Error: Circular import detected: 'vera.math' is already being resolved.
@@ -583,7 +592,9 @@ Error: Cannot resolve import 'vera.missing': no file found.
   Fix: Create the file 'vera/missing.vera' or check the import path.
 ```
 
-If parsing the resolved file fails, the parse error is reported as a resolution diagnostic with the import location.
+If parsing the resolved file fails, the parse error is reported as a resolution diagnostic with the import location (**E013**), at each import that reaches it. A file that is not UTF-8 is reported once, at the file (**E024**, §1.1), however many imports reach it.
+
+A path that names two files in one program is **E014**, and a file imported by two paths is **E015** (§8.6.2).
 
 ## 8.7 Cross-Module Type Checking
 
