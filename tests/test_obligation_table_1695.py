@@ -506,6 +506,8 @@ def test_repro_1725_an_arm_binder_narrowing_an_effect_row_is_disclosed() -> None
     assert _records(v, "effect_bind") == [("tier3_unguarded", 12, 9)], _records(v, "effect_bind")
     e542 = [d for d in v.warnings if d.error_code == "E542"]
     assert e542 and "effect row" in e542[0].rationale, [d.rationale[:200] for d in e542]
+    # The fix is the code's own (`_DISCLOSURE_FIXES`), looked up by the code.
+    assert "Bind the field at its own type" in e542[0].fix, e542[0].fix
 
 
 def test_repro_1582_nothing_inside_an_assume_is_a_row() -> None:

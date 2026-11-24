@@ -1264,8 +1264,14 @@ class _Builder:
             # argument at its leaves (#1889), inside a handle as outside.
             self.handle_rows(expr, d, in_closure,
                              handed=handed if joined else None,
-                             under_join=joined, store=store, inplace=inplace,
-                             fallback=fallback, nat_handed=nat_join)
+                             under_join=joined, store=store,
+                             # A construction's own component type and its
+                             # target-less fallback: a handle's value is a
+                             # leaf whose target the checker records, which
+                             # overrides both (measured, the #1542 hunt).
+                             inplace=inplace,  # pragma: no mutate
+                             fallback=fallback,  # pragma: no mutate
+                             nat_handed=nat_join)
             return
         if isinstance(expr, ast.AnonFn):
             # A closure is lifted and compiled once, as a function of its
@@ -1911,7 +1917,11 @@ class _Builder:
             self._handler_stack.append(expr)
         value: dict[str, Any] = dict(
             handed=handed, under_join=under_join, store=store,
-            inplace=inplace, fallback=fallback, nat_handed=nat_handed)
+            # As at `walk`'s hand-in: the leaf's recorded target overrides
+            # both (measured, the #1542 hunt).
+            inplace=inplace,  # pragma: no mutate
+            fallback=fallback,  # pragma: no mutate
+            nat_handed=nat_handed)
         try:
             self.walk(expr.body, d, in_closure=in_closure, **value)
         finally:

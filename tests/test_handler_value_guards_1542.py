@@ -148,6 +148,38 @@ POSITIONS: dict[str, str] = {
         "  }} in {{\n    {V}\n  }};\n  rd(@{T}.0)"),
 }
 
+_EXN_INT = ("handle[Exn<Int>] {{\n      throw(@Int) -> {{ {G} }}\n    }}")
+
+#: The handle's value at a join (inside its body, around it, a handle in a
+#: handle) and at the other positions a value takes its requirement at (a
+#: call's argument, a constructor's field): the hand-down's own positions.
+JOIN_POSITIONS: dict[str, str] = {
+    "if_in_body": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n"
+        "    if @Int.0 > 100 then {{ {V} }} else {{ {V} }}\n  }};\n  rd(@{T}.0)"),
+    "match_in_body": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    match @Int.0 > 100 {{\n"
+        "      true -> {V},\n      false -> {V}\n    }}\n  }};\n  rd(@{T}.0)"),
+    "block_in_body": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    put(false);\n    {V}\n"
+        "  }};\n  rd(@{T}.0)"),
+    "exn_in_state": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    " + _EXN_INT + " in {{\n"
+        "      {V}\n    }}\n  }};\n  rd(@{T}.0)"),
+    "state_in_exn": (
+        "let @{T} = " + _EXN_INT + " in {{\n    " + _STATE_BOOL + " in {{\n"
+        "      {V}\n    }}\n  }};\n  rd(@{T}.0)"),
+    "call_argument": "take(" + _STATE_BOOL + " in {{\n    {V}\n  }})",
+    "ctor_field": (
+        "let @Option<{T}> = Some(" + _STATE_BOOL + " in {{\n    {V}\n  }});\n"
+        "  match @Option<{T}>.0 {{\n    Some(@{T}) -> rd(@{T}.0),\n    None -> 0\n  }}"),
+    "if_outside": (
+        "let @{T} = if @Int.0 != 7 then {{ " + _STATE_BOOL + " in {{\n"
+        "    {V}\n  }} }} else {{ {G} }};\n  rd(@{T}.0)"),
+}
+HANDLER_POSITIONS = dict(POSITIONS)
+POSITIONS.update(JOIN_POSITIONS)
+
 _HV = ("private fn hv(@Int -> @{T})\n  requires(true)\n  ensures(true)\n"
        "  effects(pure)\n{{\n  " + _STATE_BOOL + " in {{\n    {V}\n  }}\n}}\n\n")
 
@@ -170,6 +202,8 @@ def _program(shape: str, position: str, source: str = "call") -> str:
     src += f"\nprivate fn sc(@Int -> @Int)\n{_PLAIN}{{\n  @Int.0\n}}\n\n"
     src += f"private fn mk(@Int -> @{b})\n{_PLAIN}{{\n  {mk}\n}}\n\n"
     src += f"private fn rd(@{b} -> @Int)\n{_PLAIN}{{\n  {rd}\n}}\n\n"
+    if position == "call_argument":
+        src += f"private fn take(@{t} -> @Int)\n{_PLAIN}{{\n  rd(@{t}.0)\n}}\n\n"
     if position == "state_value_return":
         src += _HV.format(**fill)
     src += (f"public fn go(@Int -> @Int)\n{_PLAIN}{{\n  "
@@ -187,7 +221,7 @@ def _program(shape: str, position: str, source: str = "call") -> str:
 CHECKED, REFUSED, REFUSED_UNCHECKED = "checked", "refused", "refused_unchecked"
 DISCLOSED, OPEN = "disclosed", "open"
 
-_ALL = tuple(POSITIONS)
+_ALL = tuple(HANDLER_POSITIONS)
 #: The positions the verifier decides a narrowing at (it refutes one there):
 #: every one bar a clause's binder, a `get` clause's body and a `with`
 #: override, which it reads in the clause's own scope, and an `Exn`
@@ -223,10 +257,50 @@ def _verdicts() -> dict[tuple[str, str], str]:
     # elsewhere.
     v.update({("option_small", p): REFUSED_UNCHECKED if p in _DECIDED
               else DISCLOSED for p in _ALL})
-    assert set(v) == {(s, p) for s in SHAPES for p in POSITIONS}
+    assert set(v) == {(s, p) for s in SHAPES for p in HANDLER_POSITIONS}
     out = {(s, "call", p): verdict for (s, p), verdict in v.items()}
     out.update({(s, "built", p): verdict for (s, p), verdict in _built().items()})
+    out.update(_joins())
     return out
+
+
+#: The join positions the verifier decides a narrowing at: every one bar a
+#: handle nested in a handle (an `Exn` handle's value, which it does not
+#: read).
+_NESTED = ("exn_in_state", "state_in_exn")
+_JOIN_DECIDED = tuple(p for p in JOIN_POSITIONS if p not in _NESTED)
+
+
+def _joins() -> dict[tuple[str, str, str], str]:
+    """The handle's value at the hand-down's own positions.  As at the
+    handler positions: `Nat`, `Short` and every built composite are
+    checked (refused where the verifier decides a `Nat` or a `Small`); a
+    refined payload from a call is disclosed where it is not refuted; a
+    refined tuple component from a call is checked where a boundary
+    decomposes it (a call's argument), disclosed at a constructor's field
+    (a store checks no tuple component below it) and listed checked with no
+    check anywhere else (OPEN, the `let`'s verdict)."""
+    v: dict[tuple[str, str, str], str] = {}
+    j = tuple(JOIN_POSITIONS)
+    for shape in ("nat", "small"):
+        v.update({(shape, "call", p): CHECKED if p in _NESTED else REFUSED for p in j})
+    for shape in ("short", "tuple_nat", "option_nat"):
+        v.update({(shape, "call", p): CHECKED for p in j})
+    v.update({("option_short", "call", p): DISCLOSED for p in j})
+    v.update({("option_small", "call", p): DISCLOSED if p in _NESTED
+              else REFUSED_UNCHECKED for p in j})
+    v.update({("tuple_short", "call", p): OPEN for p in j})
+    v[("tuple_short", "call", "call_argument")] = CHECKED
+    v[("tuple_short", "call", "ctor_field")] = DISCLOSED
+    v.update({("tuple_small", "call", p): OPEN if p in _NESTED
+              else REFUSED_UNCHECKED for p in j})
+    v[("tuple_small", "call", "call_argument")] = REFUSED
+    for shape in ("tuple_nat", "option_nat", "tuple_short", "option_short"):
+        v.update({(shape, "built", p): CHECKED for p in j})
+    for shape in ("tuple_small", "option_small"):
+        v.update({(shape, "built", p): CHECKED if p in _NESTED else REFUSED
+                  for p in j})
+    return v
 
 
 def _built() -> dict[tuple[str, str], str]:
@@ -489,6 +563,14 @@ private fn sc(@Int -> @Int)
   @Int.0
 }}
 
+private fn pair(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  Tuple(@Int.0, 0)
+}}
+
 public fn go(@Int -> @Int)
   requires(true)
   ensures(true)
@@ -517,7 +599,7 @@ def test_an_array_literal_refuted_inside_a_handle_keeps_its_refusal() -> None:
     `[sc(x)]` at `Array<Small>` is refuted at the element."""
     src = _STORE_IN_HANDLE.format(T="Array<Small>", V="[sc(@Int.0)]",
                                   N="array_length(@Array<Small>.0)")
-    assert _records(src) == [("violated", "E505", 20, 6)]
+    assert _records(src) == [("violated", "E505", 28, 6)]
 
 
 def test_a_map_insert_value_inside_a_handle_has_the_values_record() -> None:
@@ -527,7 +609,58 @@ def test_a_map_insert_value_inside_a_handle_has_the_values_record() -> None:
     src = _STORE_IN_HANDLE.format(
         T="Map<Int, Small>", V="map_insert(map_new(), 1, sc(@Int.0))",
         N="map_size(@Map<Int, Small>.0)")
-    assert _records(src) == [("tier3", "E506", 20, 30)]
+    assert _records(src) == [("tier3", "E506", 28, 30)]
+
+
+#: The other stores below a handle's value, each read by the value's record
+#: (the hunt over this change's decisions): a store's key and element, a
+#: construction below a construction, an element below a payload and a
+#: component a call's result carries below a payload.
+_STORES_IN_HANDLE = {
+    "set_element": ("Set<Small>", "set_add(set_new(), sc(@Int.0))",
+                    "set_size(@Set<Small>.0)", [("tier3", "E506", 28, 24)]),
+    "map_key": ("Map<Small, Int>", "map_insert(map_new(), sc(@Int.0), 1)",
+                "map_size(@Map<Small, Int>.0)", [("tier3", "E506", 28, 27)]),
+    "nested_construction": ("Option<Tuple<Small, Int>>", "Some(Tuple(sc(@Int.0), 0))",
+                            "0", [("violated", "E505", 28, 16)]),
+    "element_below_payload": ("Option<Array<Small>>", "Some([sc(@Int.0)])", "0",
+                              [("tier3", "E506", 28, 11)]),
+    "component_below_payload": ("Option<Tuple<Small, Int>>", "Some(pair(@Int.0))",
+                                "0", [("violated", "E505", 28, 10)]),
+}
+
+
+@pytest.mark.parametrize("store", sorted(_STORES_IN_HANDLE))
+def test_a_store_below_a_handles_value_has_the_values_record(store: str) -> None:
+    t, value, use, want = _STORES_IN_HANDLE[store]
+    assert _records(_STORE_IN_HANDLE.format(T=t, V=value, N=use)) == want
+
+
+_RESUME_REFINED_NAT = """\
+type SmallNat = { @Nat | @Nat.0 < 10 };
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<SmallNat>](@SmallNat = 1) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@SmallNat) -> { resume(()) }
+  } in {
+    nat_to_int(get(()))
+  }
+}
+"""
+
+
+def test_a_get_resume_runs_the_predicate_before_the_sign() -> None:
+    """At a refinement over `Nat`, the `get` resume runs the predicate's
+    check first, as `put`'s write does: -5 traps at the refinement."""
+    ran = pipeline.run(_RESUME_REFINED_NAT, fn="g", args=[-5])
+    assert ran.trap is not None, ran.value
+    assert "Refinement violation in State get resume" in str(ran.trap), ran.trap
+    assert pipeline.run(_RESUME_REFINED_NAT, fn="g", args=[3]).value == 3
 
 
 _JOIN_NOT_A_HANDLE = """\
