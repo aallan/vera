@@ -837,6 +837,59 @@ def test_repro_a_component_narrowing_is_not_the_composites_own(
         == [status]
 
 
+CLAUSE_LET_1542 = POS + textwrap.dedent("""\
+    private fn mk(@Int -> @Tuple<Int, Int>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      Tuple(@Int.0, 0)
+    }
+
+    public fn go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      handle[Exn<Tuple<Int, Int>>] {
+        throw(@Tuple<Int, Int>) -> {
+          let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;
+          match @Tuple<Pos, Int>.0 {
+            Tuple(@Int, @Int) -> {
+              let @Nat = @Int.1;
+              nat_to_int(@Nat.0)
+            }
+          }
+        }
+      } in {
+        throw(mk(@Int.0))
+      }
+    }
+    """)
+
+
+def test_a_clause_let_the_table_checks_and_codegen_does_not_1542() -> None:
+    """#1542's, pinned as it is: a `let` narrowing inside a handler clause
+    is a row the obligation table lists as checked, and code generation
+    emits no check for it, which `vera verify` reports as the E541 error.
+    The reader's fact is established by the table's account, so the `@Nat`
+    narrowing after it is `verified` from it; the E541 on the same run is
+    what keeps the program from passing.  This cell moves when #1542
+    makes the table and code generation agree on the row."""
+    verified = _verify(CLAUSE_LET_1542)
+    let = _line(CLAUSE_LET_1542, "let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["tier3/E506"]
+    nat = _line(CLAUSE_LET_1542, "let @Nat = @Int.1;")
+    assert _at_line(verified, nat, "nat_bind") == ["verified"]
+    ran = _run(CLAUSE_LET_1542, [5])
+    assert ran.compiled is not None
+    unanswered = [m for m in reconcile(
+        verified.result, ran.compiled.result,
+        program=verified.checked.program, file=verified.checked.file)
+        if m.line == let]
+    assert unanswered
+
+
 def _nested_builtins(depth: int, narrow: bool) -> str:
     expr = "@Int.0"
     for i in range(depth):
