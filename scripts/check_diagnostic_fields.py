@@ -942,6 +942,344 @@ def hand_built_diagnostic_violations(paths: Iterable[Path]) -> list[Violation]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Placement (#1636): one constructor for a location and its quote
+# ---------------------------------------------------------------------------
+#
+# Spec §0.5.1 asks every diagnostic for its file, line and column, "with the
+# offending source line quoted".  Where each stage built the location and cut
+# the quote by hand, a stage that held no file or source (the transform)
+# shipped neither, one that forgot the quote (E614) shipped a location alone,
+# and one that sliced lines without their columns (E501) quoted its
+# neighbours.  `vera.errors.locate` / `locate_at` build the two together, and
+# `vera.errors.span_bounds` / `span_text` are the one source slice, for a fix
+# that splices a replacement into the program's text; a message that quotes
+# an expression, a type or a declaration renders it from the node
+# (`vera.formatter.format_*_canonical`, #1573).  So under vera/, outside
+# vera/errors.py, each of these is a violation, bar the sites named below:
+#
+# - a `SourceLocation(...)` call;
+# - a `source_line=` keyword (a quote passed by hand: `**locate(...)` carries
+#   it);
+# - a `source_lines(...)` call (lines cut for a quote);
+# - an assignment to a location's `.line` or `.column`, or a `replace(...)` of
+#   a `.location` (a position moved by hand);
+# - a slice whose bounds read a `.column` or an `.end_column` (a span cut by
+#   hand).
+#
+# An entry that names no such site is a violation too, so the list only
+# shrinks.
+
+PLACEMENT_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("vera/lsp/convert.py", "LineIndex.__init__"): (
+        "the language server's position index, which turns a location into "
+        "an LSP range: it reads lines to count columns, and quotes nothing"),
+}
+
+#: The names a location is held under at the sites the assignment rule reads.
+_LOCATION_NAMES = frozenset({"loc", "location"})
+
+
+def _reads_a_column(node: ast.AST | None) -> bool:
+    return node is not None and any(
+        isinstance(n, ast.Attribute) and n.attr in ("column", "end_column")
+        for n in ast.walk(node))
+
+
+def _is_location(node: ast.AST) -> bool:
+    return ((isinstance(node, ast.Name) and node.id in _LOCATION_NAMES)
+            or (isinstance(node, ast.Attribute) and node.attr == "location"))
+
+
+def _placement_sites(tree: ast.AST) -> Iterator[tuple[ast.AST, str]]:
+    """Each node that places a diagnostic or quotes source by hand, with
+    what it does."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = (node.func.id if isinstance(node.func, ast.Name) else
+                    node.func.attr if isinstance(node.func, ast.Attribute)
+                    else "")
+            if name == "SourceLocation":
+                yield node, "builds a SourceLocation"
+            elif name == "source_lines":
+                yield node, "cuts the source into lines for a quote"
+            elif (name == "replace" and node.args
+                    and _is_location(node.args[0])):
+                yield node, "moves a location by replace()"
+            if any(kw.arg == "source_line" for kw in node.keywords):
+                yield node, "passes source_line= by hand"
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            moved = sorted({
+                t.attr for target in targets
+                for t in (target.elts if isinstance(target, ast.Tuple)
+                          else [target])
+                if isinstance(t, ast.Attribute)
+                and t.attr in ("line", "column") and _is_location(t.value)})
+            if moved:
+                yield node, f"assigns a location's {' and '.join(moved)}"
+        elif isinstance(node, ast.Slice):
+            if any(_reads_a_column(b)
+                   for b in (node.lower, node.upper, node.step)):
+                yield node, "slices source at a span's columns"
+
+
+def _placement_site_names(
+    source: str, filename: str,
+) -> list[tuple[int, str, str]]:
+    """(line, enclosing qualified name, what) of each placement site."""
+    tree = ast.parse(source, filename=filename)
+    qualnames = _enclosing_qualified_names(tree)
+    return [(getattr(node, "lineno", 0), qualnames.get(id(node), "<module>"),
+             what) for node, what in _placement_sites(tree)]
+
+
+def placement_violations_in_source(
+    source: str, filename: str,
+) -> list[Violation]:
+    """Flag every hand-built placement outside ``PLACEMENT_EXCEPTIONS``;
+    vera/errors.py, the constructor's own module, is not read."""
+    if filename == "vera/errors.py":
+        return []
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for line, qualname, what in _placement_site_names(source, filename):
+        if (filename, qualname) in PLACEMENT_EXCEPTIONS:
+            continue
+        snip = src_lines[line - 1] if 0 < line <= len(src_lines) else None
+        out.append(Violation(
+            filename, line, "placement",
+            [f"{qualname} {what}: place a diagnostic with "
+             f"vera.errors.locate / locate_at (`**locate(...)`), slice a "
+             f"fix's text with span_bounds / span_text, and quote an "
+             f"expression, a type or a declaration through the canonical "
+             f"formatter"], snip))
+    return out
+
+
+def placement_violations(paths: Iterable[Path]) -> list[Violation]:
+    """Every hand-built placement in *paths*, and, when *paths* holds the
+    file an exception names, each exception that names no such site."""
+    out: list[Violation] = []
+    live: set[tuple[str, str]] = set()
+    seen: set[str] = set()
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        source = p.read_text(encoding="utf-8")
+        seen.add(rel)
+        live.update((rel, q) for _, q, _w in _placement_site_names(source, rel))
+        out.extend(placement_violations_in_source(source, rel))
+    for site in sorted(PLACEMENT_EXCEPTIONS):
+        if site[0] in seen and site not in live:
+            out.append(Violation(
+                site[0], 0, "placement",
+                [f"PLACEMENT_EXCEPTIONS names {site[0]}::{site[1]}, which "
+                 f"places nothing by hand: delete the entry"], None))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Every registered code can be raised
+# ---------------------------------------------------------------------------
+#
+# `vera errors` lists the registry, so a code no site raises is a diagnostic
+# the compiler says it can give and never does: E003 and E004 had a
+# constructor each from the first commit and no caller ever (#1636).  A code
+# can be raised when a string constant equal to it stands somewhere in vera/
+# (outside the registry itself and vera/_since.py) that is not dead: at
+# module scope (a table), in a method (dispatched by name, so taken as
+# live), or in a module-level function reachable from that code: one the
+# module-level code or a method names, or one a reachable function names.
+# What Python evaluates when a function is defined (its decorators, its
+# defaults, its annotations unless the module defers them) is module-level
+# code, whether or not the function is ever called.
+#
+# The scan is a static approximation of Python's name binding and call
+# graph, not a proof; it keeps the registry from listing a code the compiler
+# cannot say, and the instrument's cells raise each code with a real program
+# wherever one can.  Its contract, every line pinned by a row in
+# tests/test_diagnostic_placement_1636.py (RAISE_SHAPES, BINDING_SHAPES):
+#
+# Decided as Python decides it:
+#   - reachability from module-level code and methods, through calls, cycles
+#     (two functions that only name each other are dead) and what a `def`
+#     evaluates at definition (decorators, defaults, annotations unless the
+#     module defers them);
+#   - a name followed to the definition it is bound to: an import with or
+#     without `as` (`from m import f as g` binds g to f), a module's
+#     attribute (`n.f` after `import m as n`), `from m import *`, an
+#     assignment plain, annotated or `:=`, a `for` target;
+#   - a binding belongs to the scope that makes it: an import or an
+#     assignment in a function binds only once that function is live.
+#
+# Conservative, and which way it errs:
+#   - it may REPORT a code that is raised, where the function is reached
+#     only through a name no code writes (`getattr` with a computed name, a
+#     string, a dispatch table built at run time); the report says to name
+#     the function from module-level code or a method
+#     (test_the_raise_rule_reports_a_name_it_cannot_see);
+#   - it may ACCEPT a dead code in one way: it matches a function by its
+#     name across vera/, so a live use of the same name (another function,
+#     an attribute, a variable) keeps every function of that name live (the
+#     row marked KNOWN LIMIT).
+
+def _rel(p: Path) -> str:
+    """*p* relative to the repository, or as given when outside it."""
+    if p.is_absolute() and p.is_relative_to(ROOT):
+        return p.relative_to(ROOT).as_posix()
+    return p.as_posix()
+
+
+def _owned_parts(top: ast.stmt,
+                 tree: ast.Module) -> list[tuple[ast.AST, str | None]]:
+    """*top*'s parts, each with the module-level function whose call
+    evaluates it, or None where the module's own execution does.
+
+    A function's decorators, its default values (positional and
+    keyword-only) and, in a module without `from __future__ import
+    annotations`, its annotations are evaluated when the `def` runs, at
+    module scope, whether or not the function is ever called; its body and
+    its type parameters' bounds (evaluated lazily) only when it is reached.
+    """
+    if not isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return [(top, None)]
+    args = top.args
+    at_definition: list[ast.AST] = [*top.decorator_list, *args.defaults,
+                                    *(d for d in args.kw_defaults if d)]
+    called: list[ast.AST] = [*top.body, *getattr(top, "type_params", [])]
+    annotations = [a.annotation for a in (*args.posonlyargs, *args.args,
+                                          *args.kwonlyargs, args.vararg,
+                                          args.kwarg)
+                   if a is not None and a.annotation is not None]
+    if top.returns is not None:
+        annotations.append(top.returns)
+    deferred = any(isinstance(s, ast.ImportFrom) and s.module == "__future__"
+                   and any(n.name == "annotations" for n in s.names)
+                   for s in tree.body)
+    (called if deferred else at_definition).extend(annotations)
+    return ([(n, None) for n in at_definition]
+            + [(n, top.name) for n in called])
+
+
+def _raise_sites(paths: Iterable[Path]) -> dict[str, list[tuple[str, str | None]]]:
+    """Each string constant under *paths*, by value: the (file, outermost
+    module-level function or None) it stands in.  The registry dict and
+    vera/_since.py are not read."""
+    sites: dict[str, list[tuple[str, str | None]]] = {}
+    for p in paths:
+        rel = _rel(p)
+        if rel == "vera/_since.py":
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
+        for top in tree.body:
+            if (rel == "vera/errors.py"
+                    and isinstance(top, (ast.Assign, ast.AnnAssign))
+                    and any(isinstance(t, ast.Name) and t.id == "ERROR_CODES"
+                            for t in (top.targets if isinstance(top, ast.Assign)
+                                      else [top.target]))):
+                continue
+            for part, owner in _owned_parts(top, tree):
+                for node in ast.walk(part):
+                    if (isinstance(node, ast.Constant)
+                            and isinstance(node.value, str)):
+                        sites.setdefault(node.value, []).append((rel, owner))
+    return sites
+
+
+def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
+    """The module-level functions under *paths* no live code reaches."""
+    defs: set[tuple[str, str]] = set()
+    users: dict[str, set[tuple[str, str | None]]] = {}
+    # `from m import f as g` binds g to f: a use of g is a use of f.  The
+    # binding belongs to the scope that makes it (the module, or the
+    # module-level function it stands in), so its edge is live only once
+    # that owner is.  Every other binding names its function in an
+    # expression (`g = f`, `n.f` after `import m as n`), which the walk
+    # below records as a use by its owner.
+    bound_to: dict[tuple[str, str | None], dict[str, set[str]]] = {}
+    for p in paths:
+        rel = _rel(p)
+        tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
+        for top in tree.body:
+            if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defs.add((rel, top.name))
+            for part, owner in _owned_parts(top, tree):
+                for node in ast.walk(part):
+                    name = (node.id if isinstance(node, ast.Name) else
+                            node.attr if isinstance(node, ast.Attribute)
+                            else None)
+                    if name is not None:
+                        users.setdefault(name, set()).add((rel, owner))
+                    if isinstance(node, ast.ImportFrom):
+                        for alias in node.names:
+                            if alias.asname and alias.asname != alias.name:
+                                bound_to.setdefault(
+                                    (rel, owner), {}).setdefault(
+                                    alias.asname, set()).add(alias.name)
+    # Reachability from the live roots: module-level code (a table, a class
+    # and its methods, which are dispatched by name) names functions, and a
+    # function a live one names is live.  Pruning by remaining users instead
+    # let two functions that only name each other keep each other alive.
+    names_used: dict[tuple[str, str | None], set[str]] = {}
+    for name, owners in users.items():
+        for user in owners:
+            names_used.setdefault(user, set()).add(name)
+    by_name: dict[str, set[tuple[str, str]]] = {}
+    for d in defs:
+        by_name.setdefault(d[1], set()).add(d)
+    live: set[tuple[str, str]] = set()
+    frontier = [name for (_, owner), names in names_used.items()
+                if owner is None for name in names]
+    seen: set[str] = set()
+    # The renamed imports of the live scopes: the module scopes' from the
+    # start, a function's once it is live.
+    active: dict[str, set[str]] = {}
+
+    def activate(scope: tuple[str, str | None]) -> None:
+        for alias, targets in bound_to.get(scope, {}).items():
+            active.setdefault(alias, set()).update(targets)
+            if alias in seen:
+                frontier.extend(targets)
+
+    for scope in bound_to:
+        if scope[1] is None:
+            activate(scope)
+    while frontier:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        frontier.extend(active.get(name, set()))
+        for d in by_name.get(name, set()) - live:
+            live.add(d)
+            activate(d)
+            frontier.extend(names_used.get(d, set()))
+    return defs - live
+
+
+def unraised_code_violations(paths: Iterable[Path],
+                             registry: set[str]) -> list[Violation]:
+    """Each registered code no live site in *paths* can raise."""
+    files = list(paths)
+    sites = _raise_sites(files)
+    dead = _dead_functions(files)
+    out: list[Violation] = []
+    for code in sorted(registry):
+        live = [s for s in sites.get(code, [])
+                if s[1] is None or (s[0], s[1]) not in dead]
+        if not live:
+            out.append(Violation(
+                "vera/errors.py", 0, "unraised",
+                [f"{code} is registered in ERROR_CODES, but no live site in "
+                 f"vera/ can raise it: remove its entry (and vera/_since.py's), "
+                 f"or raise it.  A site the scan cannot see (a function "
+                 f"reached only through getattr, a string, or a table built "
+                 f"at run time) is reported too: name that function from "
+                 f"module-level code or a method"], None))
+    return out
+
+
 def error_code_registration_violations_in_source(
     source: str, filename: str, registry: set[str],
 ) -> list[Violation]:
@@ -1342,12 +1680,17 @@ def main() -> int:
     codes = error_code_registration_violations(files, registry)
     collisions = error_code_collision_violations(files)
     hand_built = hand_built_diagnostic_violations(files)
-    violations = presence + validity + coded + codes + collisions + hand_built
+    placement = placement_violations(files)
+    unraised = unraised_code_violations(files, registry)
+    violations = (presence + validity + coded + codes + collisions
+                  + hand_built + placement + unraised)
     if not violations:
         print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
               "and carries an error_code, every spec_ref resolves, every "
               "error_code is registered, every multi-site error_code is a "
-              "declared, verified reuse, and no diagnostic is built by hand.")
+              "declared, verified reuse, no diagnostic is built by hand, "
+              "every location and quote is built by vera.errors.locate, "
+              "and every registered code can be raised.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
@@ -1376,7 +1719,7 @@ def main() -> int:
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
             if v.target in ("spec_ref", "error_code", "error_code_collision",
-                            "hand_built"):
+                            "hand_built", "placement", "unraised"):
                 print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "

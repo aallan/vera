@@ -15,13 +15,13 @@ from typing import Any, cast
 
 from vera import ast, narrowing
 from vera.binding import bare_name
+from vera.errors import span_text
 from vera.lowering import (
     ability_lowerable,
     closure_operation_lowerable,
     effect_operation_lowerable,
     handler_lowerable,
 )
-from vera.checker.resolution import _span_text
 from vera.checker.sql import (
     count_placeholders,
     resolve_array_len,
@@ -750,7 +750,7 @@ class CallsMixin:
         written out from the arguments applied and the type the result is
         expected at where both can be written, named by a type alias the
         program does not have yet."""
-        written = _span_text(self.source, fn_arg.span) or "the value"
+        written = span_text(self.source, fn_arg.span) or "the value"
         row = self.env.current_effect_row or PureEffectRow()
         signature = None
         if (expected is not None and all(
@@ -792,7 +792,7 @@ class CallsMixin:
         shown = pretty_type(_named_open(param_ty))
         names = sorted({_variable_name(n) for n in _fresh_names(param_ty)})
         which = " and ".join(names)
-        made = _span_text(self.source, fn_arg.span) or "the function value"
+        made = span_text(self.source, fn_arg.span) or "the function value"
         taken = self._writes_as(arg_ty)
         takes = f"`{taken}`" if taken is not None else "the argument's type"
         self._error(
@@ -2513,7 +2513,7 @@ class CallsMixin:
                 f"for this argument: no type for {unfixed} gives "
                 f"{pretty_type(_named_open(arg_ty))} that type.",
             )
-        written = _span_text(self.source, arg.span)
+        written = span_text(self.source, arg.span)
         if written is None:
             return None
         given_base = base_type(given)

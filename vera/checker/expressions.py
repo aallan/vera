@@ -12,7 +12,11 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
-from vera.formatter import format_effect_ref_structural, format_expr_canonical
+from vera.formatter import (
+    format_effect_ref_structural,
+    format_expr_canonical,
+    format_type_canonical,
+)
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
@@ -577,21 +581,16 @@ class ExpressionsMixin:
             for d in self.errors)
 
     def _as_written(self, node: ast.Node, fallback: str) -> str:
-        """*node* as the source spells it, on one line, or *fallback* where
-        the checker holds no source text for it."""
-        span = node.span
-        lines = self.source.split("\n") if self.source else []
-        if span is None or not 0 < span.line <= span.end_line <= len(lines):
-            return fallback
-        if span.line == span.end_line:
-            text = lines[span.line - 1][span.column - 1:span.end_column - 1]
-        else:
-            text = "\n".join([
-                lines[span.line - 1][span.column - 1:],
-                *lines[span.line:span.end_line - 1],
-                lines[span.end_line - 1][:span.end_column - 1],
-            ])
-        return " ".join(text.split()) or fallback
+        """*node* as ``vera fmt`` writes it, from the node (#1573, #1636):
+        an expression by :func:`~vera.formatter.format_expr_canonical`, a
+        type by :func:`~vera.formatter.format_type_canonical`, which keeps
+        an alias's name where the program writes one; *fallback* for any
+        other node."""
+        if isinstance(node, ast.TypeExpr):
+            return format_type_canonical(node)
+        if isinstance(node, ast.Expr):
+            return format_expr_canonical(node)
+        return fallback
 
     def _written_slot_name(self, te: ast.TypeExpr, key: str) -> str:
         """The name a slot reference to a binding declared *te* is written

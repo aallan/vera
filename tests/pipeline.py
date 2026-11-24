@@ -100,6 +100,7 @@ from vera.cli import (
     run_envelope,
     run_refusal_envelope,
     trap_envelope,
+    trap_sources,
     verify_envelope,
 )
 from vera.cli import main as _cli_main
@@ -910,7 +911,13 @@ class Ran:
         if self.module is None:
             return run_refusal_envelope(label, self._refusal())
         if self.trap is not None:
-            return trap_envelope(label, self.trap)
+            # A run handed a CompileResult has no source in hand, so its
+            # trap is placed as `trap_envelope` places one with no sources.
+            compiled = self.compiled
+            sources = None if compiled is None else trap_sources(
+                compiled.parsed.file or "", compiled.parsed.source,
+                compiled.checked.resolved or ())
+            return trap_envelope(label, self.trap, sources)
         module = self.module
         notes = [d for d in module.diagnostics if d.severity == "warning"]
         return run_envelope(label, self.fn, module.exports, self.execution, notes)
