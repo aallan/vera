@@ -628,12 +628,12 @@ class TestUnreadRecord:
         resolved = resolver.resolve_imports(
             pipeline.parse(main_file).program, main_file)
         # a.mid's `lib` is a/lib.vera, which does not read; main's `lib`
-        # is the root lib.vera, which does.
+        # is the root lib.vera, another file under the same path, which is
+        # E014 (#1904): the path stays bound to the file it named first.
         assert resolver.unread == {(mid.resolve(), ("lib",)): bad.resolve()}
-        assert [e.error_code for e in resolver.errors] == ["E024"]
+        assert [e.error_code for e in resolver.errors] == ["E024", "E014"]
         assert resolver.errors[0].location.file == str(bad.resolve())
-        assert {m.path: m.file_path for m in resolved}[("lib",)] == (
-            (tmp_path / "lib.vera").resolve())
+        assert ("lib",) not in {m.path for m in resolved}
 
     def test_a_module_that_reads_leaves_no_record(self, tmp_path: Path) -> None:
         hdr = "requires(true) ensures(true) effects(pure)"

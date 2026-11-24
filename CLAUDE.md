@@ -211,7 +211,7 @@ Every diagnostic carries a stable code, which `vera errors` lists. The prefix is
 |-------|-------|
 | E001–E009 | Parse & transform errors |
 | E010 | Transform errors |
-| E011–E013 | Module resolution: a circular import, an import with no file, an imported module that does not parse |
+| E011–E015 | Module resolution: a circular import, an import with no file, an imported module that does not parse, a module path that names two files, a file imported by two paths |
 | E020, E021, E023 | Parse: malformed comments (lexical) |
 | E024 | Parse: a source file that is not UTF-8 (lexical) |
 | E030–E032 | Parse: contract constructs (`old()`/`new()` arguments, a clause after `effects`) |
