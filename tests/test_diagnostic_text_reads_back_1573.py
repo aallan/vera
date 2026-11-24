@@ -855,15 +855,16 @@ def test_errors_quotes_the_counted_line(line: int) -> None:
 
 
 @pytest.mark.parametrize("line", sorted(_LINES))
-def test_the_checker_quotes_the_counted_line(line: int) -> None:
-    from vera.checker.core import TypeChecker
-    assert TypeChecker(source=_TEXT)._source_line(_span(line)) == _LINES[line]
+def test_a_placement_quotes_the_counted_line(line: int) -> None:
+    """`locate_at`, the one placement every stage reads (#1636)."""
+    from vera.errors import locate_at
+    assert locate_at(None, _TEXT, _span(line))["source_line"] == _LINES[line]
 
 
-def test_the_checker_quotes_nothing_without_a_span_or_a_source() -> None:
-    from vera.checker.core import TypeChecker
-    assert TypeChecker(source=_TEXT)._source_line(None) == ""
-    assert TypeChecker(source="")._source_line(_span(1)) == ""
+def test_a_placement_quotes_nothing_without_a_span_or_a_source() -> None:
+    from vera.errors import locate_at
+    assert locate_at(None, _TEXT, None)["source_line"] == ""
+    assert locate_at(None, "", _span(1))["source_line"] == ""
 
 
 @pytest.mark.parametrize("line", sorted(_LINES))
@@ -872,18 +873,9 @@ def test_the_resolver_quotes_the_counted_line(line: int, tmp_path: Path) -> None
     path = tmp_path / "m.vera"
     path.write_bytes(_TEXT.encode("utf-8"))
     node = vast.IntLit(value=0, span=_span(line))
-    assert ModuleResolver._source_line(path, node) == _LINES[line]
-    assert ModuleResolver._source_line(path, vast.IntLit(value=0)) == ""
-
-
-@pytest.mark.parametrize("line", sorted(_LINES))
-def test_the_tester_quotes_the_counted_line(line: int) -> None:
-    from types import SimpleNamespace
-
-    from vera.tester import _get_source_line
-    decl = SimpleNamespace(span=_span(line, column=3))
-    assert _get_source_line(_TEXT, decl) == _LINES[line]  # type: ignore[arg-type]
-    assert _get_source_line(_TEXT, SimpleNamespace(span=None)) == ""  # type: ignore[arg-type]
+    assert ModuleResolver._placed(path, node)["source_line"] == _LINES[line]
+    assert ModuleResolver._placed(
+        path, vast.IntLit(value=0))["source_line"] == ""
 
 
 @pytest.mark.parametrize("line", sorted(_LINES))
@@ -898,8 +890,9 @@ def test_an_e703_quotes_the_counted_line(line: int, same_file: bool) -> None:
     trial = SimpleNamespace(refutes=[SimpleNamespace(
         file="f.vera" if same_file else "g.vera", line=line, column=4)])
     decl = SimpleNamespace(span=_span(3, column=2))
-    loc, quoted = _TestEngine._refuted_location(
+    placed = _TestEngine._refuted_location(
         engine, trial, decl)  # type: ignore[arg-type]
+    loc, quoted = placed["location"], placed["source_line"]
     if same_file and 1 <= line <= 3:
         assert (loc.line, loc.column, quoted) == (line, 4, _LINES[line])
     else:
@@ -947,12 +940,11 @@ _COVERS = [
 @pytest.mark.parametrize(("span", "covered"), _COVERS)
 def test_the_span_bounds_cover_the_counted_text(
         span: vast.Span | None, covered: str | None) -> None:
-    from vera.checker.resolution import _span_bounds
-    from vera.typed import _source_text
-    bounds = _span_bounds(_TEXT, span)
+    from vera.errors import span_bounds, span_text
+    bounds = span_bounds(_TEXT, span)
     assert (None if bounds is None else _TEXT[bounds[0]:bounds[1]]) == covered
-    assert _source_text(_TEXT, span) == covered
-    assert _span_bounds("", span) is None and _source_text("", span) is None
+    assert span_text(_TEXT, span) == covered
+    assert span_bounds("", span) is None and span_text("", span) is None
 
 
 @pytest.mark.parametrize(("span", "start", "end"), [
@@ -963,14 +955,14 @@ def test_the_span_bounds_cover_the_counted_text(
 ])
 def test_an_offset_counts_lines_by_the_newline(
         span: vast.Span, start: int | None, end: int | None) -> None:
-    """`_offset` within the text a base span covers (it starts at line 2,
-    column 2): the vertical tab is inside the base's first line."""
+    """`_offset` within the text of the source a base span covers (it
+    starts at line 2, column 2): the vertical tab is inside the base's first
+    line."""
     from vera.typed import _offset
-    text = "second\x0bstill second\r\nthird"[1:]
     base = _span(2, 2, 3, 6)
-    assert _offset(text, base, span, start=True) == start
-    assert _offset(text, base, span, start=False) == end
-    assert _offset(text, base, None, start=True) is None
+    assert _offset(_TEXT, base, span, start=True) == start
+    assert _offset(_TEXT, base, span, start=False) == end
+    assert _offset(_TEXT, base, None, start=True) is None
 
 
 # The verifier's reports, whole.
@@ -1084,7 +1076,7 @@ def test_e501_quotes_a_clause_across_lines_whole() -> None:
         "  )\n  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n"
         "public fn caller(@Int -> @Int)\n" + _H + "{\n  h(0)\n}\n", "E501")
     assert description.splitlines()[1:3] == [
-        "  Precondition: requires( (@Int.0 + 1) * 2 > 4 )",
+        "  Precondition: requires((@Int.0 + 1) * 2 > 4)",
         "  At this call site: (0 + 1) * 2 > 4"]
 
 
@@ -1158,17 +1150,8 @@ def test_the_resolver_quotes_nothing_from_a_file_it_cannot_read(
         tmp_path: Path) -> None:
     from vera.resolver import ModuleResolver
     node = vast.IntLit(value=0, span=_span(1))
-    assert ModuleResolver._source_line(tmp_path / "absent.vera", node) == ""
-
-
-@pytest.mark.parametrize("line", sorted(_LINES))
-def test_the_verifier_quotes_the_counted_line(line: int) -> None:
-    from types import SimpleNamespace
-
-    from vera.verifier import ContractVerifier
-    verifier = SimpleNamespace(_current_source=_TEXT)
-    assert ContractVerifier._get_source_line(
-        verifier, line) == _LINES[line]  # type: ignore[arg-type]
+    assert ModuleResolver._placed(
+        tmp_path / "absent.vera", node)["source_line"] == ""
 
 
 def _reporting_verifier(reported: list[tuple[str, str]], **reads: object):

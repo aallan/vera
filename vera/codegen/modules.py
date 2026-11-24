@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.builtins import INTRINSICS
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic
 from vera.monomorphize import (
     canonicalize_type_aliases,
     namespace_fn_names,
@@ -729,10 +729,6 @@ class CrossModuleMixin:
     ) -> None:
         """Emit a diagnostic for an undefined function call."""
         display = qualified or name
-        loc = SourceLocation(file=self.file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
         description = (
             f"Function '{display}' is not defined in this module "
             f"and was not found in any imported module."
@@ -745,7 +741,7 @@ class CrossModuleMixin:
             "ability (E340), so a call reaching this was compiled without "
             "being checked."
         )
-        source_line = self._get_source_line(loc.line)
+        placed = self._diag_location(node)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for
         # different reasons and cite different spec sections.  Emit each with a
         # *literal* spec_ref (rather than a branched variable) so the
@@ -754,8 +750,7 @@ class CrossModuleMixin:
         if qualified is not None:
             self.diagnostics.append(Diagnostic(
                 description=description,
-                location=loc,
-                source_line=source_line,
+                **placed,
                 rationale=rationale,
                 fix=(
                     f"Ensure '{qualified}' names a function exported by a "
@@ -763,14 +758,12 @@ class CrossModuleMixin:
                     f"that the target module declares it."
                 ),
                 spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
-                severity="error",
                 error_code="E624",
             ))
         else:
             self.diagnostics.append(Diagnostic(
                 description=description,
-                location=loc,
-                source_line=source_line,
+                **placed,
                 rationale=rationale,
                 fix=(
                     f"Define '{name}' in this module, or import it from the "
@@ -779,7 +772,6 @@ class CrossModuleMixin:
                     f"'vera.math')."
                 ),
                 spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
-                severity="error",
                 error_code="E624",
             ))
 

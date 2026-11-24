@@ -43,8 +43,7 @@ if TYPE_CHECKING:
     )
     from vera.resolver import ResolvedModule
     from vera.typed import Instance, TypedProgram
-from vera.errors import Diagnostic, SourceLocation, source_lines
-from vera.lexical import blank_comments
+from vera.errors import Diagnostic, locate, locate_at
 from vera.obligations import table as obligation_table
 from vera.obligations.core import (
     ObligationKind,
@@ -55,7 +54,7 @@ from vera.obligations.core import (
 from vera.naming import (
     EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment,
 )
-from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
+from vera.builtin_domains import domain_contract
 from vera.slots import (
     fn_scopes,
     fn_slot_scope,
@@ -833,25 +832,6 @@ def _linked_alias_maps(
     return aliases, params
 
 
-def _walk_fn_decls(program: ast.Program) -> Iterator[ast.FnDecl]:
-    """Every function *declaration* in *program*, ``where``-helpers included.
-
-    The registries built from a module's registration are flat and last-wins,
-    so they cannot answer "which declarations did this file contain?" for a
-    module that spells one helper name twice.  This walks the AST instead, and
-    is used to attribute each declaration's contract clauses to the file they
-    were written in (#1220).
-    """
-    stack: list[ast.FnDecl] = [
-        tld.decl for tld in program.declarations
-        if isinstance(tld.decl, ast.FnDecl)
-    ]
-    while stack:
-        decl = stack.pop()
-        yield decl
-        stack.extend(decl.where_fns or ())
-
-
 # =====================================================================
 # Public API
 # =====================================================================
@@ -1427,15 +1407,6 @@ class ContractVerifier:
         # (and hence its id) alive for as long as the map is.  A callee absent
         # from here is declared in whatever module is under verification.
         self._fn_origins: dict[int, tuple[FunctionInfo, CalleeScope]] = {}
-        # #1220: the SOURCE TEXT each imported contract clause was WRITTEN in,
-        # keyed by clause identity on the same reasoning as `_fn_origins`
-        # above.  A clause's span numbers lines in the file that declared it,
-        # so a message quoting an imported callee's `requires` has to index
-        # that module's buffer — indexing this program's returns whatever text
-        # happens to sit on that line here (`requires(true)`, `effects(pure)`).
-        # A clause absent from here was declared in THIS program and quotes
-        # `self.source`.
-        self._contract_sources: dict[int, tuple[ast.Contract, str]] = {}
         # #1208: the origin module of each IMPORTED generic, keyed by the same
         # discovery key `_instances` / `generic_decls` use.  A key absent from
         # here is a main-file generic.
@@ -1812,15 +1783,10 @@ class ContractVerifier:
             # remedy for every operation a predicate cannot evaluate is the
             # same edit, made in the predicate.
             fix = _PREDICATE_FIX
-        loc = SourceLocation(file=self._current_file)
-        span = _site_span(node)
-        if span:
-            loc.line = span.line
-            loc.column = span.column
         self.errors.append(Diagnostic(
             description=description + self._evaluation_note(),
-            location=loc,
-            source_line=self._get_source_line(loc.line),
+            **locate_at(self._current_file, self._current_source,
+                        _site_span(node)),
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
@@ -1890,15 +1856,10 @@ class ContractVerifier:
         `check_diagnostic_fields` accepts it on a warning.
         """
         node = self._evaluation_site(node)
-        loc = SourceLocation(file=self._current_file)
-        span = _site_span(node)
-        if span:
-            loc.line = span.line
-            loc.column = span.column
         self.errors.append(Diagnostic(
             description=description + self._evaluation_note(),
-            location=loc,
-            source_line=self._get_source_line(loc.line),
+            **locate_at(self._current_file, self._current_source,
+                        _site_span(node)),
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
@@ -1906,25 +1867,6 @@ class ContractVerifier:
             error_code=error_code,
             tier=tier,
         ))
-
-    def _get_source_line(self, line: int) -> str:
-        """Extract a line from the source of the module UNDER verification.
-
-        A diagnostic's span numbers lines in the file that declared what raised
-        it, so an imported generic's clone must be excerpted from ITS module's
-        buffer (#1220, PR #1239 review).  Indexing the entry program's instead
-        put the caret on an unrelated importer line, or — when the clone's span
-        ran past a shorter importer — produced an empty excerpt with no
-        indication anything was missing.
-        """
-        lines = source_lines(self._current_source)
-        if 1 <= line <= len(lines):
-            return lines[line - 1]
-        return ""
-
-    # -----------------------------------------------------------------
-    # Obligation recording (#222 Phase A)
-    # -----------------------------------------------------------------
 
     def _record_obligation(
         self,
@@ -2247,12 +2189,6 @@ class ContractVerifier:
             self._module_alias_envs[mod.path] = mod_alias_env
             self._module_sources[mod.path] = mod.source
             self._module_files[mod.path] = str(mod.file_path)
-            # #1220: pin every clause this module DECLARES to the module's own
-            # source, so a message quoting one indexes the buffer its span
-            # numbers; a `where` helper's clauses included.
-            for fn_decl in _walk_fn_decls(mod.program):
-                for clause in fn_decl.contracts:
-                    self._contract_sources[id(clause)] = (clause, mod.source)
             # #1208/#1225/#1241: the scope a contract or a body this module
             # declares is read in: its own naming env, and the registry.
             mod_scope = CalleeScope(mod_alias_env, self.env.lookup_function)
@@ -2945,13 +2881,6 @@ class ContractVerifier:
         # (cold) and the warm incremental session — which both go through
         # register_program — verify the same set (keeps warm == cold).
         self._instances = self._typed_instances(program)
-        # #1480: a built-in's declared domain is quoted, in an E501, out of
-        # the declaration it was parsed from — its span numbers lines there.
-        for domain in BUILTIN_DOMAINS:
-            contract = domain_contract(domain.name)
-            if contract is not None:
-                self._contract_sources[id(contract.requires)] = (
-                    contract.requires, contract.source)
         # #1480: the calls this program's refinement predicates make, each of
         # which `_verify_refinement_declarations` obligates at its declaration.
         self._predicate_call_ids = frozenset(
@@ -3618,6 +3547,7 @@ class ContractVerifier:
             # this instance, don't synthesize a spurious one — the obligation is
             # already counted/guarded, so there is no soundness loss.
             return
+        # pragma: no mutate start — no program reaches this synthesis (every .vera program in the tree, verified); only test_1451_a_diagnostic_survives_the_generic_collapse calls it, on a verifier built by hand
         # A violation MUST never be silently dropped (a false Tier-1).  No
         # diagnostic matched, so surface it straight from the obligation.  A
         # violated `ensures` records no error_code (its canonical diagnostic
@@ -3633,16 +3563,20 @@ class ContractVerifier:
         # foreign line number with the wrong name — the join `verify --json`
         # documents, broken in the one place that synthesises a diagnostic
         # instead of re-emitting one (PR #1239 review, outside-diff).
+        # The line is quoted from the text of the file it numbers: this
+        # program's, or the module's the verifier registered under it.
+        ob_file = rep_ob.file or self.file
+        ob_source = next(
+            (self._module_sources[path]
+             for path, file in self._module_files.items()
+             if file == ob_file and path in self._module_sources),
+            self.source if ob_file == self.file else "")
         self.errors.append(Diagnostic(
             description=(
                 prefix
                 + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` is violated."
             ),
-            location=SourceLocation(
-                file=rep_ob.file or self.file,
-                line=rep_ob.line,
-                column=rep_ob.column,
-            ),
+            **locate(ob_file, ob_source, rep_ob.line, rep_ob.column),
             rationale=(
                 "A contract obligation was neither discharged statically nor "
                 "matched a more specific diagnostic; it must still be surfaced "
@@ -3657,6 +3591,7 @@ class ContractVerifier:
             error_code=synth_error_code,
             tier=None,
         ))
+        # pragma: no mutate end
 
     # -----------------------------------------------------------------
     # #1695: the rows a verified function lists, discharged
@@ -3879,9 +3814,9 @@ class ContractVerifier:
             if (d.error_code == rec.error_code
                     and d.location.line == rec.line
                     and d.location.column == rec.column):
-                loc = replace(d.location, line=head.line, column=head.column)
-                self.errors[i] = replace(
-                    d, location=loc, source_line=self._get_source_line(head.line))
+                self.errors[i] = replace(d, **locate(
+                    d.location.file, self._current_source,
+                    head.line, head.column))
                 return
 
     def _rows_taking(self, node: ast.Node, kind: ObligationKind) -> bool:
@@ -4313,16 +4248,15 @@ class ContractVerifier:
         reason, the table's, is the rationale (#1602, #1782)."""
         self._retract_disclosure(record, runtime_claims=True)
         code = _DISCLOSURE_CODES.get(record.kind, "E543")
-        loc = SourceLocation(file=record.file or self._current_file,
-                             line=record.line, column=record.column)
-        what = _DISCLOSED_WHAT.get(record.kind, f"The '{record.kind}' obligation")
+        file = record.file or self._current_file  # pragma: no mutate — a disclosed record's file is the file being verified (a spy: 311 of 311)
+        what = _DISCLOSED_WHAT.get(record.kind, f"The '{record.kind}' obligation")  # pragma: no mutate — every disclosed kind is in the table (a spy: 311 of 311)
         self.errors.append(Diagnostic(
             description=(
                 f"{what} in '{record.fn_name}' could not be verified "
                 f"statically, and no runtime check can be emitted for it: "
                 f"{row.guard.reason}. It is counted in neither tier."),
-            location=loc,
-            source_line=self._get_source_line(loc.line),
+            **locate(file, self._current_source, record.line,
+                     record.column),
             rationale=(
                 (f"It was not discharged statically: {static}.  "
                  if (static := self._static_reason(record)) else "")
@@ -14502,7 +14436,7 @@ class ContractVerifier:
         *lookup* is the caller's lexical scope, the one the SMT layer
         resolved the call through, which holds a `where` helper the flat
         registry does not."""
-        pre_text = self._contract_source_text(precondition)
+        pre_text = self._clause_text(precondition)
 
         # Render the precondition in call-site terms (callee slots
         # replaced by the actual arguments) so the message states
@@ -14664,64 +14598,14 @@ class ContractVerifier:
                 tier=3,
             )
 
-    def _contract_source_text(self, contract: ast.Contract) -> str:
-        """Extract the source text of a contract clause, from the file that
-        DECLARED it (#1220).
-
-        A clause's span numbers lines in its own file, so an IMPORTED callee's
-        `requires` quoted out of this program's buffer reads whatever sits on
-        that line here — the E501 for a violated `requires(@Option<Int>.0 ==
-        Some(3))` quoted `requires(true)`, and a reader has no way to tell the
-        garbage from a real clause.  The buffer comes from
-        :meth:`_declaring_source`, which is keyed by the clause itself.
-
-        The WHOLE clause, not its first physical line: a `requires` broken
-        across lines was quoted up to the first newline, so the message ended
-        mid-expression with unbalanced parentheses and named a condition the
-        program does not have (PR #1239 review).  Continuation lines are joined
-        on single spaces, since the message is one line.
-
-        Comments are blanked first, through the lexer's own scanner
-        (:func:`~vera.lexical.blank_comments`), because joining lines puts a
-        trailing `--` comment in front of the rest of the clause — the reader
-        then sees a condition that stops where the comment starts, and a
-        comment's text quoted as though it were code.  The scanner is what
-        keeps a `--` inside a STRING literal from being mistaken for one, and
-        blanking preserves offsets, so the line numbers this slices by are
-        unaffected.
-        """
-        if contract.span:
-            lines = source_lines(blank_comments(
-                self._declaring_source(contract)))
-            first, last = contract.span.line, contract.span.end_line
-            if 1 <= first <= len(lines):
-                last = min(max(last, first), len(lines))
-                return " ".join(
-                    part for part in (
-                        raw.strip() for raw in lines[first - 1:last]
-                    ) if part
-                )
-        return ""
-
-    def _declaring_source(self, contract: ast.Contract) -> str:
-        """The source text *contract*'s span numbers lines in (#1220).
-
-        The defining module's for an imported clause, this program's for a
-        local one.  Identity is the join, and the pinned value holds the clause
-        object itself so a recycled ``id`` cannot answer for another clause —
-        the same reasoning ``_callee_alias_env`` documents.
-
-        An unpinned clause falls back to the module UNDER verification, not to
-        the entry program: only clauses parsed from a module's own AST are
-        pinned, so a monomorphized clone's clause — a fresh node carrying the
-        original's span — reaches here while its declaring module is in scope
-        (:meth:`_declaring_module_scope`), which is the buffer that span
-        numbers.
-        """
-        found = self._contract_sources.get(id(contract))
-        if found is not None and found[0] is contract:
-            return found[1]
-        return self._current_source
+    @staticmethod
+    def _clause_text(clause: ast.Requires) -> str:
+        """The `requires` clause an E501 quotes, as ``vera fmt`` writes it,
+        from the node (#1573, #1636): the clause and nothing beside it, on
+        one line, wherever the program writes it and whichever file declares
+        it (a module's, a built-in's domain, #1220, #1480)."""
+        from vera.formatter import format_expr_canonical
+        return f"requires({format_expr_canonical(clause.expr)})"
 
     # -----------------------------------------------------------------
     # Helpers
