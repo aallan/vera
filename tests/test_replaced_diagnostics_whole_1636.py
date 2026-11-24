@@ -38,13 +38,26 @@ def _roots(tmp_path: Path | None) -> list[tuple[str, str]]:
     return sorted(roots, key=lambda r: -len(r[0]))
 
 
+def _shown_file(value: str, roots: list[tuple[str, str]]) -> str:
+    """A diagnostic's `file` (a location's or a frame's) as it is compared:
+    under a root, the root's name and the rest relative to it in POSIX form,
+    so `tests\\probes\\x.vera` on Windows reads as `tests/probes/x.vera`;
+    outside every root, the path in POSIX form."""
+    for real, shown in roots:
+        if value.startswith(real):
+            return shown + Path(value).relative_to(real).as_posix()
+    return Path(value).as_posix()
+
+
 def _norm(value: Any, roots: list[tuple[str, str]]) -> Any:
     if isinstance(value, str):
         for real, shown in roots:
             value = value.replace(real, shown)
         return value
     if isinstance(value, dict):
-        return {k: _norm(v, roots) for k, v in value.items()}
+        return {k: (_shown_file(v, roots) if k == "file" and isinstance(v, str)
+                    else _norm(v, roots))
+                for k, v in value.items()}
     if isinstance(value, list):
         return [_norm(v, roots) for v in value]
     return value
