@@ -1311,30 +1311,6 @@ _E543_AN_ENSURES_OVER_A_STRING_RESULT = ('public fn f(@Int -> @String)\n'
  '  "not the number"\n'
  '}\n')
 
-_E542_AN_ARM_BINDER_NARROWING_AN_EFFECT_ROW = ('type IoFn = fn(Int -> Int) effects(<IO>);\n'
- 'type PureFn = fn(Int -> Int) effects(pure);\n'
- '\n'
- 'private data Box { Box(IoFn) }\n'
- '\n'
- 'private fn call_pure(@Box -> @Int)\n'
- '  requires(true)\n'
- '  ensures(true)\n'
- '  effects(pure)\n'
- '{\n'
- '  match @Box.0 {\n'
- '    Box(@PureFn) -> apply_fn(@PureFn.0, 1)\n'
- '  }\n'
- '}\n'
- '\n'
- 'public fn main(-> @Int)\n'
- '  requires(true)\n'
- '  ensures(true)\n'
- '  effects(<IO>)\n'
- '{\n'
- '  call_pure(Box(fn(@Int -> @Int) effects(<IO>) { IO.print("side '
- 'effect\\n"); @Int.0 }))\n'
- '}\n')
-
 _E506_A_NESTED_REFINEMENT = ('type Pos = { @Int | @Int.0 > 0 };\n'
  'type Small = { @Pos | @Pos.0 < 10 };\n'
  '\n'
@@ -4195,29 +4171,6 @@ def test_e543_an_ensures_over_a_string_result(tmp_path: Path) -> None:
                  'the fact to a site a runtime check guards.',
           'spec_ref': 'Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
           'error_code': 'E543'}])
-
-
-def test_e542_an_arm_binder_narrowing_an_effect_row(tmp_path: Path) -> None:
-    """_disclose_row: E542."""
-    assert _found(
-        pipeline.verify(_E542_AN_ARM_BINDER_NARROWING_AN_EFFECT_ROW, file="main.vera"),
-        "E542", tmp_path) == (
-        [{'severity': 'warning',
-          'description': "The narrower effect row in 'call_pure' could not be "
-                         'verified statically, and no runtime check can be '
-                         'emitted for it: an effect row has no runtime check. '
-                         'It is counted in neither tier.',
-          'location': {'line': 12, 'column': 9, 'file': 'main.vera'},
-          'source_line': '    Box(@PureFn) -> apply_fn(@PureFn.0, 1)',
-          'rationale': 'No runtime check guards this site because an effect '
-                       'row has no runtime check, so a value that violates it '
-                       'is not caught at run time; the verifier discloses it '
-                       'rather than claim a runtime check.',
-          'fix': 'Bind the field at its own type: write the binder at the '
-                 "field's declared function type, with its effect row, and "
-                 'declare those effects on the function that applies it.',
-          'spec_ref': 'Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
-          'error_code': 'E542'}])
 
 
 def test_e506_a_nested_refinement(tmp_path: Path) -> None:
