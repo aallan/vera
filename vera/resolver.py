@@ -339,7 +339,7 @@ class ModuleResolver:
         if by_file is not None and (by_file.path != mod_path
                                     or by_file.directory != directory):
             self._errors.append(self._one_file_two_paths(
-                imp, importing_file, entry, by_file))
+                imp, importing_file, entry, directory, by_file))
             return None
 
         if mod_path in self._cache:
@@ -482,64 +482,81 @@ class ModuleResolver:
 
     def _one_file_two_paths(
         self, imp: ast.ImportDecl, importing_file: Path,
-        entry: Path, bound: _Binding,
+        entry: Path, directory: tuple[int, int], bound: _Binding,
     ) -> Diagnostic:
-        """E015: *imp* reaches a file the program has already imported, by
-        another path, or by the same path through an entry in another
-        directory (two hard links), from which its imports would be looked
-        up otherwise (spec §8.6.2).  Its fix states what must end up true;
-        it proposes no path."""
+        """E015: *imp* reaches a file the program has already imported by
+        another path, or through an entry in another directory (a second
+        hard link, from whose directory its imports would be looked up), or
+        both (spec §8.6.2).  Its fix states what must end up true for the
+        form it is, both requirements where both fail; it proposes no
+        path."""
         here, there = self._spelled(imp.path), self._spelled(bound.path)
         mine, theirs = self._shown(importing_file), self._shown(bound.importer)
-        if imp.path != bound.path:
+        two_paths = imp.path != bound.path
+        two_dirs = directory != bound.directory
+        if not two_dirs:
             shown = self._shown(entry.resolve())
-            return Diagnostic(
-                description=(
-                    f"'{shown}' is imported by two paths: as '{here}' in "
-                    f"'{mine}', and as '{there}' in '{theirs}'."
-                ),
-                location=self._location_from_node(imp, importing_file),
-                source_line=self._source_line(importing_file, imp),
-                rationale=(
-                    "A file is one module, under one path. Imported by two "
-                    "paths, it would be checked and compiled twice, as two "
-                    "modules, and a data type it declares would be two types "
-                    "that no value passes between."
-                ),
-                fix=(
-                    f"Import `{shown}` by one path everywhere: choose one "
-                    f"path that reaches it from both '{mine}' and "
-                    f"'{theirs}', and write it in both imports and in each "
-                    f"call qualified by the other path, so that the file is "
-                    f"imported by one path in the program."
-                ),
-                spec_ref='Chapter 8, Section 8.6.2 "Caching"',
-                severity="error",
-                error_code="E015",
+            description = (
+                f"'{shown}' is imported by two paths: as '{here}' in "
+                f"'{mine}', and as '{there}' in '{theirs}'."
             )
-        here_at = self._shown(entry.resolve())
-        there_at = self._shown(bound.file)
+            rationale = (
+                "A file is one module, under one path. Imported by two "
+                "paths, it would be checked and compiled twice, as two "
+                "modules, and a data type it declares would be two types "
+                "that no value passes between."
+            )
+            fix = (
+                f"Import `{shown}` by one path everywhere: choose one path "
+                f"that reaches it from both '{mine}' and '{theirs}', and "
+                f"write it in both imports and in each call qualified by "
+                f"the other path, so that the file is imported by one path "
+                f"in the program."
+            )
+        else:
+            here_at = self._shown(entry.resolve())
+            there_at = self._shown(bound.file)
+            rationale = (
+                "A file is one module, under one path, and its imports are "
+                "looked up from the directory that holds it. A file with "
+                "entries in two directories (two hard links) has two such "
+                "directories, and which one its imports were looked up from "
+                "would depend on which import reached it first."
+            )
+            if two_paths:
+                description = (
+                    f"'{here_at}' and '{there_at}' are one file, imported by "
+                    f"two paths through two directories: as '{here}' "
+                    f"through '{here_at}' in '{mine}', and as '{there}' "
+                    f"through '{there_at}' in '{theirs}'."
+                )
+                fix = (
+                    f"Import the file by one path, through one directory, "
+                    f"everywhere: choose one path that reaches it through "
+                    f"the same one of `{here_at}` and `{there_at}` from both "
+                    f"'{mine}' and '{theirs}', and write it in both imports "
+                    f"and in each call qualified by the other path; where no "
+                    f"path does, move the file so that one does, or make the "
+                    f"two names two files under two module paths."
+                )
+            else:
+                description = (
+                    f"'{here_at}' and '{there_at}' are one file, imported as "
+                    f"'{here}' through two directories: through '{here_at}' "
+                    f"in '{mine}', and through '{there_at}' in '{theirs}'."
+                )
+                fix = (
+                    f"Give the file one directory: import it through one of "
+                    f"`{here_at}` and `{there_at}` from both '{mine}' and "
+                    f"'{theirs}', or make the two names two files under two "
+                    f"module paths."
+                )
         return Diagnostic(
-            description=(
-                f"'{here_at}' and '{there_at}' are one file, imported as "
-                f"'{here}' through two directories: through '{here_at}' in "
-                f"'{mine}', and through '{there_at}' in '{theirs}'."
-            ),
+            description=description,
             location=self._location_from_node(imp, importing_file),
             source_line=self._source_line(importing_file, imp),
-            rationale=(
-                "A module's imports are looked up from the directory that "
-                "holds its file. A file with entries in two directories (two "
-                "hard links) has two such directories, and which one its "
-                "imports were looked up from would depend on which import "
-                "reached it first."
-            ),
-            fix=(
-                f"Give the file one directory: import it through one of "
-                f"`{here_at}` and `{there_at}` from both '{mine}' and "
-                f"'{theirs}', or make the two names two files under two "
-                f"module paths."
-            ),
+            rationale=rationale,
+            fix=fix,
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
             severity="error",
             error_code="E015",

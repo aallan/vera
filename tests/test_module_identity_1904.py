@@ -538,8 +538,11 @@ def test_repro_1904_one_file_in_two_directories_is_refused_in_either_order(
 ) -> None:
     """Two hard links in two directories are one file with two directories:
     E015 at the import that reaches it through the second, in either
-    order, naming both names and both importers.  (With `y` first, the
-    file's `dep` is looked up from `y/`, and its E012 stands too.)"""
+    order, naming both names and both importers.  The first entry to reach
+    the file is the one it is read from, and what that read reports stands:
+    with `y` first the file's `dep` is looked up from `y/`, which has none
+    (E012 at `y/lib.vera`); with `x` first it is found.  Each order's whole
+    set of diagnostics is pinned."""
     entry = _one_file_two_directories(tmp_path, os.link, x_first)
     if entry is None:
         pytest.skip("this filesystem cannot make a hard link")
@@ -553,8 +556,95 @@ def test_repro_1904_one_file_in_two_directories_is_refused_in_either_order(
                  f"{first}/mid.vera", f"{second}/mid.vera"):
         assert f"'{name}'" in d["description"] and name in d["fix"], (name, d)
     assert "two directories" in d["description"], d
-    assert {x["error_code"] for x in diags} <= {"E015", "E012", "E200"}, diags
+    got = sorted((x["error_code"], pathlib.Path(x["location"]["file"]).resolve()
+                  .relative_to(tmp_path.resolve()).as_posix()) for x in diags)
+    expected = ([("E015", "y/mid.vera"), ("E200", "y/mid.vera")] if x_first else
+                [("E012", "y/lib.vera"), ("E015", "x/mid.vera"),
+                 ("E200", "x/mid.vera"), ("E200", "y/lib.vera")])
+    assert got == expected, diags
     assert pipeline.cli("run", entry).returncode != 0
+
+
+def _e015_form(tmp: pathlib.Path, form: str, x_first: bool) -> pathlib.Path | None:
+    """E015's three forms over `x/mid.vera` and `y/mid.vera`: `paths`, one
+    file `x/lib.vera` imported as `x.lib` from `y/mid.vera` (through the
+    root) and as `lib` from `x/mid.vera` (beside it); `entries`, `x/lib.vera` and `y/lib.vera` hard
+    links each imported as `lib` beside it; `both`, those hard links
+    imported as `x.lib` from `x/mid.vera` and as `lib` from `y/mid.vera`."""
+    target = write(tmp, "x/lib.vera", fn("word", "2"))
+    paths = {"paths": ("x.lib", "lib"), "entries": ("lib", "lib"), "both": ("x.lib", "lib")}
+    px, py = paths[form]
+    if form == "paths":
+        write(tmp, "y/mid.vera", "import x.lib(word);\n\n" + fn("wy", "word(())"))
+        write(tmp, "x/mid.vera", "import lib(word);\n\n" + fn("wx", "word(())"))
+    else:
+        (tmp / "y").mkdir()
+        try:
+            os.link(target, tmp / "y" / "lib.vera")
+        except (OSError, NotImplementedError):
+            return None
+        write(tmp, "x/mid.vera", f"import {px}(word);\n\n" + fn("wx", "word(())"))
+        write(tmp, "y/mid.vera", f"import {py}(word);\n\n" + fn("wy", "word(())"))
+    lines = ["import x.mid(wx);", "import y.mid(wy);"]
+    if not x_first:
+        lines.reverse()
+    return write(tmp, "main.vera", "\n".join(lines) + "\n\n" + main_fn(["wx(())", "wy(())"]))
+
+
+def _e015_text(form: str, x_first: bool) -> tuple[str, str, str]:
+    """The diagnostic's file, description and fix, as each form states it
+    for the order: the second importer meets the conflict."""
+    if form == "paths":
+        # `y/mid.vera` imports `x.lib`; `x/mid.vera` imports `lib`.
+        me, them = (("y/mid.vera", "x.lib"), ("x/mid.vera", "lib")) if x_first \
+            else (("x/mid.vera", "lib"), ("y/mid.vera", "x.lib"))
+        return (me[0],
+                f"'x/lib.vera' is imported by two paths: as '{me[1]}' in '{me[0]}', "
+                f"and as '{them[1]}' in '{them[0]}'.",
+                f"Import `x/lib.vera` by one path everywhere: choose one path that "
+                f"reaches it from both '{me[0]}' and '{them[0]}', and write it in both "
+                f"imports and in each call qualified by the other path, so that the "
+                f"file is imported by one path in the program.")
+    path = {"x": "x.lib" if form == "both" else "lib", "y": "lib"}
+    m, t = ("y", "x") if x_first else ("x", "y")
+    if form == "entries":
+        return (f"{m}/mid.vera",
+                f"'{m}/lib.vera' and '{t}/lib.vera' are one file, imported as 'lib' "
+                f"through two directories: through '{m}/lib.vera' in '{m}/mid.vera', "
+                f"and through '{t}/lib.vera' in '{t}/mid.vera'.",
+                f"Give the file one directory: import it through one of `{m}/lib.vera` "
+                f"and `{t}/lib.vera` from both '{m}/mid.vera' and '{t}/mid.vera', or "
+                f"make the two names two files under two module paths.")
+    return (f"{m}/mid.vera",
+            f"'{m}/lib.vera' and '{t}/lib.vera' are one file, imported by two paths "
+            f"through two directories: as '{path[m]}' through '{m}/lib.vera' in "
+            f"'{m}/mid.vera', and as '{path[t]}' through '{t}/lib.vera' in "
+            f"'{t}/mid.vera'.",
+            f"Import the file by one path, through one directory, everywhere: choose "
+            f"one path that reaches it through the same one of `{m}/lib.vera` and "
+            f"`{t}/lib.vera` from both '{m}/mid.vera' and '{t}/mid.vera', and write it "
+            f"in both imports and in each call qualified by the other path; where no "
+            f"path does, move the file so that one does, or make the two names two "
+            f"files under two module paths.")
+
+
+@pytest.mark.parametrize("x_first", [True, False], ids=["x_first", "y_first"])
+@pytest.mark.parametrize("form", ["paths", "entries", "both"])
+def test_each_form_of_e015_states_its_requirements(
+    tmp_path: pathlib.Path, form: str, x_first: bool,
+) -> None:
+    """Two paths in one directory, one path through two directories, and
+    both at once: in either order, one E015 at the second importer, whose
+    fix states every requirement its form fails."""
+    entry = _e015_form(tmp_path, form, x_first)
+    if entry is None:
+        pytest.skip("this filesystem cannot make a hard link")
+    (d,) = refusals(check_json(entry))
+    where, description, fix = _e015_text(form, x_first)
+    assert d["error_code"] == "E015"
+    assert pathlib.Path(d["location"]["file"]).resolve() == (tmp_path / where).resolve(), d
+    assert d["description"] == description
+    assert d["fix"] == fix
 
 
 @pytest.mark.parametrize("x_first", [True, False], ids=["x_first", "y_first"])
@@ -1029,10 +1119,35 @@ SHAPES = {
 
 
 def _proposes_nothing(diag: dict) -> bool:
-    """The fix names no file to create (no `rename X to Y`) and no
-    import to write."""
-    return (not re.search(r"rename `[^`]+` to `", diag["fix"])
-            and "`import " not in diag["fix"])
+    """The fix is the rule in prose: every file name it holds is one the
+    description names (so no new name for a file), and it holds no import
+    or `module` line to write."""
+    named = set(re.findall(r"'([^']+\.vera)'", diag["description"]))
+    in_fix = set(re.findall(r"[`']([^`']+\.vera)[`']", diag["fix"]))
+    return in_fix <= named and not re.search(r"`(import|module) ", diag["fix"])
+
+
+def test_the_prose_predicate_refuses_a_named_edit() -> None:
+    """The predicate's controls: the prose fix passes; a rename with the
+    importer in parentheses before its new name, a bare new name and an
+    import to write are each refused."""
+    description = ("Module path 'lib' names two files in this program: 'main.vera' "
+                   "imports 'lib' as 'lib.vera', and 'a/mid.vera' imports it as "
+                   "'a/lib.vera'.")
+    prose = ("Give one of the two modules another path: rename `lib.vera` (which "
+             "'main.vera' imports) or `a/lib.vera` (which 'a/mid.vera' imports) to a "
+             "name no other file of the program takes, and change each import of it, "
+             "its own `module` line and each call qualified by its old path to match, "
+             "so that 'lib' names one file in the program.")
+    assert _proposes_nothing({"description": description, "fix": prose})
+    for named in (
+        "Give one of the two modules another path: rename `lib.vera` "
+        "(which 'main.vera' imports) to `lib2.vera`.",
+        "Give one of the two modules another path: move it to `lib2.vera`.",
+        "Give one of the two modules another path: write `import lib2` here.",
+        "Give one of the two modules another path: write `module lib2;` there.",
+    ):
+        assert not _proposes_nothing({"description": description, "fix": named}), named
 
 
 @pytest.mark.parametrize("shape", list(SHAPES))
@@ -1045,8 +1160,11 @@ def test_every_shape_gets_the_rule_in_prose(tmp_path: pathlib.Path, shape: str) 
         pytest.skip("this platform or account cannot make the link")
     entry, _ = built
     (d,) = refusals(check_json(entry))
+    desc = d["description"]
     lead = ("Give one of the two modules another path" if d["error_code"] == "E014"
-            else "Import `" if "two paths" in d["description"] else "Give the file one directory")
+            else "Import the file by one path, through one directory"
+            if "two paths through two directories" in desc
+            else "Import `" if "two paths" in desc else "Give the file one directory")
     assert d["fix"].startswith(lead), d["fix"]
     for name in re.findall(r"'([^']+\.vera)'", d["description"]):
         assert name in d["fix"], (name, d["fix"])
