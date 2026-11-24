@@ -30,6 +30,7 @@ from vera.types import (
     TypeVar,
     UnknownType,
     base_type,
+    fresh_typevar_origin,
     strip_builtin_typevar_marker,
     substitute,
 )
@@ -874,12 +875,55 @@ def _example(te: ast.TypeExpr, variables: frozenset[str]) -> str | None:
     return None
 
 
+def _at_int(te: ast.TypeExpr, variables: frozenset[str]) -> str | None:
+    """*te* as the program writes it, each of *variables* at `Int`; None
+    where a variable stands in a type written otherwise than by name and
+    arguments (a function type, a refinement)."""
+    if isinstance(te, ast.NamedType):
+        if te.name in variables and not te.type_args:
+            return "Int"
+        if te.type_args:
+            inner = [_at_int(a, variables) for a in te.type_args]
+            if any(i is None for i in inner):
+                return None
+            return f"{te.name}<{', '.join(i for i in inner if i)}>"
+    if _mentions(te, variables):
+        return None
+    return ast.format_type(te)
+
+
 def _mentions(te: object, variables: frozenset[str]) -> bool:
     return any(isinstance(n, ast.NamedType) and n.name in variables
                for n in _walk(te))
 
 
-def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
+def _local_type_names(program: ast.Program) -> frozenset[str]:
+    """The type names *program* declares that no importer sees: every
+    alias (aliases are module-local) and each private data type."""
+    return frozenset(
+        tld.decl.name for tld in program.declarations
+        if isinstance(tld.decl, ast.TypeAliasDecl)
+        or (isinstance(tld.decl, ast.DataDecl)
+            and tld.visibility != "public"))
+
+
+def _hidden_at(root: Template, at: tuple[str, ...] | None,
+               local_names: Mapping[tuple[str, ...] | None, frozenset[str]],
+               ) -> frozenset[str]:
+    """The type names the generic *root* may write in its result that a
+    call written in the file *at* cannot name: none where the generic is
+    the call's own file's, else its file's local names.  *local_names*
+    holds the entry's (`None`, the prelude's too) and each linked
+    module's, the files a template comes from (`_programs`)."""
+    if root.origin == at:
+        return frozenset()
+    return local_names[root.origin]
+
+
+def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
+              result: Type | None = None,
+              record: Instantiation | None = None,
+              hidden: frozenset[str] = frozenset()) -> str:
     """The root call's fix: instantiate its generic at Int, which every
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
@@ -888,7 +932,18 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     gives its result a type (a `match` scrutinee, an operand; the type a
     result is expected at fixes such a variable, #1684), so its fix is that
     type, where the result's type holds the variable, or a parameter that
-    carries one."""
+    carries one.  The binding is offered only where the type the check
+    gave the call (*result*, with *record*, the instantiation it
+    recorded there) holds each variable the call left open, as the
+    variable the check minted for it (`T$2` for `T`): an alias can drop a
+    variable its written form names (`type Erased<T> = Int;`), and a
+    binding of that type fixes none, so the written form is never read
+    for it.  The call's own type serves the entry's generic, a module's
+    and a `where` helper's alike.  The binding is written as a block in
+    the call's place, `{ let @T = call; @T.0 }`, so it ends at its brace
+    and no later slot of its type reads it, and only where every name it
+    writes resolves where the call is: *hidden* names the types the
+    generic's file declares that the call's file cannot see."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = span_text(source, call.span)
@@ -913,17 +968,30 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
             param = (f"give '{generic}' a parameter for each of "
                      f"{', '.join(names)} ({carried}) and pass each a value "
                      f"at a type that {needs}, Int for example.")
-        if not all(_mentions(root.decl.return_type, frozenset((v,)))
-                   for v in names):
-            # A variable the result's type does not hold (one only a
-            # `where` constraint names): no binding of the result fixes it.
+        if not _result_holds_open(result, record, names):
+            # A variable the call's type does not hold (one only a `where`
+            # constraint names, one an alias drops), or a call the check
+            # recorded no type for: no binding of the result is known to
+            # fix it.
             return f"{head}: {param}"
-        return (f"{head}: bind its result at a type that {needs} (a `let` "
-                f"of that type), or {param}")
-    if text is None or call.span is None or len(args) != len(root.decl.params):
-        return advice + "."
+        # The binding written out, each variable at Int, where the call is
+        # (inside a branch too: a sibling's type gives it none, #1866).
+        # Written as a block in the call's place, so the binding ends at
+        # its brace and no later slot of that type reads it; and only
+        # where each name it writes resolves where the call is (an
+        # imported generic's alias does not).
+        bound = _at_int(root.decl.return_type, variables)
+        if (text is None or bound is None
+                or _mentions(root.decl.return_type, hidden)):
+            return (f"{head}: bind its result at a type that {needs} (a "
+                    f"`let` of that type), or {param}")
+        return (f"{head}: bind its result at a type that {needs}, with "
+                f"the block `{{ let @{bound} = {text}; @{bound}.0 }}` in "
+                f"the call's place; or {param}")
+    if text is None or call.span is None or len(args) != len(root.decl.params):  # pragma: no mutate — unreached: `judge` calls this only at a call the check recorded an instantiation for, which a call of the wrong arity never gets (E201 returns before inference), and every such call has its text in its source (0 of 120 calls over the instrument, the fix-text file and test_checker*.py)
+        return advice + "."  # pragma: no mutate — unreached, as the guard above: the guard is never true
     edits: list[tuple[int, int, str]] = []
-    for arg, formal in zip(args, root.decl.params, strict=True):
+    for arg, formal in zip(args, root.decl.params, strict=True):  # pragma: no mutate — equivalent: the guard above returns unless the call has one argument per parameter, so the zip is never uneven and its strictness never decides
         if not _mentions(formal, variables):
             continue
         example = _example(formal, variables)
@@ -936,6 +1004,24 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     for lo, hi, example in sorted(edits, reverse=True):
         fixed = fixed[:lo] + example + fixed[hi:]
     return f"{advice}: replace '{text}' with '{fixed}'."
+
+
+def _result_holds_open(result: Type | None, record: Instantiation | None,
+                       names: Sequence[str]) -> bool:
+    """Whether *result*, the type the check gave a generic call, holds
+    each of *names* the call left open, by the variable the check minted
+    for it: the callee's result type with each variable the call fixed
+    at its type in *record* and each it left open at a variable of its
+    own, `T$2` for `T` (read by `fresh_typevar_origin`).  The types the
+    call fixed a variable at hold no variable a call left open: no argument
+    fixes one here, and the type a result is expected at fixes one only
+    where it has no open part (`_expected_bindings`, #1684).  False where
+    the check recorded no type or no instantiation."""
+    if result is None or record is None:  # pragma: no mutate — unreached: `judge` passes the type and the instantiation the check recorded at a root call, and a root call is one it recorded both at (0 of 90 calls over the instrument, the fix-text file and test_checker*.py)
+        return False  # pragma: no mutate — unreached, as the guard above: the guard is never true
+    minted = {fresh_typevar_origin(TypeVar(v))
+              for v in _variables_in(result)}
+    return all(n in minted for n in names if n not in record.mapping)
 
 
 def _offset(source: str, base: ast.Span, span: ast.Span | None, *,
@@ -952,7 +1038,9 @@ def _offset(source: str, base: ast.Span, span: ast.Span | None, *,
 
 def judge(derivation: Derivation, types: Mapping[int, Type],
           cells: Mapping[int, HandlerCell], env: TypeEnv,
-          entry_file: str | None, entry_source: str) -> list[Diagnostic]:
+          entry_file: str | None, entry_source: str,
+          recorded: Mapping[int, Instantiation] | None = None,
+          ) -> list[Diagnostic]:
     """Every judgment the program's instantiations decide (#1679), as the
     diagnostics the check reports: each failing instance at each root call
     that reaches it, and each Map or Set operation over an Array or
@@ -996,17 +1084,24 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
             refusals[id(inst)] = done
         return done
 
-    bodies: list[tuple[str | None, str, ast.FnDecl]] = [
-        (entry_file, entry_source, tld.decl)
+    bodies: list[tuple[str | None, str, ast.FnDecl,
+                       tuple[str, ...] | None]] = [
+        (entry_file, entry_source, tld.decl, None)
         for tld in derivation.linked.program.declarations
         if isinstance(tld.decl, ast.FnDecl)]
+    # The type names each file declares that no other file sees: its
+    # aliases, which are module-local, and its private data types.
+    local_names: dict[tuple[str, ...] | None, frozenset[str]] = {
+        None: _local_type_names(derivation.linked.program),  # pragma: no mutate — unreached: hidden at a call in another file than the generic's, and no module calls the entry's functions (a module imports no entry program)
+    }
     for mod in derivation.linked.modules:
         file, source = files[mod.path]
-        bodies.extend((file, source, tld.decl)
+        bodies.extend((file, source, tld.decl, mod.path)
                       for tld in mod.program.declarations
                       if isinstance(tld.decl, ast.FnDecl))
+        local_names[mod.path] = _local_type_names(mod.program)
 
-    for file, source, decl in bodies:
+    for file, source, decl, at in bodies:
         # A Map or Set operation whose component holds no type parameter,
         # in any body: the same at every instantiation, so judged as written.
         for node in _walk(decl):
@@ -1024,9 +1119,10 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
         for node in _scope(decl):
             if not isinstance(node, (ast.FnCall, ast.ModuleCall)):
                 continue
-            root = (derivation.seed_targets.get(node.node_id)
-                    if node.node_id is not None else None)
-            if root is None:
+            nid = node.node_id
+            root = (derivation.seed_targets.get(nid)
+                    if nid is not None else None)
+            if root is None or nid is None:
                 continue
             # As written: the typed program's call carries its resolved
             # name (`mod$m$f`, `f$where$g`), which the canonical form would
@@ -1038,8 +1134,13 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
                 inst = queue.pop(0)
                 for refusal in of(inst):
                     fix = (refusal.fix if refusal.fix is not None
-                           else _call_fix(node, source, templates[root.key],
-                                          refusal.needs))
+                           else _call_fix(
+                               node, source, templates[root.key],
+                               refusal.needs,
+                               result=types.get(nid),
+                               record=(recorded or {}).get(nid),
+                               hidden=_hidden_at(templates[root.key], at,
+                                                 local_names)))
                     found.append(_diagnostic(
                         refusal.code, file, source, node,
                         f"The call '{call_text}' instantiates "

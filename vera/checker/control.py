@@ -7,7 +7,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 from dataclasses import dataclass
 
-from vera import ast, naming, narrowing, patterns
+from vera import ast, fold, naming, narrowing, patterns
 from vera.checker.calls import TypePath, _variable_name, describe_position
 from vera.checker.registration import builtin_effect_names
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
@@ -50,6 +50,7 @@ from vera.types import (
     UnknownType,
     base_type,
     contains_typevar,
+    fresh_typevar_origin,
     holds_function,
     is_pair_represented,
     is_subtype,
@@ -65,9 +66,11 @@ from vera.types import (
 
 def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
     """Whether one of the enclosing function's own type variables
-    (*rigid*) stands anywhere in *ty*."""
+    (*rigid*) stands anywhere in *ty*.  A variable is one of them where its
+    name is in *rigid*: a variable a call minted (`T$3`) never is, since a
+    minted name holds a `$` and a declared one cannot (`UPPER_IDENT`)."""
     if isinstance(ty, TypeVar):
-        return "$" not in ty.name and ty.name in rigid
+        return ty.name in rigid
     if isinstance(ty, AdtType):
         return any(_holds_variable(a, rigid) for a in ty.type_args)
     if isinstance(ty, FunctionType):
@@ -81,7 +84,7 @@ def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
 def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
     """Whether a type variable not one of *rigid* stands anywhere in *ty*."""
     if isinstance(ty, TypeVar):
-        return "$" in ty.name or ty.name not in rigid  # pragma: no mutate — equivalent: every variable a call leaves open is renamed with a `$` (0 others reached)
+        return fresh_typevar_origin(ty) is not None or ty.name not in rigid  # pragma: no mutate — equivalent: every variable a call leaves open is a minted one, read by `fresh_typevar_origin` (0 others reached)
     if isinstance(ty, AdtType):
         return any(_holds_open(a, rigid) for a in ty.type_args)
     if isinstance(ty, FunctionType):
@@ -94,13 +97,14 @@ def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
 
 def _rigid_named(ty: Type, rigid: Collection[str]) -> list[str]:
     """The enclosing function's own type variables in *ty*, in the order
-    they first stand, each once."""
+    they first stand, each once; a minted variable is none of them, as in
+    `_holds_variable`."""
     names: list[str] = []
 
     def walk(t: Type) -> None:
         t = base_type(t)
         if isinstance(t, TypeVar):
-            if "$" not in t.name and t.name in rigid and t.name not in names:
+            if t.name in rigid and t.name not in names:
                 names.append(t.name)
         elif isinstance(t, AdtType):
             for a in t.type_args:
@@ -509,6 +513,19 @@ def _shared_at(
     return out
 
 
+def _variable_names(ty: Type) -> set[str]:
+    """The names of the type variables *ty* holds, at any depth."""
+    base = base_type(ty)
+    if isinstance(base, TypeVar):
+        return {base.name}
+    if isinstance(base, AdtType):
+        return {v for a in base.type_args for v in _variable_names(a)}
+    if isinstance(base, FunctionType):
+        return {v for part in (*base.params, base.return_type)
+                for v in _variable_names(part)}
+    return set()
+
+
 class ControlFlowMixin:
 
     #: The scrutinee whose arm's pattern is being checked, its expression
@@ -548,19 +565,60 @@ class ControlFlowMixin:
                 break
         return shared
 
-    def _synth_against(self, expr: ast.Expr, sibling: Type) -> Type | None:
-        """*expr*, an `if` branch or a `match` arm, synthesized again with
-        a sibling's type *sibling* expected, so a constructor takes from it
-        the type arguments it cannot fix itself.  A sibling's type is not
-        the type the value is expected at: it fixes no type variable a call
-        in *expr* leaves open (`_expected_bindings`, #1684), which the join
-        settles as it settles a literal's element (the order of the
-        branches or arms never decides it)."""
-        self._sibling_types.append(sibling)
-        try:
-            return self._synth_expr(expr, expected=sibling)
-        finally:
-            self._sibling_types.pop()
+    def _complete_arms(self, arms: list[tuple[ast.Expr, Type]],
+                       joined: Type) -> None:
+        """Each arm of a join, its type *ty* now part of *joined*, with the
+        variables its constructors left open completed in its recorded
+        types (#1866).  An arm is synthesized once, against the type the
+        join's context expects, never against a sibling's type (spec §5.9):
+        a sibling's type fixes no variable and sets no expectation.  What
+        the arm's own synthesis could not give a constructor (`None` beside
+        `Some(3)`), the join gives here, in the record alone.
+
+        Only a variable a constructor minted (`_constructor_minted`) is
+        completed, and never one a call's recorded instantiation holds
+        (`idg(None)`'s `Option<T$n>`): an instance is the call's own, read
+        off `instantiations`, which this never writes, so no join fixes a
+        call's type arguments."""
+        for arm, ty in arms:
+            if not contains_typevar(ty):
+                continue
+            bound: dict[str, Type] = {}
+            self._unify_for_inference(ty, joined, bound)
+            records = self.instantiations or {}
+            held = {v for node in fold.walk(arm)
+                    if node.node_id is not None
+                    and (rec := records.get(node.node_id)) is not None
+                    for part in rec.mapping.values()
+                    for v in _variable_names(part)}
+            sigma = {v: b for v, b in bound.items()
+                     if v in self._constructor_minted and v not in held
+                     and not contains_typevar(b)}
+            if sigma:
+                self._record_completion(arm, sigma)
+
+    def _record_completion(self, arm: ast.Expr,
+                           sigma: dict[str, Type]) -> None:
+        """*sigma* substituted into the type recorded for each node of
+        *arm*, in every table that records one (`node_semantic_types`, the
+        span tables)."""
+        for node in fold.walk(arm):
+            if not isinstance(node, ast.Expr):
+                continue
+            if (self.node_semantic_types is not None
+                    and node.node_id is not None
+                    and node.node_id in self.node_semantic_types):
+                self.node_semantic_types[node.node_id] = substitute(
+                    self.node_semantic_types[node.node_id], sigma)
+            key = ast.span_key(node)
+            if key is None:
+                continue  # pragma: no mutate — unreached: every expression the parser builds has a span, so no completed arm holds one without (run 0 times over 33 test files: those that import this module bar the mutation lane's own, and `tests/test_checker*.py` and `tests/test_typed*.py`)
+            if (self.expr_semantic_types is not None
+                    and key in self.expr_semantic_types):
+                done = substitute(self.expr_semantic_types[key], sigma)
+                self.expr_semantic_types[key] = done
+                if self.expr_types is not None:
+                    self.expr_types[key] = pretty_type(done)
 
     def _join_either(self, ty: Type, onto: Type) -> Type | None:
         """The structure of a value join of an arm of *ty* with what the
@@ -631,21 +689,18 @@ class ControlFlowMixin:
                 cast(Type,  # pragma: no mutate — equivalent: `cast` returns its argument; the type it names is read by mypy alone
                      self._join(then_ty, else_ty)), branches)
 
-        # Re-synthesis: a branch with an unresolved type variable is
-        # synthesized again with the other branch's type expected, so a
-        # constructor takes from it the type arguments it cannot fix
-        # itself, and the two are joined.  The join also fills what
-        # re-synthesis does not reach (a `None` inside a `Tuple`), and
-        # joins two branches that both leave a position open; branches of
-        # two types no position reconciles are refused.
+        # Each branch was synthesized once, against the `if`'s own
+        # `expected`, never against its sibling's type (#1866).  Where one
+        # branch leaves a position open and the other none, the open one's
+        # type is joined onto the closed one's, which gives each open
+        # position its type (that one order alone is asked, #1918);
+        # otherwise the join is asked in both orders.  `_complete_arms`
+        # then writes what the join gave into each branch's recorded
+        # types; branches of two types no position reconciles are refused.
         joined: Type | None
         if contains_typevar(then_ty) and not contains_typevar(else_ty):
-            then_ty = self._synth_against(
-                expr.then_branch, else_ty) or then_ty
             joined = self._join(then_ty, else_ty)
         elif contains_typevar(else_ty) and not contains_typevar(then_ty):
-            else_ty = self._synth_against(
-                expr.else_branch, then_ty) or else_ty
             joined = self._join(else_ty, then_ty)
         else:
             outcome = self._join_parts(else_ty, then_ty)
@@ -656,6 +711,8 @@ class ControlFlowMixin:
                 # then branch, as two open branches always gave.
                 joined = then_ty
         if joined is not None:
+            self._complete_arms([(expr.then_branch, then_ty),
+                                 (expr.else_branch, else_ty)], joined)
             return self._value_join(joined, [(expr.then_branch, then_ty),
                                              (expr.else_branch, else_ty)])
 
@@ -720,12 +777,6 @@ class ControlFlowMixin:
             elif types_equal(result_type, NEVER):
                 result_type = arm_ty
             elif not types_equal(arm_ty, NEVER):
-                # Re-synthesis fallback for unresolved TypeVars
-                if contains_typevar(arm_ty) and not contains_typevar(result_type):
-                    arm_ty = self._synth_against(arm.body, result_type)
-                    if arm_ty is None or isinstance(arm_ty, UnknownType):
-                        continue
-
                 # The arms so far and this one have the type they have
                 # together (`_join`, #1668).  Where the arms so far leave a
                 # position open and this arm leaves none, it is this arm's
@@ -771,6 +822,7 @@ class ControlFlowMixin:
                                        after_error=after_error)
         if result_type is None:
             return UnknownType()
+        self._complete_arms(arm_types, result_type)
         return self._value_join(result_type, arm_types)
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:

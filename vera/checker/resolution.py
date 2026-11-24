@@ -67,21 +67,6 @@ def same_type_and_facts(a: Type, b: Type) -> bool:
     return types_equal(a, b) and a == b
 
 
-def _part_of(ty: Type, whole: Type) -> bool:
-    """Whether *ty* is *whole* or one of its type arguments' parts, the same
-    object: the type a constructor's field, a tuple's component or an
-    array's element is synthesized against is that part of the type its
-    branch is expected at.  No synthesis hands a part of a function type
-    down as an expected type (a closure's body meets its own written
-    return type), so a function type's parameters are not searched."""
-    if ty is whole:
-        return True
-    whole = base_type(whole)
-    if isinstance(whole, AdtType):
-        return any(_part_of(ty, a) for a in whole.type_args)
-    return False
-
-
 def _bound_parts(pattern: Type, concrete: Type, expr: ast.Expr | None,
                  met: dict[str, list[tuple[ast.Expr | None, Type]]],
                  *, into_functions: bool = False) -> None:
@@ -1324,10 +1309,9 @@ class ResolutionMixin:
         """Each type variable of a call's *result_type* the type the result
         is expected at gives a type with no open part (#1684): no variable
         a call left open, no literal's hole and no unknown."""
-        if (expected is None or result_type is None
-                or is_unknown_like(expected)
-                or contains_fresh_typevar(expected)
-                or any(_part_of(expected, s) for s in self._sibling_types)):
+        if expected is None or result_type is None:  # pragma: no mutate — equivalent as to `or` and `and`: with one side None the unification binds a variable to None at most, which the one caller (`_infer_type_args_in_context`) reads as no binding
+            return {}
+        if is_unknown_like(expected) or contains_fresh_typevar(expected):  # pragma: no mutate — equivalent: the bindings below keep none at an open or unknown type, and the call's arguments fix the rest alike (the guard decided 41 calls over the instruments, the checker's and typed program's tests and the corpus; 0 verdicts, instances or recorded types move over the conformance programs and examples without it)
             return {}
         taken: dict[str, Type] = {}
         self._unify_for_inference(result_type, expected, taken)

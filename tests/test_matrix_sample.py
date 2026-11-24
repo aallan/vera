@@ -728,6 +728,7 @@ MARKED_FILES = (
     "test_secret_redaction_1854.py",
     "test_self_qualified_calls_1558.py",
     "test_short_circuit_1501.py",
+    "test_sibling_provenance_1866.py",
     "test_source_boundary_chars_1790.py",
     "test_source_encoding_1728_1666.py",
     "test_tail_call_guards_1849.py",
