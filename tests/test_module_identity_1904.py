@@ -609,7 +609,7 @@ def test_e015s_fix_says_when_no_path_reaches_it_from_both(tmp_path: pathlib.Path
     if entry is None:
         pytest.skip("this filesystem cannot make a hard link")
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
-    assert "reaches it from both files by the lookup of spec section 8.6.1" in d["fix"]
+    assert "nor its path from the project root, written in both files" in d["fix"]
     assert "`import" not in d["fix"], d["fix"]
 
 
@@ -658,8 +658,8 @@ def test_e014s_fix_names_the_first_free_path(tmp_path: pathlib.Path) -> None:
     `lib.vera` to `lib2.vera`, the first suffix no file and no module takes."""
     (d,) = refusals(check_json(_issue_tree(tmp_path, a_mid_first=True)))
     assert d["fix"].startswith(
-        "Give one of the two modules another path. Rename `lib.vera` to "
-        "`lib2.vera` and write `import lib2` here in place of `import lib`;"), d["fix"]
+        "Give one of the two modules another path: rename `lib.vera` to "
+        "`lib2.vera` and write `import lib2` here in place of `import lib`."), d["fix"]
 
 
 @pytest.mark.parametrize(("taken", "expected"), [(range(2, 99), "lib99"),
@@ -695,8 +695,8 @@ def test_e014s_fix_offers_no_rename_when_every_name_is_taken(
         write(tmp_path, f"lib{n}.vera", fn("word", "0"))
     occupant = write(tmp_path, "lib_renamed.vera", fn("word", "77"))
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E014"]
-    assert "is free beside `lib.vera`" in d["fix"], d["fix"]
-    assert "`import" not in d["fix"] and ".vera` to `" not in d["fix"], d["fix"]
+    assert "No rename of `lib.vera` to `lib2` through `lib99`" in d["fix"], d["fix"]
+    assert "write `" not in d["fix"], d["fix"]
     assert occupant.read_text(encoding="utf-8") == fn("word", "77")
 
 
@@ -947,9 +947,9 @@ def test_e014s_fix_renames_the_link_the_lookup_found(
     (d,) = refusals(check_json(entry))
     assert "as 'a/lib.vera'" in d["description"] and "shared" not in d["description"], d
     if link_first:
-        assert "or rename `a/lib.vera` and change the import of it in 'a/mid.vera'" in d["fix"], d
+        assert "rename `lib.vera` to `lib2.vera` and write `import lib2` here" in d["fix"], d
     else:
-        assert "Rename `a/lib.vera` to `a/lib2.vera` and write `import lib2` here" in d["fix"], d
+        assert "rename `a/lib.vera` to `a/lib2.vera` and write `import lib2` here" in d["fix"], d
     _apply_e014(d, tmp_path)
     assert check_json(entry) == []
     assert pipeline.cli("run", entry).stdout.strip() == "12"
@@ -993,7 +993,7 @@ def test_e014s_fix_skips_a_name_a_broken_link_takes(tmp_path: pathlib.Path) -> N
     except (OSError, NotImplementedError):
         pytest.skip("this platform or account cannot make a symbolic link")
     (d,) = refusals(check_json(entry))
-    assert "Rename `lib.vera` to `lib3.vera` and write `import lib3` here" in d["fix"], d
+    assert "rename `lib.vera` to `lib3.vera` and write `import lib3` here" in d["fix"], d
 
 
 def test_a_refusal_applies_to_the_document_however_its_name_is_spelled(
@@ -1017,3 +1017,233 @@ def test_a_refusal_applies_to_the_document_however_its_name_is_spelled(
     codes = [d.error_code for d in typecheck(program, source, file="./main.vera",
                                               resolved_modules=resolved)]
     assert codes == ["E200"], codes
+
+
+# --- review round 2: every repair, applied as written --------------------
+#
+# A repair is composed after resolution and offered only when the program,
+# with the repair applied to its lookups, has every import finding its one
+# file.  Each shape below has broken a repair before; each is applied
+# exactly as the fix says: the program then checks clean and runs, and no
+# file changes but the ones the fix names.
+
+def _snapshot(root: pathlib.Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob("*.vera")) if p.is_file()}
+
+
+def _apply_fix(diag: dict, root: pathlib.Path) -> set[str]:
+    """Apply *diag*'s fix as written; return the files it names."""
+    fix = diag["fix"]
+    here = pathlib.Path(diag["location"]["file"]).resolve()
+    named: set[str] = set()
+
+    def edit(target: pathlib.Path, new: str, old: str) -> None:
+        text = target.read_text(encoding="utf-8")
+        pattern = re.escape(old) + (r"(?=[(;])" if old.startswith("import ") else
+                                    r"(?=\()" if "::" in old else "")
+        assert re.search(pattern, text), (target, old)
+        target.write_text(re.sub(pattern, new.replace("\\", "\\\\"), text), encoding="utf-8")
+        named.add(target.resolve().relative_to(root.resolve()).as_posix())
+
+    m = re.search(r"[Rr]ename `([^`]+)` to `([^`]+)`", fix)
+    if m:
+        (root / m.group(1)).rename(root / m.group(2))
+        named.update({m.group(1), m.group(2)})
+    for new, where, old in re.findall(
+            r"write `([^`]+)` (here|in '[^']+') in place of `([^`]+)`", fix):
+        edit(here if where == "here" else root / where[4:-1], new, old)
+    m = re.search(r"`import ([^`]+)` here in place of `import [^`]+` and in '([^']+)' "
+                  r"in place of `([^`]+)`", fix)
+    if m:
+        edit(root / m.group(2), f"import {m.group(1)}", m.group(3))
+    m = re.search(r"In `([^`]+)`, write (.*)\.$", fix)
+    if m:
+        for new, old in re.findall(r"`([^`]+)` in place of `([^`]+)`", m.group(2)):
+            edit(root / m.group(1), new, old)
+    return named
+
+
+def _shape_later_binding(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """`main` imports `a.mid`, `lib`, then `b.mid`, which binds `lib2` to
+    `b/lib2.vera` after the conflict is met: `lib2` is not free."""
+    _issue_tree_files(r)
+    write(r, "b/lib2.vera", fn("w3", "3"))
+    write(r, "b/mid.vera", "import lib2(w3);\n\n" + fn("wb", "w3(())"))
+    return write(r, "main.vera", "import a.mid(w2);\nimport lib(word);\nimport b.mid(wb);\n\n"
+                 + main_fn(["word(())", "w2(())", "wb(())"])), "123"
+
+
+def _issue_tree_files(r: pathlib.Path) -> None:
+    write(r, "lib.vera", "module lib;\n\n" + fn("word", "1"))
+    write(r, "a/lib.vera", "module lib;\n\n" + fn("word", "2"))
+    write(r, "a/mid.vera", "module a.mid;\n\nimport lib(word);\n\n" + fn("w2", "word(())"))
+
+
+def _shape_issue(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    return _issue_tree(r, a_mid_first=True), "12"
+
+
+def _shape_own_path(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """The renamed file declares `module lib;` and calls `lib::helper` on
+    itself: the repair renames the declaration and the call with it."""
+    write(r, "lib.vera", "module lib;\n\n" + fn("helper", "1") + "\n" + fn("word", "lib::helper(())"))
+    write(r, "a/lib.vera", "module lib;\n\n" + fn("word", "2"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import a.mid(w2);\nimport lib(word);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "12"
+
+
+def _shape_fallback(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    entry = _issue_tree(r, a_mid_first=True)
+    for n in range(2, 100):
+        write(r, f"lib{n}.vera", fn("word", "0"))
+    return entry, "12"
+
+
+def _shape_none_free(r: pathlib.Path) -> tuple[pathlib.Path, str | None]:
+    entry, _ = _shape_fallback(r)
+    write(r, "lib_renamed.vera", fn("word", "77"))
+    return entry, None
+
+
+def _shape_link(r: pathlib.Path, link_first: bool) -> tuple[pathlib.Path, str] | None:
+    target = write(r, "shared/lib.vera", fn("word", "2"))
+    (r / "a").mkdir(parents=True)
+    try:
+        os.symlink(target, r / "a" / "lib.vera")
+    except (OSError, NotImplementedError):
+        return None
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    lines = ["import lib(word);", "import a.mid(w2);"]
+    if link_first:
+        lines.reverse()
+    return write(r, "main.vera", "\n".join(lines) + "\n\n"
+                 + main_fn(["word(())", "w2(())"])), "12"
+
+
+def _shape_hard_link(r: pathlib.Path) -> tuple[pathlib.Path, str] | None:
+    entry = _linked_pair(r, shadow=False)
+    return None if entry is None else (entry, "22")
+
+
+def _shape_bound_shared_path(r: pathlib.Path) -> tuple[pathlib.Path, str | None] | None:
+    """`c/r.vera` binds `y.z` to `c/y/z.vera` first; then `x/p.vera` and
+    `y/q.vera` import one hard-linked file as `lib` and `z`.  `y.z` would
+    reach the file from both, but names another file in the program: no
+    import repairs it."""
+    target = write(r, "x/lib.vera", fn("word", "2"))
+    (r / "y").mkdir(parents=True)
+    try:
+        os.link(target, r / "y" / "z.vera")
+    except (OSError, NotImplementedError):
+        return None
+    write(r, "c/y/z.vera", fn("w7", "7"))
+    write(r, "c/r.vera", "import y.z(w7);\n\n" + fn("wr", "w7(())"))
+    write(r, "x/p.vera", "import lib(word);\n\n" + fn("wp", "word(())"))
+    write(r, "y/q.vera", "import z(word);\n\n" + fn("wq", "word(())"))
+    return write(r, "main.vera", "import c.r(wr);\nimport x.p(wp);\nimport y.q(wq);\n\n"
+                 + main_fn(["wr(())", "wp(())", "wq(())"])), None
+
+
+def _shape_e015_here(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import a.lib(word);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "22"
+
+
+def _shape_e015_there(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import a.mid(w2);\nimport a.lib(word);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "22"
+
+
+REPAIR_SHAPES = {
+    "issue": _shape_issue,
+    "later_binding": _shape_later_binding,
+    "own_path": _shape_own_path,
+    "fallback": _shape_fallback,
+    "none_free": _shape_none_free,
+    "link_meets": lambda r: _shape_link(r, link_first=False),
+    "link_bound": lambda r: _shape_link(r, link_first=True),
+    "hard_link_root_path": _shape_hard_link,
+    "bound_shared_path": _shape_bound_shared_path,
+    "e015_this_import": _shape_e015_here,
+    "e015_other_import": _shape_e015_there,
+}
+
+
+@pytest.mark.parametrize("shape", list(REPAIR_SHAPES))
+def test_every_repair_applied_as_written_clears(tmp_path: pathlib.Path, shape: str) -> None:
+    built = REPAIR_SHAPES[shape](tmp_path)
+    if built is None:
+        pytest.skip("this platform or account cannot make the link")
+    entry, value = built
+    (d,) = refusals(check_json(entry))
+    before = _snapshot(tmp_path)
+    if value is None:
+        assert "write `" not in d["fix"], d["fix"]
+        assert not re.search(r"rename `[^`]+` to `", d["fix"]), d["fix"]
+        assert _snapshot(tmp_path) == before
+        return
+    named = _apply_fix(d, tmp_path)
+    assert check_json(entry) == [], d["fix"]
+    assert pipeline.cli("run", entry).stdout.strip() == value
+    after = _snapshot(tmp_path)
+    changed = {f for f in before.keys() | after.keys() if before.get(f) != after.get(f)}
+    assert changed <= named, (changed, named, d["fix"])
+
+
+def _offers_nothing(diag: dict) -> bool:
+    return "write `" not in diag["fix"] and not re.search(r"rename `[^`]+` to `", diag["fix"])
+
+
+def test_a_rename_that_strands_another_import_is_not_offered(tmp_path: pathlib.Path) -> None:
+    """`x/q.vera`'s `lib` finds `x/lib.vera`, which `main.vera` also
+    imports, as `x.lib`.  Renaming `x/lib.vera` would leave `main.vera`'s
+    import finding no file, so no rename is offered."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "x/lib.vera", fn("wx", "2"))
+    write(tmp_path, "x/q.vera", "import lib(wx);\n\n" + fn("wq", "wx(())"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\nimport x.lib(wx);\nimport x.q(wq);\n\n"
+                  + main_fn(["word(())", "wx(())", "wq(())"]))
+    (d,) = refusals(check_json(entry))
+    assert d["error_code"] == "E014" and _offers_nothing(d), d["fix"]
+
+
+def test_a_repair_that_leaves_a_third_file_under_the_path_is_not_offered(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Three files under `lib`: renaming one of the two refused ones leaves
+    the path naming two files still, so neither E014 offers it."""
+    for n, d in enumerate("xyz", start=1):
+        write(tmp_path, f"{d}/lib.vera", fn("word", str(n)))
+        write(tmp_path, f"{d}/p.vera", "import lib(word);\n\n" + fn(f"w{d}", "word(())"))
+    entry = write(tmp_path, "main.vera", "import x.p(wx);\nimport y.p(wy);\nimport z.p(wz);\n\n"
+                  + main_fn(["wx(())", "wy(())", "wz(())"]))
+    found = refusals(check_json(entry))
+    assert [d["error_code"] for d in found] == ["E014", "E014"], found
+    assert all(_offers_nothing(d) for d in found), [d["fix"] for d in found]
+
+
+def test_a_repair_that_leaves_a_third_path_to_the_file_is_not_offered(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`a/lib.vera` imported as `a.lib`, as `lib`, and, through a hard link
+    at the root, as `alias`: one import changed leaves the file under two
+    paths still, so neither E015 offers it."""
+    target = write(tmp_path, "a/lib.vera", fn("word", "2"))
+    try:
+        os.link(target, tmp_path / "alias.vera")
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem cannot make a hard link")
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    write(tmp_path, "c/r.vera", "import alias(word);\n\n" + fn("w3", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.lib(word);\nimport a.mid(w2);\nimport c.r(w3);\n\n"
+                  + main_fn(["word(())", "w2(())", "w3(())"]))
+    found = refusals(check_json(entry))
+    assert [d["error_code"] for d in found] == ["E015", "E015"], found
+    assert all(_offers_nothing(d) for d in found), [d["fix"] for d in found]
