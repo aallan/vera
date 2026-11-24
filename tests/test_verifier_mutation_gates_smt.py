@@ -1061,7 +1061,7 @@ private fn bool_t_s387(@Bool -> @Int)
     def test_bool_pattern_false_arm_violates_with_ce(self) -> None:
         """The mirror: in the FALSE arm, ``needs_true(b)`` is unsatisfiable
         because the path condition is ``b == false`` → E501 with CE
-        ``@Bool.0 = False``.  If ``_pattern_condition`` mutated the BoolPattern
+        ``@Bool.0 = false``.  If ``_pattern_condition`` mutated the BoolPattern
         value (or used the wrong recognizer) the two arms would swap verdicts."""
         result = _verify(self._NEEDS_TRUE + """
 private fn bool_f_s387(@Bool -> @Int)
@@ -1071,7 +1071,7 @@ private fn bool_f_s387(@Bool -> @Int)
         o = self._by_fn_kind(result, "bool_f_s387", "call_pre")
         assert o.status == "violated", o.status
         assert o.error_code == "E501", o.error_code
-        assert o.counterexample == {"@Bool.0": "False", "@result": "0"}, o.counterexample
+        assert o.counterexample == {"@Bool.0": "false", "@result": "0"}, o.counterexample
 
     def test_int_pattern_arm_narrows_scrutinee(self) -> None:
         """In ``match n { 5 -> needs_ge3(n), _ -> 0 }`` the literal arm's path

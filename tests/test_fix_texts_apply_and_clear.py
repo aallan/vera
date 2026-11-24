@@ -957,7 +957,10 @@ def test_a_projected_refinement_binding_shows_its_counterexample() -> None:
     out."""
     code, stage, source, _ = WHOLE["E505-projected-clause"]
     description = _the(code, stage, source).description
-    assert "\n  Counterexample:\n      @Bool.0 = True\n" in description, (
+    # The destructure binds `@Bool` again, so the header says whose names
+    # the block lists (#1871).
+    assert ("\n  Counterexample (the function's inputs, as its signature "
+            "names them):\n      @Bool.0 = true\n") in description, (
         description)
 
 
