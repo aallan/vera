@@ -78,6 +78,41 @@ class OperatorsMixin:
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
         """Translate binary operators to WAT."""
+        # #1870: an operand with no WebAssembly value is ruled on first,
+        # before any dispatch by the operands' type (the `@Nat` subtraction
+        # guard, the `@Byte` lowering, the arithmetic and comparison
+        # tables), so no dispatch below can take one.
+        #
+        # An operand of type `Never` needs no rule: its code ends where
+        # control stops (`WasmContext._end_never`), so whatever follows it
+        # validates and is never reached.  The checker admits one on the
+        # right of `==` and `!=` (and on either side of `&&`, `||` and
+        # `==>`, whose lowering reads no width); there it reads as the
+        # left operand does, which picks a width for the operator's code,
+        # never reached, and repairs nothing.
+        lnothing = self._holds_nothing(expr.left)
+        right_never = self._holds_nothing(expr.right) == "never"
+        rnothing = lnothing if right_never else self._holds_nothing(expr.right)  # pragma: no mutate — equivalent: the value is read only where the left holds a `Unit`, and the checker gives a comparison two operands of one type (measured: of 2,507 binary lowerings, in both instruments at --matrix=full and every corpus program, 28 had operands that differ in what they hold, each a `Never` left of `&&`, `||` or `==>`)
+        if (lnothing == "unit"  # pragma: no mutate — equivalent: a zero-size operand beside one that has a value is refused at check (E140, E142, E143, E144, E145)
+                and rnothing == "unit"):
+            # Two values of a type with no WebAssembly value (`Unit`, a
+            # `Future` of one, a refinement of one) are equal, since the
+            # type has one value (spec §9.8.1 lists `Unit` as `Eq`).  Both
+            # operands are evaluated, in order, for their effects; they push
+            # nothing, and the comparison is the constant.  The checker
+            # refuses every other operator on them (E140, E143), so only
+            # `==` and `!=` reach here.
+            if expr.op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
+                raise CodegenInvariantError(
+                    "an operator other than == and != over two values of a "
+                    "type with no WebAssembly value reached code generation",
+                    expr)
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+            if left is None or right is None:  # pragma: no mutate — equivalent: an operand gives None only through the [E615] channel, which no program reaches (the return below is not covered)
+                return None  # pragma: no cover — the [E615] channel
+            const = 1 if expr.op == ast.BinOp.EQ else 0
+            return left + right + [f"i32.const {const}"]
         # @Nat subtraction underflow guard (#520) — mirrors the static
         # obligation emitted in vera/verifier.py.  When both operands are
         # @Nat, emit a runtime check that traps on underflow.  Programs that
@@ -193,8 +228,10 @@ class OperatorsMixin:
 
         # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
-            rtype = self._expr_width(expr.right)
-            if ltype == "f64" or rtype == "f64":
+            # A `Never` right operand reads as the left (see the top of
+            # this function): a width for code never reached.
+            rtype = ltype if right_never else self._expr_width(expr.right)  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so a right operand that is not `Never` reads as the left does (measured: of 1,324 comparisons dispatched by width, in both instruments at --matrix=full and every corpus program, none had operands of two widths)
+            if ltype == "f64" or rtype == "f64":  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so a right operand that is not `Never` reads as the left does (measured: of 1,324 comparisons dispatched by width, in both instruments at --matrix=full and every corpus program, none had operands of two widths)
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison
             if (ltype == "i32_pair" and rtype == "i32_pair"
@@ -255,6 +292,16 @@ class OperatorsMixin:
                 # Bool operands — use i32 comparison (signed)
                 i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                 return left + right + [i32_op]
+            # #1870: the i64 table takes two i64 operands and nothing else.
+            # It was the default for any width the cases above do not name,
+            # which gave two `Unit` operands an `i64.eq` over an empty stack
+            # and a module that does not load.  Any other pair is a lowering
+            # this dispatch has no rule for, and fails here rather than in
+            # the engine.
+            if ltype != "i64" or rtype != "i64":  # pragma: no mutate — equivalent: the checker gives a comparison two operands of one type, so one side is `i64` only where both are (a `Never` right reads as the left)
+                raise CodegenInvariantError(
+                    f"a comparison of a {ltype or 'width-less'} operand with "
+                    f"a {rtype or 'width-less'} one has no lowering", expr)
             return left + right + [self._CMP_OPS[op]]
 
         # Boolean: short-circuit (§4.6).  The right operand is evaluated only
@@ -1432,7 +1479,11 @@ class OperatorsMixin:
                 vera_type = self._interp_resolved_type_name(
                     self._type_name_of(p),
                 )
-                if vera_type == "String":
+                if vera_type == "String" or self._holds_nothing(p) == "never":
+                    # A `Never` part (#1870) is concatenated as a `String`
+                    # would be: its code ends where control stops
+                    # (`WasmContext._end_never`), so the concatenation is
+                    # never reached, and the reading repairs nothing.
                     parts.append(p)
                 elif vera_type in self._INTERP_TO_STRING:
                     # Wrap with the appropriate to_string call, which stands

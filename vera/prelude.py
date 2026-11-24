@@ -748,6 +748,37 @@ def _parse_source(source: str) -> ast.Program:
 # Public API
 # =====================================================================
 
+#: The prefix the prelude's generic combinators give each type variable, so
+#: that a user's own `T` never meets one (`VeraT` is the registry's `T`).
+_PRELUDE_TYPEVAR_PREFIX = "Vera"
+
+
+@functools.lru_cache(maxsize=1)
+def prelude_forall_vars_read() -> Mapping[str, frozenset[str]]:
+    """Which type variables each generic prelude combinator reads, by name,
+    in the registry's spelling (``option_unwrap_or`` reads ``T``) (#1870).
+
+    A built-in whose lowering is the prelude's Vera body reads its type
+    variables there, and the E206 judgment (a generic instantiated at a
+    zero-size type where its body reads the variable) asks which it reads.
+    The answer is the one a declaration gets
+    (``vera.registration._forall_vars_read``), over the prelude's own
+    declaration, so the two cannot disagree.  Cached: the blocks are
+    constants.
+    """
+    from vera.registration import _forall_vars_read
+
+    read: dict[str, frozenset[str]] = {}
+    for block in (_OPTION_COMBINATORS, _RESULT_COMBINATORS):
+        for tld in _parse_source(block).declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+                read[decl.name] = frozenset(
+                    v.removeprefix(_PRELUDE_TYPEVAR_PREFIX)
+                    for v in _forall_vars_read(decl))
+    return MappingProxyType(read)
+
+
 @functools.lru_cache(maxsize=1)
 def prelude_data_decls() -> Mapping[str, ast.DataDecl]:
     """The prelude's own ``data`` declarations, by name (#1277).

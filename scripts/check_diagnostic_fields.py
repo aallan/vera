@@ -1132,6 +1132,12 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
         ("vera/typed.py", "_diagnostic"),
     }),
+    # A read of a zero-size value: a slot reference and a postcondition's
+    # result reference (#1870).
+    "E182": frozenset({
+        ("vera/checker/expressions.py", "ExpressionsMixin._check_slot_ref"),
+        ("vera/checker/expressions.py", "ExpressionsMixin._check_result_ref"),
+    }),
     # Integer-literal range: a generic helper forwarding a caller-supplied
     # description, and the negation special case coded the same way.
     "E149": frozenset({
