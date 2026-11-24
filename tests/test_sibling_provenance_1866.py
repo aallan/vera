@@ -1364,17 +1364,32 @@ def test_fresh_typevar_origin_names_a_minted_variable_alone() -> None:
 #: with an input on which its answer turns on that reading: a declared
 #: `T` the function holds rigid, which is no minted variable.
 _MINTED_READERS = {
-    "control._holds_variable": (
-        lambda: control_mod._holds_variable(TypeVar("T"), {"T"}), True),
     "control._holds_open": (
         lambda: control_mod._holds_open(TypeVar("T"), {"T"}), False),
-    "control._rigid_named": (
-        lambda: control_mod._rigid_named(
-            AdtType("Option", (TypeVar("T"),)), {"T"}), ["T"]),
-    "types.read_open_as_unknown": (
-        lambda: read_open_as_unknown(TypeVar("T"), {"T"}, lambda _: ()),
-        TypeVar("T")),
 }
+
+
+def test_repro_a_minted_variable_is_no_rigid_one_by_its_name_alone() -> None:
+    """`_holds_variable`, `_rigid_named` and `read_open_as_unknown` read a
+    variable as the enclosing function's by its name being in *rigid*,
+    with no test of whether a call minted it: a minted name holds a `$`,
+    which a declared one cannot, so `T$3`, minted for `T`, is no rigid
+    variable though its origin `T` is in *rigid*, and is read as open,
+    while the declared `T` is held, named and kept."""
+    minted, own, rigid = TypeVar("T$3"), TypeVar("T"), {"T"}
+    assert fresh_typevar_origin(minted) in rigid
+    assert control_mod._holds_variable(minted, rigid) is False
+    assert control_mod._holds_variable(
+        AdtType("Option", (minted,)), rigid) is False
+    assert control_mod._rigid_named(
+        AdtType("Tuple", (minted, minted)), rigid) == []
+    assert isinstance(read_open_as_unknown(minted, rigid, lambda _: ()),
+                      types_mod.UnknownType)
+    assert control_mod._holds_variable(own, rigid) is True
+    assert control_mod._rigid_named(
+        AdtType("Tuple", (own, minted, own)), rigid) == ["T"]
+    assert read_open_as_unknown(own, rigid, lambda _: ()) == own
+    assert control_mod._holds_variable(TypeVar("U"), rigid) is False
 
 
 @pytest.mark.parametrize("site", list(_MINTED_READERS))

@@ -66,9 +66,11 @@ from vera.types import (
 
 def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
     """Whether one of the enclosing function's own type variables
-    (*rigid*) stands anywhere in *ty*."""
+    (*rigid*) stands anywhere in *ty*.  A variable is one of them where its
+    name is in *rigid*: a variable a call minted (`T$3`) never is, since a
+    minted name holds a `$` and a declared one cannot (`UPPER_IDENT`)."""
     if isinstance(ty, TypeVar):
-        return fresh_typevar_origin(ty) is None and ty.name in rigid  # pragma: no mutate — equivalent: *rigid* is the enclosing function's declared type parameters, whose names hold no `$` (`UPPER_IDENT`), so a name in it is never a minted one and the first conjunct never decides
+        return ty.name in rigid
     if isinstance(ty, AdtType):
         return any(_holds_variable(a, rigid) for a in ty.type_args)
     if isinstance(ty, FunctionType):
@@ -95,14 +97,14 @@ def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
 
 def _rigid_named(ty: Type, rigid: Collection[str]) -> list[str]:
     """The enclosing function's own type variables in *ty*, in the order
-    they first stand, each once."""
+    they first stand, each once; a minted variable is none of them, as in
+    `_holds_variable`."""
     names: list[str] = []
 
     def walk(t: Type) -> None:
         t = base_type(t)
         if isinstance(t, TypeVar):
-            if (fresh_typevar_origin(t) is None and t.name in rigid  # pragma: no mutate — equivalent: as in `_holds_variable`, a name in *rigid* is a declared one, never a minted one, so the first conjunct never decides
-                    and t.name not in names):
+            if t.name in rigid and t.name not in names:
                 names.append(t.name)
         elif isinstance(t, AdtType):
             for a in t.type_args:

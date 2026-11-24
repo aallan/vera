@@ -1299,9 +1299,13 @@ def read_open_as_unknown(
     behaviour was compiled at a type of its own, which no context fixes
     afterwards, so a `fn(X -> Int)` or a `Callback<X>` a call left open is
     no `fn(Int -> Int)` or `Callback<Int>`, and a binder claiming it would
-    apply the function at a type it was not compiled for."""
+    apply the function at a type it was not compiled for.
+
+    A variable is the enclosing function's where its name is in *rigid*: a
+    variable a call minted (`T$3`) never is, since a minted name holds a
+    `$` and a declared one cannot (`UPPER_IDENT`)."""
     if isinstance(ty, TypeVar):
-        if fresh_typevar_origin(ty) is None and ty.name in rigid:  # pragma: no mutate — equivalent: *rigid* is the enclosing function's declared type parameters, whose names hold no `$` (`UPPER_IDENT`), so a name in it is never a minted one and the first conjunct never decides
+        if ty.name in rigid:
             return ty
         return UnknownType()
     if isinstance(ty, AdtType):
