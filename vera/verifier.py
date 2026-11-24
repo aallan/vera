@@ -3570,15 +3570,20 @@ class ContractVerifier:
         # foreign line number with the wrong name — the join `verify --json`
         # documents, broken in the one place that synthesises a diagnostic
         # instead of re-emitting one (PR #1239 review, outside-diff).
+        # The line is quoted from the text of the file it numbers: this
+        # program's, or the module's the verifier registered under it.
+        ob_file = rep_ob.file or self.file
+        ob_source = next(
+            (self._module_sources[path]
+             for path, file in self._module_files.items()
+             if file == ob_file and path in self._module_sources),
+            self.source if ob_file == self.file else "")
         self.errors.append(Diagnostic(
             description=(
                 prefix
                 + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` is violated."
             ),
-            # No quote: aggregation runs after the declaring module's scope
-            # is left, so no buffer here is the one `rep_ob.line` numbers.
-            **locate(rep_ob.file or self.file, "", rep_ob.line,
-                     rep_ob.column),
+            **locate(ob_file, ob_source, rep_ob.line, rep_ob.column),
             rationale=(
                 "A contract obligation was neither discharged statically nor "
                 "matched a more specific diagnostic; it must still be surfaced "
