@@ -1,0 +1,25 @@
+-- Conformance: a constructor or literal pattern over a value whose type is
+-- the enclosing function's own type parameter is a checker error (Chapter 4,
+-- Section 4.9.1).  Tests: E314 — `Some(@Int)` over `@A.0` in a `forall<A>`
+-- function is refused: nothing says an `A` is an `Option`, and an instance at
+-- which the head matched would read its field at whatever type that instance
+-- gives it, a Bool as an Int at `A = Option<Bool>` (#1896).  A head over a
+-- variable a call leaves open stays accepted (`match None { ... }`).
+private forall<A> fn run(@A -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @A.0 {
+    Some(@Int) -> @Int.0 + 1,
+    _ -> 0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  run(Some(41))
+}

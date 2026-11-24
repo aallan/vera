@@ -931,9 +931,18 @@ class TypeChecker(
         is in no program as written, and the fix then names no type."""
         return written_type(ty, self.env.type_params)
 
+    def _holds_at(self, value_ty: Type, written: Type) -> bool:
+        """Whether a value of *value_ty* may be bound or passed where
+        *written* is the type: `is_subtype` in the direction the value
+        flows, each type variable a call left open read as unknown and the
+        enclosing function's own kept rigid (#1896): the `let`'s judgement,
+        which a handler clause's parameter, a `match` binder and a fit the
+        join gives are held to as well."""
+        return is_subtype(self._read_open(value_ty), self._read_open(written))
+
     def _refuse_unfit_function_value(
         self,
-        node: ast.Expr | ast.Pattern,
+        node: ast.Expr | ast.Pattern | ast.TypeExpr,
         value_ty: Type,
         position_ty: Type,
         gave: str,
@@ -958,8 +967,7 @@ class TypeChecker(
         narrowing set aside (`fits_narrowing_aside`), nothing is reported
         and False is returned, so the caller reports the flow's own
         mismatch; *own_error* False is for a caller that reports none (a
-        `match` binder, a join's arm), where E190 stands whatever the rest
-        of the pair is.
+        join's arm), where E190 stands whatever the rest of the pair is.
 
         The fix prints code in one shape alone, the wrapper around a value
         held in a slot, at the pair's root (`_eta_wrapper`): nothing of the
@@ -1017,7 +1025,9 @@ class TypeChecker(
                 call, found, i, vp, pp, gave, other)
         both_refined = (isinstance(value_part, RefinedType)
                         and isinstance(position_part, RefinedType))
-        wrapper = self._eta_wrapper(node, found.position) if root else None
+        # A clause parameter's type (#1896) holds no value: no wrapper.
+        wrapper = (self._eta_wrapper(node, found.position)
+                   if root and not isinstance(node, ast.TypeExpr) else None)
         wrap = (f"  Or wrap the value in a closure of the position's type, "
                 f"where the narrowing is a value's: `{wrapper}`."
                 if wrapper is not None else "")
@@ -1070,6 +1080,19 @@ class TypeChecker(
                        f"narrowed value both renumber the body's slot "
                        f"references of those two types: rewrite each to the "
                        f"binding it read before.{wrap}  Or {other}.")
+        if isinstance(node, ast.TypeExpr):
+            # A clause parameter's type (#1896): the value is the one the
+            # operation is performed with, at the handled effect's type,
+            # which no rewrite of a closure changes, so the parameter is
+            # what the program rewrites, and the one type that admits the
+            # value whichever of its parts are unfit is that type itself.
+            # The part reported is the reason.
+            part = (f"inside it, a function type's {where} is `{vp}`"
+                    if nested else f"its {where} is `{vp}`")
+            fix = (f"{declare[:1].upper()}{declare[1:]}, "
+                   f"`{self._shown(value_ty)}`, named by a type alias where "
+                   f"it holds a function type: {part}, where the "
+                   f"parameter's type states `{pp}`.")
         self._error(
             node,
             (f"A function value of type {self._shown(found.value)}"

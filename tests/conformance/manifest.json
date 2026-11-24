@@ -4255,5 +4255,79 @@
       "tuple",
       "check_error"
     ]
+  },
+  {
+    "id": "ch07_clause_param_type_rejected",
+    "file": "ch07_clause_param_type_rejected.vera",
+    "chapter": 7,
+    "title": "A handler clause's parameter at a type the operation's value does not fit is a checker error (#1896)",
+    "level": "check",
+    "spec_ref": "Section 7.5.1",
+    "expected_error": "E342",
+    "features": [
+      "effect_handler",
+      "exn_effect",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch04_pattern_binder_narrower_row_rejected",
+    "file": "ch04_pattern_binder_narrower_row_rejected.vera",
+    "chapter": 4,
+    "title": "A binding pattern at a function type with a narrower effect row than its value's is a checker error (#1896)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "binding_pattern",
+      "function_type",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch04_pattern_binder_type_parameter_rejected",
+    "file": "ch04_pattern_binder_type_parameter_rejected.vera",
+    "chapter": 4,
+    "title": "A binding pattern claiming a concrete type of a value typed by the function's own type parameter is a checker error (#1896)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "binding_pattern",
+      "generics",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch04_pattern_head_over_type_parameter_rejected",
+    "file": "ch04_pattern_head_over_type_parameter_rejected.vera",
+    "chapter": 4,
+    "title": "A constructor pattern over a value typed by the function's own type parameter is a checker error (#1896)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "constructor_pattern",
+      "generics",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch05_generic_argument_parameter_row_rejected",
+    "file": "ch05_generic_argument_parameter_row_rejected.vera",
+    "chapter": 5,
+    "title": "A generic call's argument whose function type takes a narrower effect row in a parameter is a checker error (#1896)",
+    "level": "check",
+    "spec_ref": "Section 5.9",
+    "expected_error": "E202",
+    "features": [
+      "generics",
+      "function_type",
+      "effects",
+      "check_error"
+    ]
   }
 ]

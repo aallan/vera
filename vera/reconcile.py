@@ -32,8 +32,8 @@ program instantiates, a function code generation dropped) is ``absent``;
 a check in code this run did not verify (a prelude body, an imported
 module's own function) is ``out_of_scope``.
 
-``state_decl`` and ``effect_bind`` are excluded (:data:`EXCLUDED_KINDS`):
-the first is violated-or-absent, the second a row no check can evaluate.
+``state_decl`` is excluded (:data:`EXCLUDED_KINDS`): it is
+violated-or-absent.
 """
 
 from __future__ import annotations
@@ -70,11 +70,8 @@ DENIES_GUARD = "tier3_unguarded"
 
 #: Obligation kinds with no guard concept, excluded from the join by name.
 #: A ``state_decl`` record is violated-or-absent (``ObligationKind``'s own
-#: comment): it is an E533 refusal, never a runtime check.  An
-#: ``effect_bind`` row (#1725, the obligation table) is a binder bound at
-#: a narrower effect row, which no runtime check can evaluate: it is
-#: disclosed, never guarded.
-EXCLUDED_KINDS: frozenset[str] = frozenset({"state_decl", "effect_bind"})
+#: comment): it is an E533 refusal, never a runtime check.
+EXCLUDED_KINDS: frozenset[str] = frozenset({"state_decl"})
 
 
 def _emitters_by_kind() -> dict[str, frozenset[str]]:

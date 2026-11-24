@@ -1,0 +1,24 @@
+-- Conformance: inside a generic function its own type parameter stands for
+-- every type its calls give it, so a binding pattern cannot claim a value of
+-- that type has a concrete one (Chapter 4, Section 4.9.1).  Tests: E314 —
+-- `@Option<Int>` over an `Option<T>` scrutinee is refused, as
+-- `let @Option<Int> = @Option<T>.0;` is (E170): at `T = String` the arm would
+-- read a String as an Int (#1896).  A variable a call leaves open stays
+-- accepted: `match None { Some(@Int) -> ... }` (see ch09_prelude).
+private forall<T> fn run(@Option<T> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<T>.0 {
+    @Option<Int> -> option_unwrap_or(@Option<Int>.0, 0) + 1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  run(Some(41))
+}

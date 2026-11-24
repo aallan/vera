@@ -987,43 +987,62 @@ private fn broken(@Int -> @Int)
 #: (`None` with no type to take) the variable is open, as a scrutinee of it
 #: is.  A `Tuple` with no components is not judged, as a scrutinee of one
 #: is not.
+#: A head at a position whose type is the function's own type parameter
+#: is refused (#1896): nothing says a `T` is an `Option`, and the refused
+#: head takes every value for coverage, so it draws no E311 beside it.
+def _t_head(name: str) -> tuple[str, str, str]:
+    return ("E314", "error", f"Pattern '{name}' is a constructor of "
+            f"Option<T>, but the scrutinee has type T.")
+
+
+def _t_literal(text: str, ty: str) -> tuple[str, str, str]:
+    return ("E314", "error", f"Pattern literal {text} has type {ty}, but the "
+            f"scrutinee has type T.")
+
+
 OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
     "option-t-constructor-subs": (_matching(
         "Option<T>", "@Option<T>.0",
         ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"]),
-        [("E311", "error", _message("Some(_)"))]),
+        [_t_head("None"), _t_head("Some")]),
     "option-t-beside-an-error": (_matching(
         "Option<T>", "@Option<T>.0",
         ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"],
         decls=_BROKEN),
         [("E130", "error", "Cannot resolve @Int.1: only 1 Int binding(s) in "
                            "scope (valid indices: 0..0)."),
-         ("E311", "error", _message("Some(_)"))]),
+         _t_head("None"), _t_head("Some")]),
     "option-t-a-constructor-sub-alone": (_matching(
         "Option<T>", "@Option<T>.0", ["Some(None) -> 1", "None -> 0"]),
-        [("E311", "error", _message("Some(_)"))]),
+        [_t_head("None")]),
     "option-t-bool-literals": (_matching(
         "Option<T>", "@Option<T>.0",
         ["Some(true) -> 1", "Some(false) -> 2", "None -> 0"]),
-        [("E311", "error", _message("Some(_)"))]),
+        [_t_literal("true", "Bool"), _t_literal("false", "Bool")]),
     "option-t-int-literal": (_matching(
         "Option<T>", "@Option<T>.0", ["Some(3) -> 1", "None -> 0"]),
-        [("E311", "error", _message("Some(_)"))]),
+        [_t_literal("3", "Int")]),
     "option-t-wildcard-sub": (_matching(
         "Option<T>", "@Option<T>.0",
-        ["Some(None) -> 1", "Some(_) -> 2", "None -> 0"]), []),
+        ["Some(None) -> 1", "Some(_) -> 2", "None -> 0"]), [_t_head("None")]),
     "option-t-binder-sub": (_matching(
         "Option<T>", "@Option<T>.0",
-        ["Some(None) -> 1", "Some(@T) -> 2", "None -> 0"]), []),
+        ["Some(None) -> 1", "Some(@T) -> 2", "None -> 0"]), [_t_head("None")]),
+    "option-t-catch-alls": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(@T) -> 1", "None -> 0"]), []),
+    "option-t-a-constructor-missing": (_matching(
+        "Option<T>", "@Option<T>.0", ["None -> 0"]),
+        [("E311", "error", _message("Some"))]),
     "tagged-t-constructor-subs": (_matching(
         "Tagged<T>", "@Tagged<T>.0",
         ["Tag(Red, None) -> 1", "Tag(Red, Some(_)) -> 2", "Tag(Green, @T) -> 3",
          "Tag(Blue, _) -> 4", "Bare -> 0"], decls=_TAGGED),
-        [("E311", "error", _message("Tag(Red, _)"))]),
+        [_t_head("None"), _t_head("Some")]),
     "tagged-t-wildcard-sub": (_matching(
         "Tagged<T>", "@Tagged<T>.0",
         ["Tag(Red, None) -> 1", "Tag(Red, _) -> 2", "Tag(Green, @T) -> 3",
-         "Tag(Blue, _) -> 4", "Bare -> 0"], decls=_TAGGED), []),
+         "Tag(Blue, _) -> 4", "Bare -> 0"], decls=_TAGGED), [_t_head("None")]),
     "function-bool-literals": (_matching(
         "Op", "@Op.0", ["O(true) -> 1", "O(false) -> 2"],
         decls=_FUNCTION_FIELD, generic=False),
@@ -1225,16 +1244,6 @@ def test_mutant_the_missing_case_is_named_to_its_depth() -> None:
     assert _reported(pipeline.check(_program(
         WRAP, (ctor("W", ctor("Red")),), [("holds", "true")]))) == [
         ("E311", "error", _message("W(Blue)", "W(Green)"))]
-
-
-def test_mutant_a_type_parameter_position_is_open() -> None:
-    """Killed: a type parameter the function declares not judged, which
-    takes `Some(None), Some(Some(_)), None` to cover `Option<T>`, though at
-    `T = Int` `Some(5)` matches no arm and runs the last; and one read as an
-    unsettled type, which is not judged beside an earlier error."""
-    for key in ("option-t-constructor-subs", "option-t-beside-an-error"):
-        source, expected = OPEN_POSITIONS[key]
-        assert _reported(pipeline.check(source)) == expected, key
 
 
 def test_mutant_an_unsettled_position_is_not_judged_after_an_error() -> None:

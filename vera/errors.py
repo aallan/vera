@@ -1217,6 +1217,7 @@ ERROR_CODES: dict[str, str] = {
     "E339": "Handler-clause State operation code generation cannot lower",
     "E340": "Code generation cannot lower this construct",
     "E341": "Exn handler clause value incompatible with the handler's",
+    "E342": "Handler clause parameter type the operation's value does not fit",
     # E5xx — Verification
     "E500": "Postcondition verified false",
     "E501": "Call-site precondition violation",
@@ -1244,7 +1245,6 @@ ERROR_CODES: dict[str, str] = {
     "E539": "Premise set contradictory beyond the author's premises",
     "E540": "Premise satisfiability not established (Tier 1 withheld)",
     "E541": "Runtime-check claim not matched by an emitted check",
-    "E542": "Narrower effect row at a binder: not verified, no runtime check",
     "E543": "Obligation not statically verified and no runtime check can guard it",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
