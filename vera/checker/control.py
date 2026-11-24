@@ -2481,7 +2481,8 @@ class ControlFlowMixin:
             # `if`'s branches are.
             clause_type = self._synth_expr(
                 clause.body,
-                expected=expected if effect_inst.name == "Exn" else None)
+                expected=expected if effect_inst.name == "Exn" else None,  # pragma: no mutate (equivalent: a State clause's body ends in `resume(..)` (E340), typed `Unit` by its non-generic signature above, so an expected type reaches no argument and records nothing; measured, #1812)
+            )
             if effect_inst.name == "Exn" and clause_type is not None:
                 clause_types.append((clause, clause_type))
             if effect_inst.name == "State":

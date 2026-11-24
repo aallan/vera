@@ -2321,10 +2321,11 @@ class CallsMixin:
         param_types = tuple(
             substitute(p, mapping) for p in op_info.param_types)
         return_type = substitute(op_info.return_type, mapping)
-        ability = self.env.abilities.get(op_info.parent_effect)
+        # An ability operation is found in its ability's own table
+        # (`lookup_ability_op`), and its `parent_effect` names that ability.
+        ability = self.env.abilities[op_info.parent_effect]
         unfixed = frozenset(
-            v for v in (ability.type_params or () if ability else ())
-            if v not in mapping)
+            v for v in ability.type_params or () if v not in mapping)
         for i, held in enumerate(helds):
             arg_types[i] = self._settle(
                 args[i], held,

@@ -259,6 +259,42 @@ def test_repro_ability_operation_argument() -> None:
     _clean(_main("let @Bool = eq({ None }, Some(1));\n  0"))
 
 
+@pytest.mark.parametrize("call", ["eq", "compare"])
+def test_repro_an_ability_variable_no_argument_fixes_is_the_callees(
+        call: str) -> None:
+    """The ability's own variable (`A`) is the callee's, even inside a
+    function whose own variable shares its name: two indexes over empty
+    literals fix nothing, so each is refused (E164), not settled at the
+    enclosing `A` (the settle's *foreign* names the ability's unfixed
+    variables)."""
+    ability, ret = (("Eq", "@Bool") if call == "eq" else ("Ord", "@Ordering"))
+    source = _main("0", decls=(
+        f"\nprivate forall<A where {ability}<A>> fn f(@A -> {ret})\n{_SIG}{{\n"
+        f"  {call}([][0], [][0])\n}}\n"))
+    assert _codes(source) == ["E164", "E164"]
+
+
+@pytest.mark.parametrize("first", ["1", "[][0]"])
+def test_repro_an_ability_operation_with_an_extra_argument_is_e240(
+        first: str) -> None:
+    """An argument past the operation's parameters is settled against no
+    type, and the arity is refused (E240)."""
+    assert _codes(_main(f"let @Bool = eq({first}, 2, 3);\n  0")) == ["E240"]
+
+
+def test_repro_a_look_ahead_keeps_a_held_synthesis_keys() -> None:
+    """A binding pattern's look-ahead (`_pattern_binding_type`) restores
+    only the duplicate-collapse keys it added: a generic argument held and
+    settled again withdraws the keys its first synthesis added, so the
+    unreachable arm's warning (E310), raised before the look-ahead, is
+    reported once, by the second synthesis, and not collapsed away."""
+    checked = pipeline.check(_main(
+        "idg({\n    let @Int = match @Int.0 { _ -> 1, 0 -> 2 };\n"
+        "    match @Int.0 { @Int -> None }\n  })", ret="@Option<Int>"))
+    assert checked.ok, [d.format() for d in checked.errors]
+    assert [d.error_code for d in checked.warnings] == ["E310"]
+
+
 def test_repro_rule_c_beside_a_literal() -> None:
     """Rule C was skipped for a binding that held a literal hole, so
     `head_ord`'s variable fell to the default (E613)."""

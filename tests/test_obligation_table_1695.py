@@ -2329,16 +2329,21 @@ def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
 
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))
 def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
-    """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
-    clause's value is one the requirement reaches by the table's hand-down
-    alone, with no refined target at the position, so there the row is
-    left to its check, which the construction's store makes (#1836,
-    #1542)."""
-    v = _verified(_handle_program(form, "0 - 5"))
+    """Refutable: the E505 has its `violated` record, at the row, which
+    stands at the construction `Some(0 - 5)`: in the handled body and in an
+    `Exn` clause, each of which the handler hands its type (#1812), so the
+    payload is judged where it is built, as with no handler around it.
+    (Before, a clause's value took the requirement by the table's hand-down
+    alone and its row was left to its check, `E506`.)"""
+    src = _handle_program(form, "0 - 5")
+    line = next(i for i, text in enumerate(src.splitlines(), 1)
+                if "Some(0 - 5)" in text)
+    v = _verified(src)
     viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
             if o.kind == "refine_bind"]
-    want = ("violated", "E505") if form == "body" else ("tier3", "E506")
-    assert [x[:2] for x in viol] == [want], viol
+    assert viol == [("violated", "E505", line)], viol
+    assert [(d.error_code, d.location.line) for d in v.result.diagnostics
+            if d.error_code == "E505"] == [("E505", line)]
     assert _envelope_inconsistencies(v) == []
 
 
