@@ -602,6 +602,47 @@ class TestFindState:
                 _run(3, "2026-10-16T21:00:00Z")]
         assert sw.pick_state_run(runs, REPO_ID, lambda run: True) == 3
 
+    def test_repro_a_branchs_run_is_never_taken_by_the_lookup(self) -> None:
+        """#1838: a dispatched night on a branch (a redraw's proof night)
+        uploads a state of the same name; the lookup a night on main makes
+        takes only runs on main (`pick_state_run`'s `head_branch == \"main\"`,
+        beside the API's own `?branch=main`), so a branch's state never
+        enters main's chain, however new."""
+        branch = _run(9, "2026-11-25T03:00:00Z", event="workflow_dispatch")
+        branch["head_branch"] = "tooling/1838-declared-oracle"
+        runs = [branch, _run(3, "2026-11-24T21:00:00Z")]
+        assert sw.pick_state_run(runs, REPO_ID, lambda run: True) == 3
+        assert sw.pick_state_run([branch], REPO_ID, lambda run: True) is None
+
+    @pytest.mark.parametrize(("ref", "state_run", "redraw", "refused"), [
+        ("refs/heads/main", "77", "", "named state"), ("refs/heads/main", "", "3", "redraws"),
+        ("refs/heads/main", "77", "3", "named state"), ("refs/heads/main", "", "0", None),
+        ("refs/heads/main", "", "", None), ("refs/heads/tooling/x", "77", "3", None), ("", "77", "3", None)])
+    def test_repro_main_takes_no_named_state_and_no_redraw(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], ref: str, state_run: str, redraw: str,
+        refused: str | None,
+    ) -> None:
+        """#1838: a named state and a redraw are a branch's proof night; a run
+        on main is refused either before any lookup, so neither a branch's
+        state nor a redraw's enters the chain the committed score is read
+        from."""
+        why = sw.main_refusal(ref, state_run, redraw)
+        assert (why is None) == (refused is None) and (refused is None or refused in why)
+        if refused is None:
+            return
+        log = tmp_path / "gh.jsonl"
+        fake = tmp_path / "fake_gh.py"
+        fake.write_text(f"open({str(log)!r}, 'a', encoding='utf-8').write('called')\n", encoding="utf-8")
+        code = sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--ref", ref, "--run", state_run,
+                        "--redraw", redraw, "--gh", sys.executable, str(fake)])
+        assert code == 2 and capsys.readouterr().out == "" and not log.exists()
+
+    def test_the_night_names_the_run_and_branch_its_state_came_from(self) -> None:
+        assert sw.state_source("45093370659", "main") == "the state was read from run 45093370659, on branch main"
+        assert sw.state_source("77", "tooling/x") == "the state was read from run 77, on branch tooling/x"
+        assert sw.state_source("77", "a b;c") == "the state was read from run 77, on branch ?"
+        assert sw.state_source("", "main") is None and sw.state_source("7; rm", "main") is None
+
     def test_a_run_without_a_live_state_gives_way_to_the_one_before(self) -> None:
         runs = [_run(2, "2026-10-15T21:00:00Z"), _run(3, "2026-10-16T21:00:00Z")]
         assert sw.pick_state_run(runs, REPO_ID, lambda run: run != 3) == 2
@@ -642,7 +683,7 @@ class TestFindState:
         code = sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--run", "77",
                         "--gh", sys.executable, str(fake)])
         out = capsys.readouterr()
-        assert (code, out.out) == ((0, "run=77\n") if ok else (2, ""))
+        assert (code, out.out) == ((0, f"run=77\nbranch={branch or 'main'}\n") if ok else (2, ""))
         assert sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--run", "77; x",
                         "--gh", sys.executable, str(fake)]) == 2
 
@@ -660,7 +701,7 @@ class TestFindState:
             "print(json.dumps(runs if '/workflows/' in path else arts))\n", encoding="utf-8")
         assert sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID),
                         "--gh", sys.executable, str(fake)]) == 0
-        assert capsys.readouterr().out == "run=5\n"
+        assert capsys.readouterr().out == "run=5\nbranch=main\n"
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         assert calls == [
             ["api", "repos/o/r/actions/workflows/mutation-nightly.yml/runs?branch=main&status=completed&per_page=100"],
@@ -2012,10 +2053,15 @@ class TestWorkflow:
         assert inputs["state_run"]["type"] == "string" and inputs["state_run"]["default"] == ""
         (state,) = [s for s in self._steps("setup") if s.get("id") == "state"]
         assert '--run "$STATE_RUN"' in state["run"] and state["env"]["STATE_RUN"] == "${{ inputs.state_run }}"
+        assert '--ref "$REF"' in state["run"] and state["env"]["REF"] == "${{ github.ref }}"
+        assert '--redraw "$REDRAW"' in state["run"] and state["env"]["REDRAW"] == "${{ inputs.redraw }}"
+        assert self._wf()["jobs"]["setup"]["outputs"]["state-branch"] == "${{ steps.state.outputs.branch }}"
         (start,) = [s for s in self._steps("sweep") if "scripts/mutate_sweep.py start" in s.get("run", "")]
         (fold,) = [s for s in self._steps("stitch") if "scripts/mutate_sweep.py stitch" in s.get("run", "")]
         for step in (start, fold):
             assert '--redraw "$REDRAW"' in step["run"] and step["env"]["REDRAW"] == "${{ inputs.redraw || 0 }}"
+        assert '--state-from "$STATE_RUN" --state-branch "$STATE_BRANCH"' in fold["run"]
+        assert fold["env"]["STATE_BRANCH"] == "${{ needs.setup.outputs.state-branch }}"
 
     def test_a_setup_lookup_that_fails_fails_the_step(self) -> None:
         """bash with pipefail, and the command's output taken into a variable

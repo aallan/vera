@@ -78,6 +78,7 @@ jobs:
       jobs: ${{ steps.jobs.outputs.jobs }}
       slices: ${{ steps.jobs.outputs.slices }}
       state-run: ${{ steps.state.outputs.run }}
+      state-branch: ${{ steps.state.outputs.branch }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -103,16 +104,20 @@ jobs:
       # succeeded, so an API error never restarts the cycle.  A dispatch
       # may name the run instead (`state_run`, a redraw's second night on a
       # branch): it is checked as the lookup checks a run, any branch's, and
-      # one that fails the check fails the night.
+      # one that fails the check fails the night.  A run on main takes
+      # neither a named state nor a redraw: this step fails first, before any
+      # job downloads a state, so main's chain only ever holds main's states.
       - id: state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           REPO_ID: ${{ github.repository_id }}
+          REF: ${{ github.ref }}
           STATE_RUN: ${{ inputs.state_run }}
+          REDRAW: ${{ inputs.redraw }}
         run: |
-          found=$(python3 scripts/mutate_sweep.py find-state --repo "$REPO" --repo-id "$REPO_ID" --run "$STATE_RUN")
+          found=$(python3 scripts/mutate_sweep.py find-state --repo "$REPO" --repo-id "$REPO_ID" --ref "$REF" --run "$STATE_RUN" --redraw "$REDRAW")
           echo "$found" >> "$GITHUB_OUTPUT"
 
   sweep:
@@ -457,10 +462,13 @@ jobs:
           SWEEP_RESULT: ${{ needs.sweep.result }}
           MUTATION_SWEEP_GENERATION: ${{ github.run_id }}
           REDRAW: ${{ inputs.redraw || 0 }}
+          STATE_RUN: ${{ needs.setup.outputs.state-run }}
+          STATE_BRANCH: ${{ needs.setup.outputs.state-branch }}
         run: >-
           python scripts/mutate_sweep.py stitch
           --sweep-result "$SWEEP_RESULT"
           --redraw "$REDRAW"
+          --state-from "$STATE_RUN" --state-branch "$STATE_BRANCH"
           --state "$RUNNER_TEMP/state-in"
           --slices "$RUNNER_TEMP/slices"
           --of "$JOBS"

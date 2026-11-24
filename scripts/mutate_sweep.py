@@ -4391,6 +4391,15 @@ def cmd_finish(args: argparse.Namespace) -> int:
     return int(done.get("code", 2))
 
 
+def state_source(run: str, branch: str) -> str | None:
+    """The night's note naming the run whose state it read and that run's
+    branch; None for a night from no state.  Both come from the setup job's
+    outputs, so each is checked before it is written."""
+    if not _RUN_ID.fullmatch(run):
+        return None
+    return f"the state was read from run {run}, on branch {branch if _BRANCH.fullmatch(branch) else '?'}"
+
+
 def cmd_stitch(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     head = md._git(repo, "rev-parse", "--verify", "HEAD^{commit}").strip()
@@ -4412,6 +4421,9 @@ def cmd_stitch(args: argparse.Namespace) -> int:
                           units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled",
                           at_import=at_import, report=taken, oracle=md.oracle_map(repo),
                           redraw=int(args.redraw or 0))
+    source = state_source(str(args.state_from or ""), str(args.state_branch or ""))
+    if source:
+        night["notes"].append(source)  # the night's line, in the state too
     out = Path(args.out)
     save_state(state, out)
     diff = taken.pop("differential", None)
@@ -4667,14 +4679,41 @@ def _named_state_run(args: argparse.Namespace, gh: Sequence[str]) -> int:
         print(f"error: run {args.run} is not a completed run of {WORKFLOW} on this repository holding an "
               f"unexpired {STATE_ARTIFACT}", file=sys.stderr)
         return 2
+    branch = str(run.get("head_branch") or "")
     print(f"run={args.run}")
+    print(f"branch={branch if _BRANCH.fullmatch(branch) else '?'}")
     return 0
+
+
+#: The ref whose state chain the committed score is read from.
+MAIN_REF = "refs/heads/main"
+_BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,200}")
+
+
+def main_refusal(ref: str, state_run: str, redraw: str) -> str | None:
+    """Why a run on ``ref`` may not take these dispatch inputs, or None: a
+    named state (``state_run``) and a redraw are a branch's proof night, and
+    ``main`` takes neither, since the lookup carries main's state on from
+    the newest run on main, so a branch's state, or a redraw's (which closes
+    no cycle and refuses a night that is not its redraw), would become the
+    chain the committed score is read from."""
+    if ref != MAIN_REF:
+        return None
+    if state_run:
+        return "a run on main never carries on from a named state (state_run); dispatch it on a branch"
+    if redraw not in ("", "0"):
+        return "a run on main never redraws a cycle (redraw); dispatch it on a branch"
+    return None
 
 
 def cmd_find_state(args: argparse.Namespace) -> int:
     """Print ``run=<id>``: the run whose state artifact the night carries on
     from (``pick_state_run``), or ``run=`` when there is none yet."""
     gh = list(args.gh) if args.gh else ["gh"]
+    why = main_refusal(str(args.ref or ""), str(args.run or ""), str(args.redraw or ""))
+    if why is not None:
+        print(f"error: {why}", file=sys.stderr)
+        return 2
     if args.run:
         return _named_state_run(args, gh)
     runs = _gh(gh, f"repos/{args.repo}/actions/workflows/{WORKFLOW}/runs"
@@ -4690,6 +4729,7 @@ def cmd_find_state(args: argparse.Namespace) -> int:
         print("warning: no mutation-sweep-state artifact in this workflow's own runs; "
               "the night starts from no state", file=sys.stderr)
     print(f"run={run if run is not None else ''}")
+    print(f"branch={'main' if run is not None else ''}")
     return 0
 
 
@@ -4800,6 +4840,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     stitch_p.add_argument("--out", required=True, help="the directory for the new state")
     stitch_p.add_argument("--repo", default=str(ROOT), help="the repository (default: this one)")
     stitch_p.add_argument("--summary", help="append the Markdown summary here")
+    stitch_p.add_argument("--state-from", default="", help="the run whose state the night read")
+    stitch_p.add_argument("--state-branch", default="", help="that run's branch")
     stitch_p.add_argument("--redraw", type=int, default=0,
                           help="the closed cycle the night drew again (0: none)")
     stitch_p.add_argument("--sweep-result", default="",
@@ -4832,7 +4874,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     find.add_argument("--repo-id", type=int, required=True, help="the repository's numeric id")
     find.add_argument("--gh", nargs="+", help="the gh command (default: gh)")
     find.add_argument("--run", default="", help="a run named to carry on from (a dispatch's state_run): "
-                      "checked as the lookup checks a run, a branch's included")
+                      "checked as the lookup checks a run, a branch's included; refused on main")
+    find.add_argument("--ref", default="", help="the ref the run is on (github.ref): main takes no named "
+                      "state and no redraw")
+    find.add_argument("--redraw", default="", help="the dispatch's redraw input, refused on main")
     matrix = sub.add_parser("matrix", help="print the workflow's matrix outputs")
     matrix.add_argument("--event", required=True, help="the event that started the run")
     matrix.add_argument("--requested", default="", help="the dispatch's jobs input")
