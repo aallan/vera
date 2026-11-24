@@ -322,9 +322,9 @@ class ModuleResolver:
         no part of line 1, as the node's column counts it (#1790).
         """
         try:
-            source = read_source(importing_file) if node.span else ""
+            source = read_source(importing_file) if node.span else ""  # pragma: no mutate — a node with no span has no position, so nothing is quoted
         except (OSError, SourceEncodingError):
-            source = ""
+            source = ""  # pragma: no mutate — the importing file was read moments before; a read that now fails is no program's
         return locate_at(str(importing_file), source, node.span)
 
 

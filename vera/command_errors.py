@@ -19,7 +19,7 @@ command line made before any file is read has none.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from vera.errors import Diagnostic, SourceLocation, locate
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 def _at(path: str | None) -> SourceLocation:
     """The location of a refusal about *path* as a whole: no position in it."""
-    return locate(path, "")["location"]
+    return locate(path, "")["location"]  # pragma: no mutate — line 0 quotes nothing, and only the location is kept
 
 
 def runtime_trap(
@@ -39,24 +39,28 @@ def runtime_trap(
     *,
     fix: str = "",
     frames: Sequence[TrapFrame] = (),
+    sources: Mapping[str, str] | None = None,
 ) -> Diagnostic:
     """E800: the program trapped while it ran.
 
     *description* is the trap's message and *fix* its kind's paragraph,
     empty for the kinds whose message already says what to change.  The
     location is the first function of the program's own the backtrace
-    *frames* name, at the line its declaration starts on, or *path* when
-    the trap unwound through none (a trap in a runtime helper alone).
+    *frames* name, at the line its declaration starts on, quoting that
+    line from *sources* (each source text by the file a frame names: the
+    program's and each module's it imports); or *path*, with no position,
+    when the trap unwound through none (a trap in a runtime helper alone,
+    or one the classifier could not read a backtrace from).
     """
-    location = _at(path)
+    placed = locate(path, "")  # pragma: no mutate — line 0 is no position, so no line is cut from the text
     for frame in frames:
         if not frame.is_builtin and frame.line_start is not None:
-            location = locate(frame.file, "", frame.line_start, 1)[
-                "location"]
+            placed = locate(frame.file, (sources or {}).get(frame.file, ""),
+                            frame.line_start, 1)
             break
     return Diagnostic(
         description=description,
-        location=location,
+        **placed,
         rationale=(
             "The program stopped while it ran, and nothing after that point "
             "ran: a check the compiler emitted failed, WebAssembly refused an "
@@ -67,7 +71,7 @@ def runtime_trap(
         ),
         fix=fix,
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-        severity="error",
+        severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
         error_code="E800",
     )
 

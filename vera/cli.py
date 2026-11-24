@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
@@ -31,6 +31,7 @@ from vera.typed import build as build_typed
 if TYPE_CHECKING:
     from vera.ast import Program
     from vera.codegen.api import ExecuteResult
+    from vera.resolver import ResolvedModule
     from vera.tester import FunctionTestResult, TrialResult
     from vera.verifier import VerifyResult
 
@@ -326,26 +327,39 @@ def run_envelope(
     return result_dict
 
 
+def trap_sources(
+    file: str, source: str, modules: Iterable[ResolvedModule],
+) -> dict[str, str]:
+    """The source texts a trap's frames can name, by file: the program's
+    (*file*, *source*) and each of the *modules* it imports."""
+    return {file: source, **{str(m.file_path): m.source for m in modules}}
+
+
 def trap_diagnostic(
-    path: str | None, exc: WasmTrapError, *, width: int | None = None,
+    path: str | None, exc: WasmTrapError,
+    sources: Mapping[str, str] | None = None, *, width: int | None = None,
 ) -> Diagnostic:
     """E800 for a call that trapped: the trap's message and its kind's fix,
     located at the first function of the program's own its backtrace
-    names.  *width* wraps the fix, one paragraph, for a terminal (#547):
-    the text form indents it four columns, so 72 keeps it within 76."""
+    names, quoting its line from *sources* (:func:`trap_sources`).  *width*
+    wraps the fix, one paragraph, for a terminal (#547): the text form
+    indents it four columns, so 72 keeps it within 76."""
     fix = exc.fix
     if width is not None and fix:
         import textwrap
 
         fix = textwrap.fill(fix, width=width)
     return command_errors.runtime_trap(
-        path, str(exc), fix=fix, frames=exc.frames)
+        path, str(exc), fix=fix, frames=exc.frames, sources=sources)
 
 
-def trap_envelope(path: str | None, exc: WasmTrapError) -> dict[str, object]:
+def trap_envelope(
+    path: str | None, exc: WasmTrapError,
+    sources: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     """``vera run --json``'s envelope for a call that trapped, with the
     output the program wrote before the trap."""
-    diag = trap_diagnostic(path, exc).to_dict()
+    diag = trap_diagnostic(path, exc, sources).to_dict()
     # #516 Stage 1: the trap's kind, always present.
     diag["trap_kind"] = exc.kind
     # #516 Stage 2 — structured backtrace.  Always present (possibly an
@@ -731,7 +745,7 @@ def _internal_error_envelope(
             f"Internal compiler error while {doing} '{path}': "
             f"{type(exc).__name__}: {exc}"
         ),
-        **locate(path, ""),
+        **locate(path, ""),  # pragma: no mutate — line 0 is no position, so no line is cut from the text
         rationale=(
             "The compiler raised an unexpected exception. This is a bug in "
             "the compiler, not a property of the program being processed — "
@@ -742,7 +756,7 @@ def _internal_error_envelope(
             "https://github.com/aallan/vera/issues"
         ),
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-        severity="error",
+        severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
         error_code="E699",
     )
     # #1429: diagnostics the failing pass had already RECORDED come first, on
@@ -1174,6 +1188,9 @@ def cmd_run(
         print(contradiction.format(), file=sys.stderr)
         return 1
 
+    # The program's text and each module's it imports, by the file a trap's
+    # frame names, so the trap quotes the line it is placed on.
+    sources: dict[str, str] = {}
     try:
         # INSIDE the try, as in `cmd_check` (#1361 review, #1793): a
         # function-scope import that fails becomes an envelope too.
@@ -1193,6 +1210,7 @@ def cmd_run(
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
         resolved = resolver.resolve_imports(ast, p)
+        sources = trap_sources(str(p), source, resolved)
 
         # Type-check, retaining the resolved-type artifacts so the codegen
         # integer-overflow guard (#798) classifies operands in lockstep with
@@ -1479,7 +1497,7 @@ def cmd_run(
             # JSON mode: pack stdout/stderr into the envelope. Writing
             # them to sys.stdout/sys.stderr would corrupt the JSON for
             # downstream consumers parsing our output.
-            print(json.dumps(trap_envelope(path, exc), indent=2))
+            print(json.dumps(trap_envelope(path, exc, sources), indent=2))
             return 1
 
         # Text mode: surface the captured streams to the corresponding
@@ -1508,7 +1526,8 @@ def cmd_run(
         # E800, as every diagnostic prints: the trap's message, why, its
         # kind's Fix paragraph (#516 Stage 3, #547; none for the kinds
         # whose message already says what to change) and the spec section.
-        print(trap_diagnostic(path, exc, width=72).format(), file=sys.stderr)
+        print(trap_diagnostic(path, exc, sources, width=72).format(),
+              file=sys.stderr)
         # #516 Stage 2 — print the source backtrace after the diagnostic.
         # Outermost (most recent) frame first.  Built-in /
         # runtime helpers ($alloc, $gc_collect, $contract_fail) show

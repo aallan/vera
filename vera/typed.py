@@ -892,7 +892,7 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = span_text(source, call.span)
-    args: tuple[ast.Expr, ...] = getattr(call, "args", ())
+    args: tuple[ast.Expr, ...] = getattr(call, "args", ())  # pragma: no mutate — every root call holds its arguments (a spy over the typed program's tests: 0 of 54 without)
     variables = frozenset(root.decl.forall_vars or ())
     if not any(_mentions(formal, variables) for formal in root.decl.params):
         names = root.decl.forall_vars or ("T",)
@@ -928,7 +928,7 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
             continue
         example = _example(formal, variables)
         lo = _offset(source, call.span, arg.span, start=True)
-        hi = _offset(source, call.span, arg.span, start=False)
+        hi = _offset(source, call.span, arg.span, start=False)  # pragma: no mutate — start=None reads as start=False
         if example is None or lo is None or hi is None:
             return advice + ", by annotating the value it is fixed from."
         edits.append((lo, hi, example))
@@ -944,10 +944,10 @@ def _offset(source: str, base: ast.Span, span: ast.Span | None, *,
     covers (:func:`vera.errors.span_bounds`)."""
     outer = span_bounds(source, base)
     inner = span_bounds(source, span)
-    if outer is None or inner is None:
+    if outer is None or inner is None:  # pragma: no mutate — a parsed call and its argument both have bounds (line coverage: the return below never ran)
         return None
     at = (inner[0] if start else inner[1]) - outer[0]
-    return at if 0 <= at <= outer[1] - outer[0] else None
+    return at if 0 <= at <= outer[1] - outer[0] else None  # pragma: no mutate — an argument lies strictly inside its call's text (a spy: 0 of 174 at an end or outside)
 
 
 def judge(derivation: Derivation, types: Mapping[int, Type],
@@ -1060,17 +1060,17 @@ def _component_fix(node: ast.FnCall, role: str, source: str) -> str:
     written as the call with the argument replaced."""
     from vera.lowering import COLLECTION_COMPONENTS
 
-    index = next((i for r, i, arg in COLLECTION_COMPONENTS[node.name]
+    index = next((i for r, i, arg in COLLECTION_COMPONENTS[node.name]  # pragma: no mutate — every role a judgment names has a component in the table
                   if r == role and arg is None), None)
     text = span_text(source, node.span)
-    if index is None or index >= len(node.args) or text is None:
+    if index is None or index >= len(node.args) or text is None:  # pragma: no mutate — a guard no checked call reaches (line coverage: its return never ran)
         return (f"Give the collection's {role} a type it stores where the "
                 f"collection is built: a String or a number for a key or an "
                 f"element, an Option of the value for a value.")
     arg = node.args[index]
     lo = _offset(source, node.span, arg.span, start=True)  # type: ignore[arg-type]
-    hi = _offset(source, node.span, arg.span, start=False)  # type: ignore[arg-type]
-    if lo is None or hi is None:
+    hi = _offset(source, node.span, arg.span, start=False)  # type: ignore[arg-type]  # pragma: no mutate — start=None reads as start=False
+    if lo is None or hi is None:  # pragma: no mutate — a guard no checked call reaches (line coverage: its return never ran)
         return f"Give the {role} a type the collection stores."
     value = text[lo:hi]
     if role == "value":
@@ -1127,8 +1127,8 @@ def _growth_fix(growth: Growth, templates: Mapping[str, Template],
               f"in a value of a recursive data type")
     grown = {g.target[1]: g.source[1] for g in growth.grown}
     text = span_text(source, call.span)
-    args: tuple[ast.Expr, ...] = getattr(call, "args", ())
-    if text is None or call.span is None or len(args) != len(callee.params):
+    args: tuple[ast.Expr, ...] = getattr(call, "args", ())  # pragma: no mutate — every growing call holds its arguments (a spy: 0 of 14 without)
+    if text is None or call.span is None or len(args) != len(callee.params):  # pragma: no mutate — a guard no checked call reaches (line coverage: its return never ran)
         return advice + "."
     edits: list[tuple[int, int, str]] = []
     for arg, formal in zip(args, callee.params, strict=True):
@@ -1141,9 +1141,9 @@ def _growth_fix(growth: Growth, templates: Mapping[str, Template],
         inner_text = (None if inner is None
                       else span_text(source, inner.span))
         lo = _offset(source, call.span, arg.span, start=True)
-        hi = _offset(source, call.span, arg.span, start=False)
-        if inner_text is None or lo is None or hi is None:
-            return advice + "."
+        hi = _offset(source, call.span, arg.span, start=False)  # pragma: no mutate — start=None reads as start=False
+        if inner_text is None or lo is None or hi is None:  # pragma: no mutate — a guard no checked call reaches (line coverage: its return never ran)
+            return advice + "."  # pragma: no mutate — unreached: line coverage over the typed program's tests
         edits.append((lo, hi, inner_text))
     if not edits:
         return advice + "."
@@ -1183,10 +1183,11 @@ def _growth_diagnostic(growth: Growth, templates: Mapping[str, Template],
     flow = growth.flow
     callee = templates[flow.record.callee].decl
     names = _recorded_names(templates[flow.record.callee], flow.record)
-    ty = flow.record.mapping.get(names.get(flow.target[1], ""))
+    ty = flow.record.mapping.get(names.get(flow.target[1], ""))  # pragma: no mutate — the target is always a recorded name with a type (a spy: 0 of 14 without)
     text = (span_text(source, flow.call.span)  # as written, as above
-            or _bare(flow.record.callee))
-    at = "?" if ty is None else _type_text(ty)
+            or _bare(flow.record.callee)  # pragma: no mutate — a parsed call always has its text (line coverage: this never ran)
+            )
+    at = "?" if ty is None else _type_text(ty)  # pragma: no mutate — the target always has a recorded type (a spy: 0 of 14 without)
     holder = _holder(templates[flow.caller].decl, flow.call)
     return _diagnostic(
         "E139", file, source, flow.call,
@@ -1223,37 +1224,37 @@ def _diagnostic(code: str, file: str | None, source: str, node: ast.Node,
             description=description, **placed,
             rationale=_ABILITY_RATIONALE, fix=fix,
             spec_ref='Chapter 9, Section 9.8 "Abilities"',
-            severity="error", error_code="E613")
+            error_code="E613")
     if code == "E607":
         return Diagnostic(
             description=description, **placed,
             rationale=_CELL_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
-            severity="error", error_code="E607")
+            error_code="E607")
     if code == "E612":
         return Diagnostic(
             description=description, **placed,
             rationale=_PAYLOAD_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
-            severity="error", error_code="E612")
+            error_code="E612")
     if code == "E533":
         return Diagnostic(
             description=description, **placed,
             rationale=_STATE_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
-            severity="error", error_code="E533")
+            error_code="E533")
     if code == "E139":
         return Diagnostic(
             description=description, **placed,
             rationale=_GROWTH_RATIONALE, fix=fix,
             spec_ref='Chapter 11, Section 11.4.1 "Compilable Subset"',
-            severity="error", error_code="E139")
+            error_code="E139")
     assert code == "E135", code  # noqa: S101
     return Diagnostic(
         description=description, **placed,
         rationale=_COLLECTION_RATIONALE, fix=fix,
         spec_ref='Chapter 9, Section 9.4 "Built-in Collections"',
-        severity="error", error_code="E135")
+        error_code="E135")
 
 
 # =====================================================================

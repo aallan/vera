@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
@@ -156,6 +157,37 @@ def test_repro_e614_quotes_its_line(tmp_path: Path) -> None:
     entry, text, diag = _run(tmp_path, {"main.vera": source},
                              command="compile")
     _assert_placed(entry, text, diag, source, "E614")
+
+
+_BOOM = "fn boom(@Int -> @Int)\n" + _H + "  @Int.0 / 0\n}\n"
+
+
+def test_repro_e800_quotes_the_line_of_the_function_that_trapped(
+        tmp_path: Path) -> None:
+    # The trap is placed at the declaration of the first function of the
+    # program's own its backtrace names: line 9 here, not the file's first.
+    source = ("public fn main(@Unit -> @Int)\n" + _H + "  boom(7)\n}\n\n"
+              "private " + _BOOM)
+    entry, text, diag = _run(tmp_path, {"main.vera": source}, command="run")
+    _assert_placed(entry, text, diag, source, "E800")
+    assert diag["location"]["line"] == 9, diag
+    assert diag["source_line"] == "private fn boom(@Int -> @Int)", diag
+
+
+def test_repro_e800_in_an_imported_module_quotes_the_module_line(
+        tmp_path: Path) -> None:
+    lib = "module lib;\n\npublic " + _BOOM
+    main = "import lib(boom);\n\npublic fn main(@Unit -> @Int)\n" + _H + (
+        "  boom(7)\n}\n")
+    _entry, text, diag = _run(
+        tmp_path, {"lib.vera": lib, "main.vera": main}, command="run")
+    loc = diag["location"]
+    assert diag["error_code"] == "E800", diag
+    assert Path(loc["file"]).resolve() == (tmp_path / "lib.vera").resolve()
+    assert (loc["line"], loc["column"]) == (3, 1), loc
+    assert diag["source_line"] == "public fn boom(@Int -> @Int)", diag
+    block = text.split("line 3, column 1:", 1)[1].splitlines()
+    assert block[2:4] == ["    public fn boom(@Int -> @Int)", "    ^"], block
 
 
 def test_repro_a_refusal_with_no_position_names_the_file_alone(
@@ -550,6 +582,47 @@ RAISE_SHAPES: dict[str, tuple[str, bool]] = {
         "def a():\n    return b() or 'E999'\n\ndef b():\n    return a()\n"
         "\nX = a\n", True),
 }
+# What Python evaluates when a `def` runs, whether or not the function is
+# ever called: each row's answer is what running the module shows (`make`
+# runs at import, or it does not), on every Python the project supports.
+_MAKE = "def make(*a):\n    return 'E999'\n\n"
+RAISE_SHAPES.update({
+    "a positional default": (
+        _MAKE + "def unused(code=make()):\n    pass\n", True),
+    "a positional-only default": (
+        _MAKE + "def unused(code=make(), /):\n    pass\n", True),
+    "a keyword-only default": (
+        _MAKE + "def unused(*, code=make()):\n    pass\n", True),
+    "an async function's default": (
+        _MAKE + "async def unused(code=make()):\n    pass\n", True),
+    "a decorator": (_MAKE + "@make\ndef unused():\n    pass\n", True),
+    "a decorator's argument": (
+        _MAKE + "def reg(x):\n    return lambda f: f\n\n"
+        "@reg(make())\ndef unused():\n    pass\n", True),
+    "a parameter's annotation": (
+        _MAKE + "def unused(code: make()):\n    pass\n", True),
+    "a keyword-only parameter's annotation": (
+        _MAKE + "def unused(*, code: make()):\n    pass\n", True),
+    "a return annotation": (
+        _MAKE + "def unused() -> make():\n    pass\n", True),
+    "a *args and a **kwargs annotation": (
+        _MAKE + "def unused(*a: make(), **k: make()):\n    pass\n", True),
+    "an annotation the future import defers": (
+        "from __future__ import annotations\n" + _MAKE
+        + "def unused(code: make()):\n    pass\n", False),
+    "a default naming the code itself": (
+        "def unused(code='E999'):\n    pass\n", True),
+    "the body of a function with a default": (
+        _MAKE + "def unused(code=1):\n    return make()\n", False),
+    "a default of a function nested in a dead one": (
+        _MAKE + "def outer():\n    def inner(code=make()):\n        pass\n",
+        False),
+    "a decorator inside a dead function": (
+        _MAKE + "def outer():\n    @make\n    class K:\n        pass\n", False),
+})
+if sys.version_info >= (3, 12):
+    RAISE_SHAPES["a type parameter's bound, evaluated lazily"] = (
+        _MAKE + "def unused[T: make()]():\n    pass\n", False)
 
 
 @pytest.mark.parametrize("shape", sorted(RAISE_SHAPES))

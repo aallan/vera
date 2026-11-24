@@ -1090,7 +1090,10 @@ def placement_violations(paths: Iterable[Path]) -> list[Violation]:
 # (outside the registry itself and vera/_since.py) that is not dead: at
 # module scope (a table), in a method (dispatched by name, so taken as
 # live), or in a module-level function reachable from that code: one the
-# module-level code or a method names, or one a reachable function names.  Static and
+# module-level code or a method names, or one a reachable function names.
+# What Python evaluates when a function is defined (its decorators, its
+# defaults, its annotations unless the module defers them) is module-level
+# code, whether or not the function is ever called.  Static and
 # conservative: a name reached only through `getattr` is not seen, and such a
 # code would be reported.
 
@@ -1099,6 +1102,37 @@ def _rel(p: Path) -> str:
     if p.is_absolute() and p.is_relative_to(ROOT):
         return p.relative_to(ROOT).as_posix()
     return p.as_posix()
+
+
+def _owned_parts(top: ast.stmt,
+                 tree: ast.Module) -> list[tuple[ast.AST, str | None]]:
+    """*top*'s parts, each with the module-level function whose call
+    evaluates it, or None where the module's own execution does.
+
+    A function's decorators, its default values (positional and
+    keyword-only) and, in a module without `from __future__ import
+    annotations`, its annotations are evaluated when the `def` runs, at
+    module scope, whether or not the function is ever called; its body and
+    its type parameters' bounds (evaluated lazily) only when it is reached.
+    """
+    if not isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return [(top, None)]
+    args = top.args
+    at_definition: list[ast.AST] = [*top.decorator_list, *args.defaults,
+                                    *(d for d in args.kw_defaults if d)]
+    called: list[ast.AST] = [*top.body, *getattr(top, "type_params", [])]
+    annotations = [a.annotation for a in (*args.posonlyargs, *args.args,
+                                          *args.kwonlyargs, args.vararg,
+                                          args.kwarg)
+                   if a is not None and a.annotation is not None]
+    if top.returns is not None:
+        annotations.append(top.returns)
+    deferred = any(isinstance(s, ast.ImportFrom) and s.module == "__future__"
+                   and any(n.name == "annotations" for n in s.names)
+                   for s in tree.body)
+    (called if deferred else at_definition).extend(annotations)
+    return ([(n, None) for n in at_definition]
+            + [(n, top.name) for n in called])
 
 
 def _raise_sites(paths: Iterable[Path]) -> dict[str, list[tuple[str, str | None]]]:
@@ -1118,12 +1152,11 @@ def _raise_sites(paths: Iterable[Path]) -> dict[str, list[tuple[str, str | None]
                             for t in (top.targets if isinstance(top, ast.Assign)
                                       else [top.target]))):
                 continue
-            owner = (top.name if isinstance(top, (ast.FunctionDef,
-                                                  ast.AsyncFunctionDef))
-                     else None)
-            for node in ast.walk(top):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    sites.setdefault(node.value, []).append((rel, owner))
+            for part, owner in _owned_parts(top, tree):
+                for node in ast.walk(part):
+                    if (isinstance(node, ast.Constant)
+                            and isinstance(node.value, str)):
+                        sites.setdefault(node.value, []).append((rel, owner))
     return sites
 
 
@@ -1135,15 +1168,15 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
         rel = _rel(p)
         tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
         for top in tree.body:
-            owner = None
             if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.add((rel, top.name))
-                owner = top.name
-            for node in ast.walk(top):
-                name = (node.id if isinstance(node, ast.Name) else
-                        node.attr if isinstance(node, ast.Attribute) else None)
-                if name is not None:
-                    users.setdefault(name, set()).add((rel, owner))
+            for part, owner in _owned_parts(top, tree):
+                for node in ast.walk(part):
+                    name = (node.id if isinstance(node, ast.Name) else
+                            node.attr if isinstance(node, ast.Attribute)
+                            else None)
+                    if name is not None:
+                        users.setdefault(name, set()).add((rel, owner))
     # Reachability from the live roots: module-level code (a table, a class
     # and its methods, which are dispatched by name) names functions, and a
     # function a live one names is live.  Pruning by remaining users instead

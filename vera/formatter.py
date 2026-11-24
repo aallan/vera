@@ -2092,11 +2092,11 @@ def format_decl_canonical(tld: TopLevelDecl) -> str:
     from the node, so a quote never carries the source's comments or a
     neighbour that shares its line.  A declaration ``vera fmt`` lays out
     over several lines keeps them."""
-    formatter = Formatter(
-        _Attached(before={}, inline=[], header=[], footer=[]),
+    formatter = Formatter(  # pragma: no mutate — E136's alias is the one caller, and an alias is written without its attached comments
+        _Attached(before={}, inline=[], header=[], footer=[]),  # pragma: no mutate — E136's alias is the one caller, and an alias is written without its attached comments
     )
     formatter._emit_top_level(tld)
-    return "\n".join(line.rstrip() for line in formatter._lines)
+    return "\n".join(line.rstrip() for line in formatter._lines)  # pragma: no mutate — an alias is written as one line (_emit_type_alias), so the separator joins nothing
 
 
 def format_effect_ref_structural(ref: EffectRefNode) -> str:

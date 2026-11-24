@@ -131,7 +131,7 @@ def _transform_error(
     off the tree, places it in its file with its source line (#1636).
     """
     return TransformError(Diagnostic(  # diag-fields-exempt: fields threaded from call sites (E009 passes rationale/fix/spec_ref; E010 unhandled-rule sites report internal invariants, description-only — see the docstring)
-        description=msg, **locate_at(None, "", meta or None),
+        description=msg, **locate_at(None, "", meta or None),  # pragma: no mutate — transform() places the error with the parsed file and source at its boundary
         error_code=error_code,
         rationale=rationale, fix=fix, spec_ref=spec_ref))
 

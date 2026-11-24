@@ -322,7 +322,7 @@ class _Placement:
                       else self.bound.get(mod_path))
             if target == file:
                 return head
-        return location_to_range(locate(None, "", 1, 1)["location"],
+        return location_to_range(locate(None, "", 1, 1)["location"],  # pragma: no mutate — the range reads the line and column alone, and column 0 and 1 are the line's first character
                                  self.index)
 
 
@@ -480,7 +480,7 @@ def analysis_failure(
             f"Internal compiler error while analysing '{path}': "
             f"{type(exc).__name__}: {exc}"
         ),
-        **locate(path, ""),
+        **locate(path, ""),  # pragma: no mutate — what is published carries no file and no quote: line 0 is no position
         rationale=(
             "The compiler raised an unexpected exception. This is a bug in "
             "the compiler, not a property of the program -- the text may "
@@ -493,8 +493,8 @@ def analysis_failure(
             "Please file a bug report with the offending program at "
             "https://github.com/aallan/vera/issues"
         ),
-        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-        severity="error",
+        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',  # pragma: no mutate — what is published (`_to_lsp`) carries no spec section
+        severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
         error_code="E699",
     ), place)]
 

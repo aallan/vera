@@ -728,6 +728,7 @@ class CrossModuleMixin:
         qualified: str | None = None,
     ) -> None:
         """Emit a diagnostic for an undefined function call."""
+        # pragma: no mutate start — E624: no program reaches it, the check refuses a call with no target first (every .vera program in the tree compiled)
         display = qualified or name
         description = (
             f"Function '{display}' is not defined in this module "
@@ -776,6 +777,7 @@ class CrossModuleMixin:
                 severity="error",
                 error_code="E624",
             ))
+        # pragma: no mutate end
 
     # -----------------------------------------------------------------
     # Cross-module call detection

@@ -3554,6 +3554,7 @@ class ContractVerifier:
             # this instance, don't synthesize a spurious one — the obligation is
             # already counted/guarded, so there is no soundness loss.
             return
+        # pragma: no mutate start — unreached: every .vera program in the tree, verified, and the verifier's tests leave this synthesis unrun
         # A violation MUST never be silently dropped (a false Tier-1).  No
         # diagnostic matched, so surface it straight from the obligation.  A
         # violated `ensures` records no error_code (its canonical diagnostic
@@ -3592,6 +3593,7 @@ class ContractVerifier:
             error_code=synth_error_code,
             tier=None,
         ))
+        # pragma: no mutate end
 
     # -----------------------------------------------------------------
     # #1695: the rows a verified function lists, discharged
@@ -4255,8 +4257,8 @@ class ContractVerifier:
         reason, the table's, is the rationale (#1602, #1782)."""
         self._retract_disclosure(record, runtime_claims=True)
         code = _DISCLOSURE_CODES.get(record.kind, "E543")
-        file = record.file or self._current_file
-        what = _DISCLOSED_WHAT.get(record.kind, f"The '{record.kind}' obligation")
+        file = record.file or self._current_file  # pragma: no mutate — a disclosed record's file is the file being verified (a spy: 311 of 311)
+        what = _DISCLOSED_WHAT.get(record.kind, f"The '{record.kind}' obligation")  # pragma: no mutate — every disclosed kind is in the table (a spy: 311 of 311)
         self.errors.append(Diagnostic(
             description=(
                 f"{what} in '{record.fn_name}' could not be verified "

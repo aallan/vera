@@ -595,6 +595,7 @@ class _TestEngine:
                     typed=self.typed)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
+                # pragma: no mutate start — unreached: _classify_functions skips an unencodable parameter first (the if is excluded from coverage)
                 unsupported_names = _unsupported_type_names(param_types)
                 skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
                 _record_unrun(
@@ -615,6 +616,7 @@ class _TestEngine:
                     error_code="E701",
                 ))
                 continue
+                # pragma: no mutate end
 
             if not inputs:
                 # Precondition is unsatisfiable — or, for a proved function,
@@ -696,7 +698,7 @@ class _TestEngine:
                     summary.passed += 1
 
             for trial in refuting[:3]:  # limit to first 3, as for E700
-                where = self._refuted_location(trial, decl)
+                where = self._refuted_location(trial, decl)  # pragma: no mutate — decl is read only for a refuted clause in another file, which no trial attributes
                 # What the proof took on trust: an `assume` in the function
                 # that owns a refuted record, and whether these arguments
                 # violate it, where the tester can tell.
@@ -711,7 +713,7 @@ class _TestEngine:
                     rationale=rationale,
                     fix=fix,
                     spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E703",
                 ))
 
@@ -740,7 +742,7 @@ class _TestEngine:
                         "intended behaviour."
                     ),
                     spec_ref='Chapter 6, "Contracts"',
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E700",
                 ))
 
@@ -815,9 +817,9 @@ class _TestEngine:
         in the file under test, and the function's declaration otherwise."""
         first = trial.refutes[0]
         placed = locate(self.file, self.source, first.line, first.column)
-        if first.file == self.file and placed["source_line"]:
+        if first.file == self.file and placed["source_line"]:  # pragma: no mutate — a trial refutes only a record of the file under test (a module's refutation is unattributed)
             return placed
-        return locate_at(self.file, self.source, decl.span)
+        return locate_at(self.file, self.source, decl.span)  # pragma: no mutate — unreached: a trial refutes only a record of the file under test, which quotes its line
 
     def _get_targets(
         self,

@@ -951,7 +951,7 @@ def source_not_utf8(
         # The one quote not cut from decoded text: the file does not decode,
         # so its line is read from the bytes above, and only the location
         # comes from `locate`.
-        location=locate(file, "", line, column)["location"],
+        location=locate(file, "", line, column)["location"],  # pragma: no mutate — only the location is kept; the quote is source_line, read from the bytes
         source_line=source_line,
         rationale=(
             "Vera source is UTF-8: every command reads the program, and "
@@ -1055,11 +1055,13 @@ def diagnose_lark_error(
         )
 
     # Unknown exception type — wrap it
+    # pragma: no mutate start — E007: the LALR parser raises only UnexpectedToken and UnexpectedCharacters, both diagnosed above; no source reaches this
     return Diagnostic(  # diag-fields-exempt: internal fallback for an unrecognised Lark exception; indicates a parser bug, not a user error, so no source-level fix or spec section applies.
         description=f"Internal parser error: {exc}",
         **locate(file, source),
         error_code="E007",
     )
+    # pragma: no mutate end
 
 
 # =====================================================================
