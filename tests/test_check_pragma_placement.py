@@ -63,6 +63,22 @@ SHAPES: dict[str, tuple[str, list[tuple[int, int | None]]]] = {
         f"def f():\n    {P} start — r\n    x = 1\n    {P} end\n    return x\n", [(2, 2), (4, 4)]),
     "a_block_token_inside_brackets": (
         f"x = f(\n    1,  {P} block\n)\n", [(2, None)]),
+    "a_block_header": (f"if a:  {P} block\n    x = 1\n    y = 2\n", [(1, 1)]),
+    "a_region_alone_inside_brackets": (
+        f"x = (\n    {P} start\n    1\n    {P} end\n)\n", [(2, None), (4, None)]),
+    "a_bare_pragma_alone_inside_brackets": (f"x = f(\n    {P} — r\n    1,\n)\n", [(2, None)]),
+    "on_a_decorators_line": (f"@d  {P} — r\ndef f():\n    pass\n", [(1, None)]),
+    "a_block_alone_after_a_decorator": (
+        f"@d\n{P} block\ndef f():\n    x = 1\n", [(2, None)]),
+    "a_block_alone_between_decorators": (
+        f"@d\n{P} block\n@e\ndef f():\n    x = 1\n", [(2, None)]),
+    "a_block_alone_above_an_else_at_its_indent": (
+        f"if a:\n    x = 1\n{P} block\nelse:\n    x = 2\n", [(3, None)]),
+    "a_region_in_a_blocks_footer_above_an_else": (
+        f"if a:\n    x = 1\n    {P} start\n    y = 2\n    {P} end\nelse:\n    x = 2\n",
+        [(3, 3), (5, 5)]),
+    "alone_above_a_decorated_def": (
+        f"{P} start\n@d\ndef f():\n    pass\n{P} end\n", [(1, 1), (5, 5)]),
     "a_comment_that_is_no_pragma": ("x = f(\n    1)  # pragma: no cover\n", []),
     "the_words_inside_a_string": (f'x = "{P}"\n', []),
 }
@@ -73,6 +89,7 @@ WELL_PLACED = {
     "before_a_closing_bracket_on_its_own_line", "the_same_condition_with_its_bracket_on_a_line_of_its_own",
     "a_one_line_header", "a_one_line_suite", "an_else_header", "alone_start_and_end",
     "a_comment_that_is_no_pragma", "the_words_inside_a_string",
+    "a_block_header", "a_region_in_a_blocks_footer_above_an_else", "alone_above_a_decorated_def",
 }
 
 
@@ -115,24 +132,36 @@ def test_every_pragma_under_vera_is_filed_under_its_own_line() -> None:
 
 
 def _engine_lines(source: str) -> set[int]:
-    """The lines mutmut 3.8's `PragmaVisitor` marks no-mutate in `source`."""
+    """The lines mutmut 3.8's `PragmaVisitor` marks in `source`: the
+    no-mutate lines and the lines a `block` pragma ignores whole (a header's
+    `block` goes to `ignore_node_lines`, the header's line among them)."""
     cst = pytest.importorskip("libcst")
     handling = pytest.importorskip("mutmut.mutation.pragma_handling")
     visitor = handling.PragmaVisitor("<shape>")
     cst.MetadataWrapper(cst.parse_module(source)).visit(visitor)
-    return set(visitor.no_mutate_lines)
+    return set(visitor.no_mutate_lines) | set(visitor.ignore_node_lines)
 
 
 def _gate_lines(source: str) -> set[int]:
-    """The same, as the gate reads it, for a source whose pragmas are bare
-    or stand alone (a `start` ... `end` region is not expanded here)."""
+    """The same, as the gate reads it: each pragma's line where the engine
+    files it (a `start` ... `end` or `block` region is not expanded here)."""
     return {p.filed for p in gate.pragmas(source) if p.filed is not None}
 
 
-@pytest.mark.parametrize("name", sorted(n for n in SHAPES if n != "alone_start_and_end"))
+def _has_region(source: str) -> bool:
+    return any(p.token in ("start", "end", "block") and p.filed is not None for p in gate.pragmas(source))
+
+
+@pytest.mark.parametrize("name", sorted(SHAPES))
 def test_the_gate_reads_each_shape_as_the_engine_does(name: str) -> None:
+    """Equal where no region the engine reads is open; with one, each line
+    the gate files a pragma under is one the engine marks.  A pragma no
+    visitor reads marks nothing."""
     source = SHAPES[name][0]
-    assert _gate_lines(source) == _engine_lines(source)
+    if _has_region(source):
+        assert _gate_lines(source) <= _engine_lines(source)
+    else:
+        assert _gate_lines(source) == _engine_lines(source)
 
 
 def test_the_gate_reads_every_pragma_under_vera_as_the_engine_does() -> None:
@@ -148,7 +177,7 @@ def test_the_gate_reads_every_pragma_under_vera_as_the_engine_does() -> None:
         engine = _engine_lines(source)
         mine = _gate_lines(source)
         assert mine <= engine, (path, sorted(mine - engine))
-        if not any(p.token in ("start", "end", "block") for p in found):
+        if not _has_region(source):
             assert mine == engine, (path, sorted(engine ^ mine))
         checked += 1
     assert checked > 0

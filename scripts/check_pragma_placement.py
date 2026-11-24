@@ -5,12 +5,18 @@ mutmut 3.8 does not read a pragma by its physical line.  Its
 ``PragmaVisitor`` (``mutmut/mutation/pragma_handling.py``) files a comment by
 its place in the syntax tree:
 
-- inside brackets, a bare pragma ending a line is filed under that line
-  (``visit_ParenthesizedWhitespace``); a ``block``, ``start`` or ``end``
-  pragma there is read by no visitor at all;
-- alone on its line, a pragma is filed under that line, where ``start``,
-  ``end`` and ``block`` open and close their regions and a bare one protects
-  no node, since none starts on a line that holds only a comment;
+- inside brackets, a bare pragma ending a line of code is filed under that
+  line (``visit_ParenthesizedWhitespace``); a ``block``, ``start`` or
+  ``end`` pragma there, and any pragma alone on a line inside brackets, is
+  read by no visitor at all;
+- alone on its line, a pragma is filed under that line where it is a
+  module's header or footer, a statement's leading line in a body, or a
+  block's footer: there ``start``, ``end`` and ``block`` open and close
+  their regions, and a bare one protects no node, since none starts on a
+  line that holds only a comment.  Alone after a decorator, or above an
+  ``else``, ``elif``, ``except`` or ``finally`` at that clause's indent (the
+  clause's own leading lines), it is read by no visitor;
+- on a decorator's line, after the decorator, it is read by no visitor;
 - after code, outside every bracket, a pragma ends a statement and is filed
   under the line the statement starts on: a simple statement's trailing
   comment (``visit_SimpleStatementLine``), a compound statement's header
@@ -86,19 +92,37 @@ def token_of(comment: str) -> str | None:
     return word if word in ("block", "start", "end") else "bare"
 
 
+#: The clauses that own the comment lines above them at their own indent
+#: (libcst's ``leading_lines`` of ``else``, ``elif``, ``except`` and
+#: ``finally``), which no visitor of the engine scans.
+CLAUSES = frozenset({"else", "elif", "except", "finally"})
+
+
 def pragmas(source: str) -> list[Pragma]:
     """Every pragma in ``source`` with the line the engine files it under.
     The source must parse: ``tokenize`` alone accepts some text Python does
-    not, where the engine's parser would refuse the file."""
+    not, where the engine's parser would refuse the file.
+
+    A comment alone on its line is read where it is a module's header or
+    footer, a statement's leading line in a body, or a block's footer; it is
+    read nowhere inside brackets, after a decorator (between decorators, or
+    between the last one and its ``def`` or ``class``), or above a clause at
+    the clause's indent.  A comment after code is read on a statement, a
+    compound header, a one-line suite or a ``match`` header, and nowhere on a
+    decorator's line."""
     ast.parse(source)
     found: list[Pragma] = []
     depth = 0
     logical_start: int | None = None
+    logical_first: str | None = None
+    after_decorator = False
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
             tokenize.ENCODING, tokenize.ENDMARKER)
-    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+    tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    for at, tok in enumerate(tokens):
         if tok.type not in skip and logical_start is None:
-            logical_start = tok.start[0]
+            logical_start, logical_first = tok.start[0], tok.string
+            after_decorator = after_decorator and tok.string == "@"
         if tok.type == tokenize.OP and tok.string in "([{":
             depth += 1
         elif tok.type == tokenize.OP and tok.string in ")]}":
@@ -108,22 +132,39 @@ def pragmas(source: str) -> list[Pragma]:
             if token is not None:
                 line = tok.start[0]
                 if not tok.line[:tok.start[1]].strip():
-                    found.append(Pragma(line, token, line, "alone"))
+                    following = next((t for t in tokens[at + 1:] if t.type not in skip), None)
+                    if depth > 0:
+                        found.append(Pragma(line, token, None, "alone in brackets"))
+                    elif after_decorator:
+                        found.append(Pragma(line, token, None, "after a decorator"))
+                    elif (following is not None and following.string in CLAUSES
+                          and tok.start[1] <= following.start[1]):
+                        found.append(Pragma(line, token, None, "above a clause"))
+                    else:
+                        found.append(Pragma(line, token, line, "alone"))
                 elif depth > 0:
                     found.append(Pragma(line, token, line if token == "bare" else None, "brackets"))
+                elif logical_first == "@":
+                    found.append(Pragma(line, token, None, "on a decorator"))
                 else:
                     start = logical_start if logical_start is not None else line
                     found.append(Pragma(line, token, start, "statement"))
         elif tok.type == tokenize.NEWLINE:
-            logical_start = None
+            after_decorator = logical_first == "@"
+            logical_start = logical_first = None
     return found
 
 
 def explain(p: Pragma) -> str:
     """What is wrong with a misplaced pragma, and the fix."""
     if p.filed is None:
-        return (f"a `{p.token}` pragma inside brackets is read by no visitor: "
-                "write it on a line of its own")
+        where = {"brackets": "inside brackets after code", "alone in brackets": "alone inside brackets",
+                 "after a decorator": "alone after a decorator",
+                 "above a clause": "alone above an else, elif, except or finally at its indent",
+                 "on a decorator": "on a decorator's line"}[p.how]
+        fix = ("write it after the code of the line it answers" if p.token == "bare"
+               else "write it on a line of its own in a body, outside every bracket")
+        return f"a `{p.token}` pragma {where} is read by no visitor: {fix}"
     if p.how == "alone":
         return ("a bare pragma on a line of its own protects no node: "
                 "write it after the code of the line it answers")
