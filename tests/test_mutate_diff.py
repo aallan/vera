@@ -3551,15 +3551,18 @@ class TestWorkflow:
         return job
 
     def test_it_runs_on_a_pull_request_that_changes_the_compiler_the_engine_or_either_lane(self) -> None:
-        """The compiler, the lock that names the engine, and each lane's
-        workflow, script and self-tests: a lock bump that breaks the engine
-        is red on its own pull request, before any night runs on it."""
+        """The compiler, the lock that names the engine, each lane's
+        workflow, script and self-tests, and the pragma gate, whose
+        differential against the engine's visitor runs here: a lock bump that
+        breaks the engine is red on its own pull request, before any night
+        runs on it."""
         on = self._wf()[True]  # YAML 1.1 reads the bare key `on` as True
         assert set(on) == {"pull_request"}
         assert on["pull_request"]["paths"] == [
             "vera/**/*.py", "uv.lock",
             "scripts/mutate_diff.py", "scripts/mutate_sweep.py", "scripts/mutation_report.py",
             "tests/mutation_oracle.py", "tests/test_mutate_diff.py", "tests/test_mutate_sweep.py",
+            "scripts/check_pragma_placement.py", "tests/test_check_pragma_placement.py",
             ".github/workflows/mutation-diff.yml", ".github/workflows/mutation-nightly.yml"]
 
     def test_every_script_a_lane_loads_is_in_the_filter(self) -> None:
@@ -3615,7 +3618,8 @@ class TestWorkflow:
         assert setup["with"]["python-version"] == "3.12"
         names = [s.get("name") for s in steps]
         (test,) = [s for s in steps if s.get("name") == "Test the lane against the engine it installs"]
-        assert test["run"] == "pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q"
+        assert test["run"] == ("pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py "
+                               "tests/test_check_pragma_placement.py -q")
         assert names.index("Install dependencies") < names.index(test["name"]) < names.index(
             "Mutate the functions this pull request changes")
 

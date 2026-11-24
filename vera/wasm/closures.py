@@ -308,7 +308,7 @@ class ClosuresMixin:
                 tup = tup.base
             if (not isinstance(tup, AdtType)  # pragma: no mutate — unreachable: the table lists a closure argument's row only at a tuple path its type has (`_refined_paths`), so the path's every step is a `Tuple` component of a tuple
                     or tup.name != "Tuple"  # pragma: no mutate — unreachable: as the line above
-                    or not step.startswith("Tuple.")):  # pragma: no mutate — unreachable: as the line above
+                    or not step.startswith("Tuple.")):
                 return None
             index = int(step.split(".")[1])
             offset = 4  # after the tag, as construction lays it out
@@ -322,7 +322,7 @@ class ClosuresMixin:
                     field_offset = at
                     break
             if (field_offset is None  # pragma: no mutate — unreachable: the index is one the tuple has, and the table lists no row at a component with no width (a `Unit`, REASON_ERASED_BASE), so the loop sets both
-                    or wt is None):  # pragma: no mutate — unreachable: as the line above
+                    or wt is None):
                 return None
             value = bind_slot_value_from_field(
                 self.alloc_local, wt, value.slot_local, field_offset)

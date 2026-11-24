@@ -673,6 +673,9 @@ jobs:
       - name: Check text-mode file I/O passes explicit encoding (#645)
         run: python scripts/check_explicit_encoding.py
 
+      - name: Check each mutation pragma is filed under its own line (#1838)
+        run: python scripts/check_pragma_placement.py
+
       - name: Check HISTORY.md's rows and stage introductions (#1880)
         run: python scripts/check_history_rows.py
 

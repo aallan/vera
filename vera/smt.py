@@ -3873,7 +3873,8 @@ class SmtContext:
             sub_patterns=tuple(
                 ast.BindingPattern(type_expr=te, span=te.span)  # pragma: no mutate — equivalent: the hook reads a pattern's shape and types, never its spans
                 for te in stmt.type_bindings),
-            span=stmt.span)  # pragma: no mutate — equivalent: as above, no reader of the pattern reads its span
+            span=stmt.span,  # pragma: no mutate — equivalent: as above, no reader of the pattern reads its span
+        )
         guarded: dict[int, z3.ExprRef] = hook(
             stmt.value, term, pattern, self, reach)
         return [guarded.get(c.get_id(), c) for c in components]
