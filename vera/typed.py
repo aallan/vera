@@ -1003,7 +1003,7 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
     if text is None or call.span is None or len(args) != len(root.decl.params):  # pragma: no mutate — unreached: `judge` calls this only at a call the check recorded an instantiation for, which a call of the wrong arity never gets (E201 returns before inference), and every such call has its text in its source (0 of 120 calls over the instrument, the fix-text file and test_checker*.py)
         return advice + "."  # pragma: no mutate — unreached, as the guard above: the guard is never true
     edits: list[tuple[int, int, str]] = []
-    for arg, formal in zip(args, root.decl.params, strict=True):
+    for arg, formal in zip(args, root.decl.params, strict=True):  # pragma: no mutate — equivalent: the guard above returns unless the call has one argument per parameter, so the zip is never uneven and its strictness never decides
         if not _mentions(formal, variables):
             continue
         example = _example(formal, variables)
@@ -1110,7 +1110,8 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
     # The type names each file declares that no other file sees: its
     # aliases, which are module-local, and its private data types.
     local_names: dict[tuple[str, ...] | None, frozenset[str]] = {
-        None: _local_type_names(derivation.linked.program)}
+        None: _local_type_names(derivation.linked.program),  # pragma: no mutate — unreached: hidden at a call in another file than the generic's, and no module calls the entry's functions (a module imports no entry program)
+    }
     for mod in derivation.linked.modules:
         file, source = files[mod.path]
         bodies.extend((file, source, tld.decl, mod.path)

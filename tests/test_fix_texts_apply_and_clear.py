@@ -2177,6 +2177,74 @@ def test_repro_e613_writes_no_binding_its_call_site_cannot_name(
     assert after.ok, [d.format() for d in after.errors]
 
 
+_E613_DATA_LIB = """\
+module elib;
+
+VISIBILITY data Hold<T> { Held(Option<T>) }
+
+public forall<T where Ord<T>> fn one_ord(@Unit -> @Hold<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Held(None)
+}
+"""
+
+
+@pytest.mark.parametrize("visibility", ["private", "public"])
+def test_repro_e613_binds_an_imported_data_type_only_where_it_is_public(
+        visibility: str, tmp_path: Path) -> None:
+    """An imported generic whose result is its module's data type
+    (`Hold<T>`): a private one the call's file cannot name, so the fix
+    writes no block (`_local_type_names`' private-data clause) and names a
+    `let` of the type and the parameter; a public one it can, so the fix
+    writes the block, which, pasted in the call's place, clears E613."""
+    lib = _E613_DATA_LIB.replace("VISIBILITY ", (
+        "private " if visibility == "private" else "public "))
+    files = {"elib.vera": lib,
+             "main.vera": "import elib;\n\n" + _E613_ONE_MAIN.format(where="")}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    head = ("No argument of 'one_ord(())' fixes T, so the call instantiates "
+            "'one_ord' at Bool, nothing giving its result a type: bind its "
+            "result at a type that supports 'Ord'")
+    if visibility == "private":
+        assert found.fix == (
+            head + " (a `let` of that type), or "
+            + _E613_PARAM.format(g="one_ord")), found.fix
+        return
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    assert found.fix == (
+        head + f", with the block `{block}` in the call's place; or "
+        + _E613_PARAM.format(g="one_ord")), found.fix
+    pasted = {**files, "main.vera": files["main.vera"].replace(
+        "match one_ord(()) {", f"match {block} {{")}
+    after = _tree_codes(tmp_path / "pasted", pasted)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+@pytest.mark.parametrize("decl", [
+    "private data Hold<T> { Held(Option<T>) }",
+    "type Hold<T> = Option<T>;"])
+def test_repro_e613_binds_its_own_file_s_type_names(decl: str) -> None:
+    """The generic in the call's own file, whose result is that file's
+    private data type or alias (`Hold<T>`): every name resolves where the
+    call is, so the fix writes the block, which, pasted in the call's
+    place, clears E613 (`_hidden_at` hides nothing within one file)."""
+    lib = _E613_DATA_LIB.replace("module elib;\n\n", "").replace(
+        "VISIBILITY data Hold<T> { Held(Option<T>) }", decl).replace(
+        "public forall", "private forall")
+    if decl.startswith("type"):
+        lib = lib.replace("  Held(None)\n", "  None\n")
+    source = lib + "\n" + _E613_ONE_MAIN.format(where="")
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    fix = _the("E613", "check", source).fix
+    assert f"with the block `{block}` in the call's place" in fix, fix
+    fixed = source.replace("match one_ord(()) {", f"match {block} {{")
+    assert _passed_codes("check", fixed) == set()
+
+
 _E613_LATER_READ = """\
 private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
   requires(true)

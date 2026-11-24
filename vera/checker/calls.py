@@ -3283,7 +3283,7 @@ class CallsMixin:
         """The type the constructor's parameter *name* takes: its binding in
         *mapping*, or a fresh variable marked as a constructor's
         (`_constructor_minted`, #1866), which a join completes in an arm's
-        recorded types (`ControlFlowMixin._complete_arm`).  A fresh name is
+        recorded types (`ControlFlowMixin._complete_arms`).  A fresh name is
         minted either way, so the numbering is the one it was."""
         fresh = self._fresh_typevar(name)
         if name in mapping:

@@ -25,6 +25,7 @@ import ast as pyast
 import functools
 import re
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -33,7 +34,15 @@ import pytest
 from tests import pipeline
 from vera import ast as vast
 from vera import fold
-from vera.types import contains_typevar
+from vera.checker.control import _variable_names
+from vera.types import (
+    AdtType,
+    Type,
+    TypeVar,
+    contains_typevar,
+    fresh_typevar_origin,
+    pretty_type,
+)
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
@@ -331,30 +340,17 @@ _JOINS = frozenset({"_join", "_join_parts", "_join_either", "_value_join"})
 _NOT_ARMS = frozenset({"condition", "scrutinee"})
 
 
-def _refused_expectations(fn: pyast.FunctionDef) -> list[str]:
-    """Each `expected=` in *fn* a join may not write: one that names a
-    value derived from an arm's synthesized type.  A name is derived when
-    it is assigned the result of `_synth_expr` on anything but a condition
-    or a scrutinee, or any expression naming a derived name; the closure
-    is taken to a fixed point.  Allowed: the function's own `expected`
-    parameter, a type no arm gave (a condition's `Bool`), and a
-    scrutinee's own type."""
-    tainted: set[str] = set()
+def _names(node: pyast.AST) -> set[str]:
+    return {n.id for n in pyast.walk(node) if isinstance(n, pyast.Name)}
 
-    def names(node: pyast.AST) -> set[str]:
-        return {n.id for n in pyast.walk(node) if isinstance(n, pyast.Name)}
 
-    def from_arm(value: pyast.AST) -> bool:
-        for call in pyast.walk(value):
-            if (isinstance(call, pyast.Call)
-                    and isinstance(call.func, pyast.Attribute)
-                    and call.func.attr == "_synth_expr" and call.args):
-                arg = call.args[0]
-                if not (isinstance(arg, pyast.Attribute)
-                        and arg.attr in _NOT_ARMS):
-                    return True
-        return bool(names(value) & tainted)
-
+def _derived(fn: pyast.FunctionDef, seed: set[str],
+             source: Callable[[pyast.AST], bool] = lambda _: False,
+             ) -> set[str]:
+    """The names in *fn* derived from *seed*, or from a value *source*
+    accepts: a name assigned (or bound by a `for` or `:=`) a value that
+    names a derived name, taken to a fixed point."""
+    derived = set(seed)
     changed = True
     while changed:
         changed = False
@@ -363,38 +359,163 @@ def _refused_expectations(fn: pyast.FunctionDef) -> list[str]:
             value: pyast.AST | None = None
             if isinstance(node, pyast.Assign):
                 targets, value = node.targets, node.value
-            elif isinstance(node, (pyast.AnnAssign, pyast.AugAssign)):
+            elif isinstance(node, (pyast.AnnAssign, pyast.AugAssign,
+                                   pyast.NamedExpr)):
                 targets, value = [node.target], node.value
             elif isinstance(node, pyast.For):
                 targets, value = [node.target], node.iter
-            if value is None or not from_arm(value):
+            if value is None or not (_names(value) & derived
+                                     or source(value)):
                 continue
             for target in targets:
-                new = names(target) - tainted
+                new = _names(target) - derived
                 if new:
-                    tainted |= new
+                    derived |= new
                     changed = True
-    return [pyast.unparse(kw.value) for node in pyast.walk(fn)
-            if isinstance(node, pyast.Call) for kw in node.keywords
-            if kw.arg == "expected" and names(kw.value) & tainted]
+    return derived
 
 
-def _join_functions() -> dict[str, pyast.FunctionDef]:
-    found: dict[str, pyast.FunctionDef] = {}
+def _params(fn: pyast.FunctionDef) -> list[str]:
+    return [a.arg for a in (*fn.args.posonlyargs, *fn.args.args,
+                            *fn.args.kwonlyargs)]
+
+
+#: A function's name, and the parameters it hands down as an expected type.
+_Handing = dict[str, set[str]]
+
+
+def _hands_down(call: pyast.Call, handing: _Handing,
+                defs: dict[str, pyast.FunctionDef],
+                derived: set[str]) -> bool:
+    """Whether *call* hands a *derived* name down as an expected type: at
+    `expected=`, or as an argument for a parameter its callee hands down
+    (`self._f(a)` binds `a` to `_f`'s parameter after `self`)."""
+    if any(kw.arg == "expected" and _names(kw.value) & derived
+           for kw in call.keywords):
+        return True
+    func = call.func
+    name = (func.attr if isinstance(func, pyast.Attribute)
+            else func.id if isinstance(func, pyast.Name) else None)
+    if name not in handing:
+        return False
+    params = _params(defs[name])
+    skip = 1 if isinstance(func, pyast.Attribute) else 0
+    passed = [(params[i + skip], arg) for i, arg in enumerate(call.args)
+              if i + skip < len(params)]
+    passed += [(kw.arg, kw.value) for kw in call.keywords if kw.arg]
+    return any(p in handing[name] and _names(arg) & derived
+               for p, arg in passed)
+
+
+def _handing(defs: dict[str, pyast.FunctionDef]) -> _Handing:
+    """Each function of *defs* that hands one of its parameters down as an
+    expected type, directly at `expected=` or through another such
+    function, with those parameters; to a fixed point.  A parameter named
+    `expected` is one like any other: a join may pass it its own
+    `expected`, which no arm gave, and never an arm's type."""
+    handing: _Handing = {}
+    changed = True
+    while changed:
+        changed = False
+        for name, fn in defs.items():
+            for p in _params(fn):
+                if p == "self" or p in handing.get(name, ()):
+                    continue
+                derived = _derived(fn, {p})
+                if any(isinstance(c, pyast.Call)
+                       and _hands_down(c, handing, defs, derived)
+                       for c in pyast.walk(fn)):
+                    handing.setdefault(name, set()).add(p)
+                    changed = True
+    return handing
+
+
+def _refused_expectations(fn: pyast.FunctionDef,
+                          defs: dict[str, pyast.FunctionDef]) -> list[str]:
+    """Each hand-down in *fn* a join may not write: a value derived from an
+    arm's synthesized type, at `expected=` or as an argument for a
+    parameter its callee hands down as an expected type (*defs*'
+    functions, read by `_handing`).  A name is derived when it is assigned
+    the result of `_synth_expr` on anything but a condition or a
+    scrutinee, or any expression naming a derived name.  Allowed: the
+    function's own `expected` parameter, a type no arm gave (a condition's
+    `Bool`), and a scrutinee's own type."""
+
+    def from_arm(value: pyast.AST) -> bool:
+        return any(
+            isinstance(call, pyast.Call)
+            and isinstance(call.func, pyast.Attribute)
+            and call.func.attr == "_synth_expr" and call.args
+            and not (isinstance(call.args[0], pyast.Attribute)
+                     and call.args[0].attr in _NOT_ARMS)
+            for call in pyast.walk(value))
+
+    derived = _derived(fn, set(), from_arm)
+    handing = _handing(defs)
+    return [pyast.unparse(call) for call in pyast.walk(fn)
+            if isinstance(call, pyast.Call)
+            and _hands_down(call, handing, defs, derived)]
+
+
+def _checker_functions() -> tuple[dict[str, pyast.FunctionDef],
+                                  dict[str, pyast.FunctionDef]]:
+    """Every function of `vera/checker/` by name, and the joins among them
+    (a function that calls `_join*` or `_value_join`) by file and name."""
+    defs: dict[str, pyast.FunctionDef] = {}
+    joins: dict[str, pyast.FunctionDef] = {}
     for path in sorted((ROOT / "vera" / "checker").glob("*.py")):
         tree = pyast.parse(path.read_text(encoding="utf-8"))
         for fn in pyast.walk(tree):
-            if (isinstance(fn, pyast.FunctionDef) and fn.name not in _JOINS
+            if not isinstance(fn, pyast.FunctionDef):
+                continue
+            defs.setdefault(fn.name, fn)
+            if (fn.name not in _JOINS
                     and any(isinstance(c, pyast.Call)
                             and isinstance(c.func, pyast.Attribute)
                             and c.func.attr in _JOINS
                             for c in pyast.walk(fn))):
-                found[f"{path.name}:{fn.name}"] = fn
-    return found
+                joins[f"{path.name}:{fn.name}"] = fn
+    return defs, joins
 
 
-#: The rule, by shape: each row a join's body and whether its `expected=`
-#: is allowed.  The rule is read off these rows.
+#: The helpers the shapes below call.  `_synth_against` and
+#: `_check_in_literal_context` are as `origin/main` wrote them before #1866:
+#: a branch synthesized again against its sibling's type, and a value
+#: checked in a literal context.  `_against_again` hands its parameter on
+#: through `_synth_against`, which it precedes, so the rule must take its
+#: helpers to a fixed point to find it; `_synth_as` hands a parameter named
+#: `expected` down; `_complete_arms` hands nothing down.
+_HELPERS = '''
+def _against_again(self, expr, other):
+    return self._synth_against(expr, other)
+
+def _synth_against(self, expr, sibling):
+    self._sibling_types.append(sibling)
+    try:
+        return self._synth_expr(expr, expected=sibling)
+    finally:
+        self._sibling_types.pop()
+
+def _check_in_literal_context(self, expr, ty, context, *, component=False):
+    if ty is None or component:
+        return ty
+    return self._synth_expr(expr, expected=context)
+
+def _complete_arms(self, arms, joined):
+    for arm, ty in arms:
+        bound = {}
+        self._unify_for_inference(ty, joined, bound)
+
+def _synth_as(self, expr, expected):
+    return self._synth_expr(expr, expected=expected)
+'''
+
+#: The rule, by shape: each row a join's body and whether what it hands
+#: down is allowed.  The rule is read off these rows.  The first three
+#: refused rows are `origin/main`'s re-synthesis at its three sites
+#: (`_check_if`'s two branches, `_check_match`'s arms), which an earlier
+#: form of this rule, reading `expected=` in the join's own body alone,
+#: passed.
 _SHAPES: dict[str, tuple[str, bool]] = {
     "the join's own expected": (
         "t = self._synth_expr(expr.then_branch, expected=expected)", True),
@@ -403,6 +524,13 @@ _SHAPES: dict[str, tuple[str, bool]] = {
     "a scrutinee's own type": (
         "s = self._synth_expr(expr.scrutinee)\n"
         "b = self._check_pattern(arm.pattern, expected=s)", True),
+    "the join's own expected, as a literal context": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "self._check_in_literal_context(expr.then_branch, t, expected)", True),
+    "an arm's type to a helper that hands it to nothing": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "e = self._synth_expr(expr.else_branch)\n"
+        "self._complete_arms([(expr.then_branch, t)], e)", True),
     "a sibling's type": (
         "t = self._synth_expr(expr.then_branch)\n"
         "e = self._synth_expr(expr.else_branch, expected=t)", False),
@@ -414,29 +542,78 @@ _SHAPES: dict[str, tuple[str, bool]] = {
         "for arm in expr.arms:\n"
         "    a = self._synth_expr(arm.body)\n"
         "    self._synth_expr(x, expected=AdtType('Array', (a,)))", False),
+    "main's then-branch against its sibling": (
+        "then_ty = self._synth_expr(expr.then_branch, expected=expected)\n"
+        "else_ty = self._synth_expr(expr.else_branch, expected=expected)\n"
+        "if contains_typevar(then_ty) and not contains_typevar(else_ty):\n"
+        "    then_ty = self._synth_against(\n"
+        "        expr.then_branch, else_ty) or then_ty", False),
+    "main's else-branch against its sibling": (
+        "then_ty = self._synth_expr(expr.then_branch, expected=expected)\n"
+        "else_ty = self._synth_expr(expr.else_branch, expected=expected)\n"
+        "if contains_typevar(else_ty) and not contains_typevar(then_ty):\n"
+        "    else_ty = self._synth_against(\n"
+        "        expr.else_branch, then_ty) or else_ty", False),
+    "main's match arm against the arms before it": (
+        "result_type = None\n"
+        "for arm in expr.arms:\n"
+        "    arm_ty = self._synth_expr(arm.body, expected=expected)\n"
+        "    if result_type is None:\n"
+        "        result_type = arm_ty\n"
+        "    elif contains_typevar(arm_ty):\n"
+        "        arm_ty = self._synth_against(arm.body, result_type)", False),
+    "a sibling's type as a literal context": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "e = self._synth_expr(expr.else_branch)\n"
+        "self._check_in_literal_context(expr.else_branch, e, t)", False),
+    "a sibling's type as a literal context, by keyword": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "e = self._synth_expr(expr.else_branch)\n"
+        "self._check_in_literal_context(expr.else_branch, e, context=t)",
+        False),
+    "a sibling's type through two helpers": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "self._against_again(expr.else_branch, t)", False),
+    "a sibling's type to a helper's parameter named expected": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "self._synth_as(expr.else_branch, t)", False),
+    "the join's own expected to a helper's parameter named expected": (
+        "self._synth_as(expr.else_branch, expected)", True),
+    "an arm's type through a loop's target": (
+        "arm_types = [self._synth_expr(arm.body) for arm in expr.arms]\n"
+        "for ty in arm_types:\n"
+        "    self._synth_expr(expr.arms[0].body, expected=ty)", False),
+    "an arm's type named before it is assigned": (
+        "for arm in expr.arms:\n"
+        "    if prev is not None:\n"
+        "        self._synth_expr(arm.body, expected=prev)\n"
+        "    prev = last\n"
+        "    last = self._synth_expr(arm.body)", False),
 }
 
 
 @pytest.mark.parametrize("shape", list(_SHAPES))
 def test_the_rule_reads_each_shape(shape: str) -> None:
     body, allowed = _SHAPES[shape]
-    fn = pyast.parse("def j(self, expr, expected):\n"
-                     + "\n".join("    " + ln for ln in body.splitlines())
-                     ).body[0]
-    assert isinstance(fn, pyast.FunctionDef)
-    assert (_refused_expectations(fn) == []) is allowed
+    module = pyast.parse(
+        _HELPERS + "\ndef j(self, expr, expected):\n"
+        + "\n".join("    " + ln for ln in body.splitlines()) + "\n")
+    defs = {fn.name: fn for fn in module.body
+            if isinstance(fn, pyast.FunctionDef)}
+    assert (_refused_expectations(defs["j"], defs) == []) is allowed
 
 
 def test_no_join_hands_an_arm_s_type_down() -> None:
     """No function that joins values hands a sub-expression an expected
     type derived from an arm's type: a sibling's type, the joined type or
-    a part of either (spec §5.9, #1866).  An arm is synthesized once,
-    against the type the join's context expects; a new join, or a new
-    hand-down from an arm's type, fails here."""
-    joins = _join_functions()
+    a part of either (spec §5.9, #1866), at `expected=` or through a
+    function that hands the argument down as one.  An arm is synthesized
+    once, against the type the join's context expects; a new join, or a
+    new hand-down from an arm's type, fails here."""
+    defs, joins = _checker_functions()
     assert {"control.py:_check_if", "control.py:_check_match"} <= set(joins)
     refused = {name: bad for name, fn in joins.items()
-               if (bad := _refused_expectations(fn))}
+               if (bad := _refused_expectations(fn, defs))}
     assert refused == {}
 
 
@@ -859,3 +1036,117 @@ def test_repro_an_arm_left_open_runs_as_outside_a_branch() -> None:
     for arg, value in (("true", 7), ("false", 4)):
         ran = pipeline.run(source, fn="h", raw_args=[arg])
         assert ran.value == value, (arg, ran.value)
+
+
+# ---------------------------------------------------------------------
+# What the completion writes, and where
+# ---------------------------------------------------------------------
+
+_ORDERS = ("if_sibling_first", "if_open_first", "match_sibling_first",
+           "match_open_first")
+
+
+def _source(params: str, body: str) -> str:
+    return (_PRELUDE + f"public fn g(@Bool, {params} -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            f"  {body};\n  0\n}}\n")
+
+
+def _nodes(checked: pipeline.Checked, kind: type, name: str) -> list[vast.Expr]:
+    return [n for tld in checked.program.declarations
+            if isinstance(tld.decl, vast.FnDecl) and tld.decl.name == "g"
+            for n in fold.walk(tld.decl.body)
+            if isinstance(n, kind) and getattr(n, "name", None) == name]
+
+
+def _variables(ty: Type) -> set[str]:
+    return _variable_names(ty)
+
+
+def test_repro_a_join_completes_no_nested_call_s_type_arguments() -> None:
+    """`Some(idg(None))` beside an `Option<Option<Int>>`: the `None`'s
+    variable is held by `idg`'s instantiation, though the call is not the
+    arm's root, so the join completes it nowhere: `idg`'s node and its
+    argument keep the open variable they have outside a branch."""
+    outside = pipeline.check(_source("@Option<Option<Int>>",
+                                     "Some(idg(None))"))
+    assert outside.ok
+    for order in _ORDERS:
+        checked = pipeline.check(_source("@Option<Option<Int>>", JOINS[
+            order].format(sib="@Option<Option<Int>>.0",
+                          open_="Some(idg(None))")))
+        assert checked.ok, order
+        recorded = checked.artifacts.node_semantic_types
+        nodes = (_nodes(checked, vast.FnCall, "idg")
+                 + _nodes(checked, vast.NullaryConstructor, "None"))
+        assert len(nodes) == 2 and all(
+            contains_typevar(recorded[n.node_id]) for n in nodes), order
+
+
+def test_repro_a_builtin_s_variable_is_recorded_as_outside_a_branch() -> None:
+    """`map_new()` beside a `Map<String, Int>`: the built-in's variables
+    are no constructor's (`_constructor_minted`), and no recorded
+    instantiation holds them, so the join completes neither: the call is
+    recorded `Map<K, V>` in a branch as outside one."""
+    def recorded(body: str) -> str:
+        checked = pipeline.check(_source("@Map<String, Int>", body))
+        assert checked.ok, body
+        (call,) = _nodes(checked, vast.FnCall, "map_new")
+        return pretty_type(checked.artifacts.node_semantic_types[
+            call.node_id])
+
+    assert recorded("map_size(map_new())") == "Map<K, V>"
+    for order in _ORDERS:
+        assert recorded("map_size(" + JOINS[order].format(
+            sib="@Map<String, Int>.0", open_="map_new()") + ")") == (
+                "Map<K, V>"), order
+
+
+def test_repro_a_completed_arm_is_recorded_alike_in_every_table() -> None:
+    """`None` beside an `Option<Int>`: the completed type is written in
+    each table that records one, the node table code generation reads,
+    the span table the language server and the artifacts read, and its
+    text.  Behind a statement too, which the walk passes over (a `let` is
+    no expression)."""
+    for order, open_ in [(o, a) for o in _ORDERS
+                         for a in ("None", "{ let @Int = 1; None }")]:
+        checked = pipeline.check(_source("@Option<Int>", "match " + JOINS[
+            order].format(sib="@Option<Int>.0", open_=open_)
+            + " { Some(@Int) -> @Int.0, None -> 7 }"))
+        assert checked.ok, (order, open_)
+        a = checked.artifacts
+        (none,) = _nodes(checked, vast.NullaryConstructor, "None")
+        key = vast.span_key(none)
+        assert (pretty_type(a.node_semantic_types[none.node_id]),
+                pretty_type(a.expr_semantic_types[key]),
+                a.expr_types[key]) == ("Option<Int>",) * 3, (order, open_)
+
+
+def test_repro_a_join_writes_no_variable_into_an_arm() -> None:
+    """`None` beside `Some(idg(None))`: the joined type's payload is the
+    call's open variable, which the join does not write into the bare
+    `None`'s record (a binding that holds a variable completes nothing),
+    so the two records share no variable."""
+    for order in _ORDERS:
+        checked = pipeline.check(_source("@Bool", JOINS[order].format(
+            sib="Some(idg(None))", open_="None")))
+        assert checked.ok, order
+        recorded = checked.artifacts.node_semantic_types
+        (call,) = _nodes(checked, vast.FnCall, "idg")
+        bare = [n for n in _nodes(checked, vast.NullaryConstructor, "None")
+                if not any(n is m for m in fold.walk(call))]
+        assert len(bare) == 1, order
+        assert not (_variables(recorded[bare[0].node_id])
+                    & _variables(recorded[call.node_id])), order
+
+
+def test_fresh_typevar_origin_names_a_minted_variable_alone() -> None:
+    """The one reader of a minted variable's name: `T$2`, which
+    `_fresh_typevar` mints for `T`, has the origin `T`; a declared variable
+    (`T`, a generic's own, rigid in its body) and any other type have none.
+    The #1684 cells read their open variables through it, so a reader that
+    took a declared variable for a minted one would make them lax."""
+    assert fresh_typevar_origin(TypeVar("T$2")) == "T"
+    assert fresh_typevar_origin(TypeVar("Key$13")) == "Key"
+    assert fresh_typevar_origin(TypeVar("T")) is None
+    assert fresh_typevar_origin(AdtType("Option", (TypeVar("T$2"),))) is None

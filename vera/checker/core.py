@@ -911,7 +911,7 @@ class TypeChecker(
             tuple[int, int, int, int], Type] = {}
         # #1866: the names of the type variables a constructor minted
         # (`_ctor_result_type`), the one mark that tells them from a generic
-        # call's.  Read by `ControlFlowMixin._complete_arm` alone: an arm a
+        # call's.  Read by `ControlFlowMixin._complete_arms` alone: an arm a
         # join completes takes the joined type for these, never for a
         # variable a call's instantiation holds.
         self._constructor_minted: set[str] = set()
