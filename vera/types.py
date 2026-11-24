@@ -1280,14 +1280,9 @@ def contains_typevar(ty: Type) -> bool:
     return False
 
 
-def _holds_nothing(name: str) -> Collection[int]:
-    """No data type's parameter holds behaviour: the default reading."""
-    return ()
-
-
 def read_open_as_unknown(
         ty: Type, rigid: Collection[str],
-        holds: Callable[[str], Collection[int]] = _holds_nothing) -> Type:
+        holds: Callable[[str], Collection[int]]) -> Type:
     """*ty* with every type variable that is not one of *rigid* (the
     enclosing function's own, by name) read as unknown: one a call left
     open (`T$3`), a built-in's, or a callee's leaked raw.  What a value of
