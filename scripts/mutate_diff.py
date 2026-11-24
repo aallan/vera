@@ -1095,7 +1095,8 @@ def install_window(engine: Any, window_file: Path) -> None:
         if path in spec.get("changed", {}):
             # Which of each unit's window mutants sit on no changed line:
             # the window's neighbours, which do not gate the pull request.
-            for key, numbers in neighbour_numbers(path, source, lines, spec["changed"][path]).items():
+            for key, numbers in neighbour_numbers(path, source, lines, spec["changed"][path],
+                                                  spec.get("removed_after", {}).get(path, [])).items():
                 counts[path].setdefault(key, {"held": held[key], "window": inside[key]})["neighbours"] = numbers
     Path(spec["record"]).write_text(json.dumps({"files": counts}, indent=1) + "\n", encoding="utf-8")
 
@@ -1229,11 +1230,15 @@ def touched_lines(original: Any, mutated: Any, positions: Mapping[Any, Any]) -> 
 
 
 def neighbour_numbers(path: str, source: str, lines: Iterable[int],
-                      changed: Iterable[int]) -> dict[str, list[int]]:
+                      changed: Iterable[int], removed_after: Iterable[int] = ()) -> dict[str, list[int]]:
     """For each unit, the numbers the window's run gives its mutants (from
     one, in the order mutmut's visitor makes them over ``lines``) that are on
-    no ``changed`` line (:func:`touched_lines`): the mutants the two-line
-    window pulled in from the lines around the diff's own."""
+    no ``changed`` line (:func:`touched_lines`) and whose node spans no point
+    the diff removed lines after (``removed_after``: a node that lost a line,
+    such as an operand of a condition over several lines, is the diff's
+    own): the mutants the two-line window pulled in from the lines around
+    the diff's own.  A whole statement removed leaves no node spanning its
+    point, so the mutants around it are neighbours."""
     import libcst as cst
     from libcst.metadata import MetadataWrapper, PositionProvider
     from mutmut.mutation.file_mutation import MutationVisitor
@@ -1241,6 +1246,7 @@ def neighbour_numbers(path: str, source: str, lines: Iterable[int],
     from mutmut.mutation.pragma_handling import get_ignored_lines
 
     wanted = frozenset(changed)
+    points = sorted(set(removed_after))
     wrapper = MetadataWrapper(cst.parse_module(source))
     visitor = MutationVisitor(mutation_operators, get_ignored_lines(path, source, wrapper, None), set(lines))
     wrapper.visit(visitor)
@@ -1260,7 +1266,9 @@ def neighbour_numbers(path: str, source: str, lines: Iterable[int],
             continue
         made[key] = made.get(key, 0) + 1
         out.setdefault(key, [])
-        if not touched_lines(mutation.original_node, mutation.mutated_node, positions) & wanted:
+        span = positions[mutation.original_node]
+        if (not touched_lines(mutation.original_node, mutation.mutated_node, positions) & wanted
+                and not any(span.start.line <= p < span.end.line for p in points)):
             out[key].append(made[key])
     return out
 
@@ -2583,7 +2591,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         # window's mutants on none of them (neighbour_numbers).
         window_file.write_text(json.dumps({"context": args.context, "record": str(counts_file),
                                            "lines": kept,
-                                           "changed": {path: sorted(change_of[path].added) for path in files}},
+                                           "changed": {path: sorted(change_of[path].added) for path in files},
+                                           "removed_after": {path: sorted(change_of[path].deleted_after)
+                                                             for path in files}},
                                           indent=1) + "\n", encoding="utf-8")
         record["window"] = {"context": args.context, "rule": rule(args.context), "lines": kept}
         if args.list:

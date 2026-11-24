@@ -3299,6 +3299,7 @@ class TestEndToEnd:
             assert "on unchanged lines" not in record["outcome"] and "unchanged lines:" not in summary
         window = json.loads((tmp_path / "work" / "window.json").read_text(encoding="utf-8"))
         assert window["changed"]["vera/m.py"]  # the engine is told the diff's own lines
+        assert window["removed_after"]["vera/m.py"] == []  # and where it only removed lines
 
     def test_the_engine_names_a_mutant_on_a_changed_line_by_its_node_and_the_children_it_takes(self) -> None:
         """mutmut's own visitor, no test run: a mutant whose node starts on
@@ -3316,6 +3317,24 @@ class TestEndToEnd:
         assert all(m["line"] != 4 for m in made if m["n"] in apart)
         taking = [m for m in made if m["line"] == 2 and "2" not in m["mutated"].replace("h(", "")]
         assert all(m["n"] not in apart for m in taking)  # takes the `2` argument: own
+
+    def test_a_node_that_lost_a_line_is_the_diffs_own_and_a_removed_statement_leaves_none(self) -> None:
+        """A hunk that only removes lines changes no head line.  An operand
+        line removed from a condition over several lines edited that
+        condition: its mutants, whose node spans the removal point, gate.  A
+        whole statement removed leaves no node spanning its point: the
+        mutants around it are neighbours, measured and listed."""
+        pytest.importorskip("mutmut")
+        operand = "def f(a, b):\n    if (a\n            and b):\n        return 1\n    return 0\n"
+        listed = json.loads(md.list_window(json.dumps({"sources": {"m.py": operand},
+                                                        "lines": {"m.py": [1, 2, 3, 4, 5]}})))["m.py"]["x_f"]
+        apart = set(md.neighbour_numbers("m.py", operand, [1, 2, 3, 4, 5], [], [2])["x_f"])
+        spanning = [m for m in listed if m["line"] == 2 and " or " in m["mutated"]]
+        assert spanning and all(m["n"] not in apart for m in spanning)  # `and` to `or`: own
+        statement = "def g(a):\n    x = a + 1\n    return x\n"
+        made = json.loads(md.list_window(json.dumps({"sources": {"m.py": statement},
+                                                     "lines": {"m.py": [1, 2, 3]}})))["m.py"]["x_g"]
+        assert set(md.neighbour_numbers("m.py", statement, [1, 2, 3], [], [2])["x_g"]) == {m["n"] for m in made}
 
     def _probe_tree(self, tmp_path: Path) -> Path:
         tree = tmp_path / "tree"
