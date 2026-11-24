@@ -116,6 +116,7 @@ _FAMILIES = {
     "q_fn": "Q<Int, UF>",
     "q_nat": "Q<Int, Nat>",
     "array_option_nat": "Array<Option<Nat>>",
+    "q_tuple_open": "Q<Int, Tuple<Nat, Option<Bool>>>",
 }
 
 
@@ -761,3 +762,37 @@ def test_repro_a_value_with_no_target_records_none() -> None:
     assert arts.node_target_types and arts.expr_target_types
     assert None not in arts.node_target_types.values()
     assert None not in arts.expr_target_types.values()
+
+
+class _RefusedWithNoSibling(Exception):
+    """The control is refused (E213) with no sibling at all."""
+
+
+_PARTLY_OPEN = ("{ let @Nat = 1; pick(Tuple(@Nat.0, None), "
+                "Tuple(idg(0 - 3), None)) }")
+
+
+@pytest.mark.xfail(
+    raises=_RefusedWithNoSibling, strict=True,
+    reason="`MkQ(Some(1), { ... pick(Tuple(@Nat.0, None), "
+           "Tuple(idg(0 - 3), None)) }, Tuple(1, None))` is refused E213 "
+           "with no sibling, a refusal outside #1866; until it is lifted no "
+           "accepted program observes the origin `_check_fn_call_with_info` "
+           "hands a constructor argument against a partly open parameter")
+def test_repro_a_partly_open_parameter_in_a_field_is_judged_as_outside() -> None:
+    """A generic call whose parameter a `None` leaves partly open
+    (`Tuple<Nat, Option<T>>`, #1010), as a field's value beside a sibling:
+    its constructor argument is synthesized again against the parameter, a
+    type of the context's, so the cell is judged as its control, the same
+    construction with no sibling."""
+    control = _program("q_tuple_open",
+                       f"MkQ(Some(1), {_PARTLY_OPEN}, Tuple(1, None))")
+    codes = _codes(control, "check")
+    if codes == ("E213",):
+        raise _RefusedWithNoSibling(codes)
+    assert codes == ()
+    cell = _program("q_tuple_open", JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Tuple<Nat, Option<Bool>>>.0",
+        open_=f"MkQ(None, {_PARTLY_OPEN}, Tuple(1, None))"))
+    assert _instances(cell) == _instances(control)
+    assert _verified(cell) == _verified(control)
