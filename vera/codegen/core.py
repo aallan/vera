@@ -2532,7 +2532,6 @@ class CodeGenerator(
                         "program at https://github.com/aallan/vera/issues"
                     ),
                     spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-                    severity="error",
                     error_code="E699",
                 ))
             return CompileResult(

@@ -55,7 +55,12 @@ def engine() -> wasmtime.Engine:
         if _ENGINE is None:
             config = wasmtime.Config()
             config.wasm_exceptions = True
-            _ENGINE = wasmtime.Engine(config)
+            # The setting states the requirement: wasmtime 50.0.1's default
+            # already enables the proposal (a default engine validates a
+            # module holding a tag and a `throw`), so an engine built
+            # without the config changes nothing at that version.
+            _ENGINE = wasmtime.Engine(  # pragma: no mutate
+                config)
         return _ENGINE
 
 

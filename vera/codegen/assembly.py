@@ -479,7 +479,7 @@ class AssemblyMixin:
         # module's validation (`compile_program`) refuses any module this
         # derivation gets wrong.
         if (self._needs_memory or self.string_pool.has_strings()
-                or holds_memory_instruction("\n".join(parts))):
+                or any(holds_memory_instruction(part) for part in parts)):
             parts.insert(
                 memory_at,
                 f'  (memory (export "{runtime_export("memory")}") 1)')
