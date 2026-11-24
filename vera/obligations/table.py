@@ -48,7 +48,7 @@ first — names that row in ``answered_by`` and emits no check of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, TYPE_CHECKING, cast
+from typing import Any, TYPE_CHECKING
 
 from vera import ast, binding, carriers, fold, naming, narrowing
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES
@@ -1891,8 +1891,11 @@ class _Builder:
         # cell or payload type: a qualified effect is refused at check
         # (E330), `State` or `Exn` written bare (E337, both in
         # `vera/checker/control.py`), a user effect's handler (E340).
-        args = cast("tuple[ast.TypeExpr, ...]", cast(ast.EffectRef, eff).type_args)
-        cell = self.sem(args[0])
+        cell: Type | None = None  # pragma: no mutate — equivalent: the default is always replaced (above)
+        if (isinstance(eff, ast.EffectRef)
+                and eff.type_args  # pragma: no mutate — equivalent: both operands hold for every handle the table meets (E330, E337, E340 above), so `or` reads the same
+        ):
+            cell = self.sem(eff.type_args[0])
         is_state = isinstance(eff, ast.EffectRef) and eff.name == "State"
         if expr.state is not None:
             self.walk(expr.state.init_expr, d,
