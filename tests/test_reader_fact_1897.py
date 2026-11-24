@@ -736,6 +736,47 @@ def test_a_proved_narrowing_still_proves_its_readers() -> None:
     assert _at_line(verified, _line(source, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
 
 
+def _nested_builtins(depth: int, narrow: bool) -> str:
+    expr = "@Int.0"
+    for i in range(depth):
+        expr = f"max({expr}, {i})"
+    let = "  let @Tuple<Small, Int> = @Tuple<Int, Int>.0;\n" if narrow else ""
+    return SMALL + (
+        "public fn go(@Tuple<Int, Int>, @Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+        f"{let}  {expr}\n}}\n")
+
+
+def _translations(source: str, monkeypatch: pytest.MonkeyPatch) -> int:
+    from vera.smt import SmtContext
+    original = SmtContext.translate_expr
+    count = [0]
+
+    def counting(self: Any, *args: Any, **kwargs: Any) -> Any:
+        count[0] += 1
+        return original(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(SmtContext, "translate_expr", counting)
+        pipeline.verify(source, file=FILE)
+    return count[0]
+
+
+def test_repro_a_built_in_over_its_parts_is_translated_once(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Asking whether a built-in's part holds a narrowed value reads the
+    term the translation already made of it: a part is translated again
+    only where the translation did not reach it.  Re-translating every part
+    ran the hook on the part's own parts, so a chain of nested built-ins in
+    a function with a narrowing cost twice as much at each level (16 levels
+    of `max` took seconds where the same chain without the narrowing takes
+    a fraction of one).  Counted, not timed: doubling the depth at most
+    doubles the translations, give or take the function's fixed part."""
+    shallow = _translations(_nested_builtins(8, narrow=True), monkeypatch)
+    deep = _translations(_nested_builtins(16, narrow=True), monkeypatch)
+    assert deep <= 2.5 * shallow, (shallow, deep)
+
+
 # =====================================================================
 # The class instrument
 # =====================================================================

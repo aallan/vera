@@ -803,6 +803,10 @@ class SmtContext:
         # values it rests on: the narrowing's own query never reads it
         # (`check_valid`'s *own*).
         self._narrowed_terms: list[z3.ExprRef] = []
+        self._narrowed_ids: set[int] = set()
+        # Each walked term's id to the term and the narrowed ids under it
+        # (`narrowed_ids_in`).
+        self._narrowed_below: dict[int, tuple[Any, frozenset[int]]] = {}
         self._withheld_owners: dict[int, frozenset[int]] = {}
         self._own_excluded: frozenset[int] = frozenset()
         self._narrowing_hook: Any = None
@@ -4796,14 +4800,51 @@ class SmtContext:
         occur in *term*."""
         if term is None or not self._narrowed_terms:
             return set()
-        return self._ids_in(
-            [term], {t.get_id() for t in self._narrowed_terms})
+        try:
+            top = term.get_id()  # type: ignore[attr-defined]
+        except (AttributeError, z3.Z3Exception):
+            return set()
+        # Each subterm's answer is kept (`_narrowed_below`, with the term
+        # itself, so its id is not reused while the answer stands), so a
+        # chain of terms each holding the last is walked once, not once per
+        # link: the hook asks this of every node it meets.
+        cache = self._narrowed_below
+        wanted = self._narrowed_ids
+        stack: list[tuple[Any, bool]] = [(term, False)]
+        while stack:
+            cur, children_done = stack.pop()
+            try:
+                cur_id = cur.get_id()
+                kids = cur.children()
+            except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                continue
+            if cur_id in cache:
+                continue
+            if not children_done:
+                stack.append((cur, True))
+                stack.extend((k, False) for k in kids)
+                continue
+            found = {cur_id} & wanted
+            for k in kids:
+                try:
+                    found |= cache.get(k.get_id(), (None, frozenset()))[1]
+                except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                    continue
+            cache[cur_id] = (cur, frozenset(found))
+        return set(cache.get(top, (None, frozenset()))[1])
 
     def note_narrowed(self, term: z3.ExprRef) -> None:
         """Record *term* as a value a narrowing in this function gave a type
         its own does not state (#1897)."""
-        if all(t.get_id() != term.get_id() for t in self._narrowed_terms):
-            self._narrowed_terms.append(term)
+        tid = term.get_id()
+        if tid in self._narrowed_ids:
+            return
+        self._narrowed_terms.append(term)
+        self._narrowed_ids.add(tid)
+        if tid in self._narrowed_below:
+            # A term walked before holds this one only if this one was
+            # walked with it, so the answers kept stand unless it was.
+            self._narrowed_below.clear()
 
     def withhold_narrowed(
         self, facts: Sequence[z3.ExprRef], owners: set[int],
@@ -5282,6 +5323,8 @@ class SmtContext:
         self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._narrowed_terms.clear()  # #1897: per function, as the taint is
+        self._narrowed_ids.clear()
+        self._narrowed_below.clear()
         self._withheld_owners.clear()
         self._own_excluded = frozenset()
         self._value_facts.clear()  # #1480 review: per-function placeholders

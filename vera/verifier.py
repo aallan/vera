@@ -323,6 +323,12 @@ class _FnFrame:
     #: The nodes whose term holds a narrowed value, as the translation meets
     #: them, so a built-in's result over one is narrowed too.
     narrowed_nodes: set[object] = field(default_factory=set)
+    #: The term each node translated to, by the node's key and the identity
+    #: of the environment it was translated under (the same node translates
+    #: under several where a clause or a callee body is inlined), with that
+    #: environment kept alive beside it (`ContractVerifier._holds_narrowed`).
+    met: dict[tuple[object, int], tuple[SlotEnv, object]] = field(
+        default_factory=dict)
 
 
 class _Path(NamedTuple):
@@ -12467,6 +12473,10 @@ class ContractVerifier:
                 smt.note_narrowed(cast("z3.ExprRef", component))
         if smt.narrowed_ids_in(term):
             frame.narrowed_nodes.add(key)
+        # The term this node translated to under *env*, for a parent built-in
+        # to read (`_holds_narrowed`); the env is kept with it, so an id a
+        # collected env leaves free is never read as another's.
+        frame.met[(key, id(env))] = (env, term)
 
     def _note_narrowed_binder(
         self, value: ast.Expr, steps: tuple[tuple[str, int], ...],
@@ -12486,15 +12496,32 @@ class ContractVerifier:
     def _holds_narrowed(
         self, part: ast.Expr, env: SlotEnv, smt: SmtContext, frame: _FnFrame,
     ) -> bool:
-        """Whether *part*'s value holds a narrowed one (#1897): as met, or,
-        for a part the translation did not reach (a built-in it reads as a
-        stand-in does not translate its arguments), as translated here."""
+        """Whether *part*'s value holds a narrowed one (#1897), read off the
+        term the translation made of it under *env* (`_FnFrame.met`), never
+        by translating it again: a second translation mints stand-ins and
+        asserts facts afresh, and running the hook on the part's own parts
+        doubled the cost at each level of nested built-ins.  A part the
+        translation did not reach (a built-in it reads as a stand-in does not
+        translate its arguments) is read by its nodes: one a narrowing row
+        takes or one met narrowed, or a slot reference whose value holds a
+        narrowed one."""
         key = obligation_table.ObligationTable._key(part)
         if key in frame.narrowed_nodes:
             return True
         if not smt._narrowed_terms and key not in _narrowed_at(frame):
             return False
-        return bool(smt.narrowed_ids_in(smt.translate_expr(part, env)))
+        met = frame.met.get((key, id(env)))
+        if met is not None and met[0] is env:
+            return bool(smt.narrowed_ids_in(met[1]))
+        narrowed_at = _narrowed_at(frame)
+        for node in fold.walk(part):
+            node_key = obligation_table.ObligationTable._key(node)
+            if node_key in narrowed_at or node_key in frame.narrowed_nodes:
+                return True
+            if isinstance(node, ast.SlotRef) and smt.narrowed_ids_in(
+                    smt._translate_slot_ref(node, env)):
+                return True
+        return False
 
     def _disclosure_is_live(self, smt: SmtContext) -> bool:
         """Whether this run has disclosed anything at all.
