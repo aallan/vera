@@ -66,6 +66,7 @@ from vera.types import (
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
     "vera/checker/control.py",
+    "vera/checker/core.py",
     "vera/checker/expressions.py",
     "vera/checker/resolution.py",
 ])

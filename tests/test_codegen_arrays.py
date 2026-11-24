@@ -1079,16 +1079,31 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src, fn="g") == 2
 
-    def test_flatten_empty_inline_literal_stays_loud_skip(self) -> None:
-        """Honest boundary (#1052): an EMPTY inline literal (`array_flatten([])`)
-        carries no element-type information — T is genuinely unrecoverable from
-        the argument — so the enclosing function keeps the LOUD [E602] skip
-        rather than guessing T or silently mis-compiling.  (A non-empty inline
-        literal resolves — see the tests above.)"""
+    def test_flatten_empty_inline_literal_takes_the_contexts_type(self) -> None:
+        """An EMPTY inline literal whose context names T (#1812, spec §5.9):
+        `let @Array<String> = array_append(array_flatten([]), "abc")` fixes
+        T = String, so `[]` is checked as an `Array<Array<String>>` and the
+        function compiles (it was dropped via [E602] before).  String, not
+        Int, so a pair element read through a mis-resolved T cannot pass:
+        `string_length("abc") + 1` = 4."""
         src = """
 public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Array<Int> = array_flatten([]);
-  array_length(@Array<Int>.0)
+  let @Array<String> = array_append(array_flatten([]), "abc");
+  string_length(@Array<String>.0[0]) + array_length(@Array<String>.0)
+}
+"""
+        assert _run(src, fn="g") == 4
+
+    def test_flatten_empty_inline_literal_stays_loud_skip(self) -> None:
+        """Honest boundary (#1052): an EMPTY inline literal that no context
+        types (`array_length(array_flatten([]))`) carries no element-type
+        information — T is genuinely unrecoverable — so the enclosing function
+        keeps the LOUD [E602] skip rather than guessing T or silently
+        mis-compiling.  (A non-empty inline literal resolves, and so does an
+        empty one whose context names T — see the tests above.)"""
+        src = """
+public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_flatten([]))
 }
 """
         result = _compile_ok(src)
