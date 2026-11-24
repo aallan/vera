@@ -18,8 +18,8 @@ data type is decided at the position that gives a value its type.
 The matrix: type x where the value comes from x how the obligation reads it x
 what it rests on.  Every cell's `ensures` is true of every value of the type,
 so every cell is `verified`.  A value from a call result waits for the
-obligations to be discharged at their own program point (the fix of #1897),
-and those cells are strict xfails until then.  The differential runs each
+obligations to be discharged at their own program point (#1925), and
+those cells are strict xfails until then.  The differential runs each
 cell's function on values a checked producer built from the i64 boundary
 values, and no postcondition check of the function may fire.
 """
@@ -131,8 +131,8 @@ _OUTSIDE = {
 def _waits_for_call_result_facts(
         tname: str, source: str, reader: str, ob: str) -> bool:
     """A value from a call result that only the result's own type facts
-    prove: those wait for #1897's fix.  The facts a call result carried
-    before (a `Nat` head's range, a `match` arm's direct binder) do not."""
+    prove: those wait for #1925.  The facts a call result carried before
+    (a `Nat` head's range, a `match` arm's direct binder) do not."""
     if source not in _CALL_SOURCES or tname == "Nat":
         return False
     if ob.startswith("range"):
@@ -220,7 +220,7 @@ def _marks(cell: tuple[str, str, str, str]) -> list[pytest.MarkDecorator]:
     if _waits_for_call_result_facts(*cell):
         return [pytest.mark.xfail(strict=True, reason=(
             "a call result's type facts wait for each obligation to be "
-            "discharged at its own program point (#1897)"))]
+            "discharged at its own program point (#1925)"))]
     return []
 
 
@@ -476,3 +476,29 @@ def test_the_result_constant_proves_no_return_row() -> None:
     statuses = _statuses(_NARROWED_RETURN)["h2"]
     assert all(status != "verified" for kind, status, _ in statuses
                if kind in ("nat_bind", "refine_bind")), statuses
+
+
+#: An operation whose exact result a row asks to be in range, inside a
+#: closure, where the operation's node is a stand-in: the stand-in carries
+#: no range, or the row would be answered by its own goal.
+_ARITHMETIC_IN_A_CLOSURE = {
+    "add": "@Int.0 + @Int.1",
+    "sub": "@Int.0 - @Int.1",
+    "mul": "@Int.0 * @Int.1",
+    "div": "@Int.0 / @Int.1",
+    "neg": "-@Int.0",
+    "abs": "abs(@Int.0)",
+}
+
+
+@pytest.mark.parametrize("op", list(_ARITHMETIC_IN_A_CLOSURE))
+def test_an_arithmetic_stand_in_does_not_answer_its_own_row(op: str) -> None:
+    source = (
+        "type IntToInt = fn(Int -> Int) effects(pure);\n\n"
+        "public fn make(@Int -> @IntToInt)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n"
+        f"  fn(@Int -> @Int) effects(pure) {{ {_ARITHMETIC_IN_A_CLOSURE[op]} }}\n}}\n")
+    rows = [(o.kind, o.status) for o in pipeline.verify(source, file=FILE).obligations
+            if o.kind == "int_overflow"]
+    assert rows, "the operation has its row"
+    assert all(status != "verified" for _, status in rows), rows

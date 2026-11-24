@@ -1,4 +1,4 @@
-"""A destructuring `let` names its constructor by its link name (#F1).
+"""A destructuring `let` names its constructor by its link name (#1924).
 
 The linker spells every constructor by its type's link name (`Box$MkBox`,
 #1694) in the nodes that name one through a `name` field.  A destructuring

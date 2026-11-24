@@ -635,7 +635,7 @@ def _renamed(
             if isinstance(node, ast.LetDestruct):
                 # A destructure names its shape by a constructor
                 # (`let MkBox<…>`) or by a type (`let Wrap<…>`), so the
-                # name is a constructor's where one is in scope (#1814's F1).
+                # name is a constructor's where one is in scope (#1924).
                 table = ctors if current in ctors else types
             renamed = (
                 current if current in bound and table is types

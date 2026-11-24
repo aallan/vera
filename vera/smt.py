@@ -4244,7 +4244,7 @@ class SmtContext:
                                 and val.sort().num_constructors() == 1):
                             # The shape named by its TYPE (`let Box<…>`),
                             # which the checker accepted for the value's
-                            # one constructor (F1 of #1814).
+                            # one constructor (#1924).
                             idx = 0
                         if (idx is not None
                                 and val.sort().constructor(idx).arity()
