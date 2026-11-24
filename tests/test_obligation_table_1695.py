@@ -1374,15 +1374,17 @@ def test_verifier_identity_over_the_generator(seed: int, tmp_path: Path) -> None
     _verifier_identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
 
 
-#: A measure whose operation proves at the function's entry (`@Nat.0 >= 1`)
-#: and is left undecided at the self tail call, whose argument the verifier
-#: cannot see into: the copies share one record, which takes the tail
-#: call's status and names it (amendment 3 to the design note).
+#: A measure whose operation proves at the function's entry (`@Nat.0 <
+#: 1000`) and is left undecided at the self tail call, whose argument the
+#: verifier cannot see into: the copies share one record, which takes the
+#: tail call's status and names it (amendment 3 to the design note).  The
+#: operation is `+ 1`, which no fact of the argument's type proves: a
+#: `Nat`'s range leaves `MAX + 1` (#1814), where `- 1` was proved there.
 _MEASURE_DECIDED_AT_THE_TAIL_CALL = """\
 public fn down(@Nat, @Bool -> @Nat)
-  requires(@Nat.0 >= 1)
+  requires(@Nat.0 >= 1 && @Nat.0 < 1000)
   ensures(true)
-  decreases(@Nat.0 - 1)
+  decreases(@Nat.0 + 1)
   effects(pure)
 {
   if @Nat.0 <= 2 then { 0 } else { down(apply_fn(fn(@Nat -> @Nat) effects(pure) { @Nat.0 }, @Nat.0 - 1), @Bool.0) }

@@ -698,10 +698,11 @@ NARROWING_GUARD = NARROWING.helpers + "\n" + _fn(
 def test_repro_a_narrowing_in_a_right_operand_is_under_the_premise() -> None:
     """Kills the binding-site narrowing walk taking no premise."""
     v = _verify(NARROWING_GUARD)
-    # The subtraction's overflow is Tier 3 under an `if` with the same
-    # condition too: only the narrowing is the premise's to discharge.
+    # The subtraction's overflow is proved under the premise too: `@Int.0 >
+    # 0` and the parameter's own range (`<= 2^63 - 1`, #1814) leave
+    # `@Int.0 - 1` in range, as under an `if` with the same condition.
     where = _at(NARROWING_GUARD, "@Int.0 - 1")
-    assert _records_at(v, where) == ["int_overflow:tier3",
+    assert _records_at(v, where) == ["int_overflow:verified",
                                      "nat_bind:verified"]
     assert v.ok, [(d.error_code, d.description[:80]) for d in v.errors]
     (zero,) = _runs(NARROWING_GUARD, "probe", [0])
@@ -724,8 +725,11 @@ def test_a_premise_is_stated_without_obligating_its_calls_again() -> None:
     # The call's row is discharged once, its one record (#1695).
     assert [o.status for o in v.obligations if o.kind == "call_pre"] == [
         "verified"]
+    # The subtraction's overflow is proved: under the asserted `@Int.0 > 0`
+    # the parameter's own range (`<= 2^63 - 1`, #1814) leaves `@Int.0 - 1`
+    # in range.  The narrowing is the premise's to discharge.
     assert _records_at(v, _at(ASSERTED_LEFT, "@Int.0 - 1")) == [
-        "int_overflow:tier3", "nat_bind:verified"]
+        "int_overflow:verified", "nat_bind:verified"]
     assert v.ok, [(d.error_code, d.description[:80]) for d in v.errors]
 
 

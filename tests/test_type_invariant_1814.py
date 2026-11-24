@@ -603,8 +603,8 @@ public fn go(@Int -> @Bool)
 
 
 def test_repro_an_int_element_predicate_with_a_helper_is_not_shared() -> None:
-    """The same rule over an `Int` element refinement, which `_element_facts`
-    stated under the index quantifier before #1814: at 252ddf61 `vera
+    """#1929: the same rule over an `Int` element refinement, which
+    `_element_facts` stated under the index quantifier: at 252ddf61 `vera
     verify` proved `a[0] == a[1]` (every fact Tier 1), and `go` fails `f`'s
     postcondition at run time."""
     verified = pipeline.verify(_SHARED_HELPER_INT_ELEMENTS, file=FILE)
