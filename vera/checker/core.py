@@ -1925,7 +1925,8 @@ class TypeChecker(
 
         # 6. Check body (pass return type as expected for bidirectional)
         body_type = self._synth_expr(decl.body, expected=return_type,
-                                     from_sibling=False)
+                                     from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                     )
         if body_type and not isinstance(body_type, UnknownType):
             if (not is_subtype(body_type, return_type)
                     and not self._refuse_unfit_function_value(

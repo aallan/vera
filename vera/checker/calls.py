@@ -1078,7 +1078,8 @@ class CallsMixin:
                 if not contains_fresh_typevar(pt):
                     exp = pt
             arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False))
+                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                              ))
 
         # Arity check
         if len(args) != len(fn_info.param_types):
@@ -1276,7 +1277,8 @@ class CallsMixin:
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
                 arg_ty = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                       )
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1285,7 +1287,8 @@ class CallsMixin:
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
                 re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: at this pass the argument's type holds no variable (the pass above synthesized any again against the same parameter), so no reader of the origin has a variable or a hole to fix, and no cell moves (the instrument and test_checker*.py: 402 hits, 0 under a sibling's origin; 25 hand cells unmoved)
+                                       )
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1303,7 +1306,8 @@ class CallsMixin:
                         self._literal_soft_type(args[i], arg_ty)
                         or arg_ty)):
                 re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                       )
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, param_ty)):
                     arg_ty = re
@@ -1323,7 +1327,8 @@ class CallsMixin:
                     and isinstance(args[i], (
                         ast.ConstructorCall, ast.NullaryConstructor))):
                 re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                       )
                 if re is not None and not isinstance(re, UnknownType):
                     arg_ty = re
                     arg_types[i] = re
@@ -1570,7 +1575,8 @@ class CallsMixin:
                 if not contains_typevar(pt):
                     exp = pt
             arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False))
+                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                              ))
 
         # Arity: every argument after the function value maps to one
         # parameter of the applied fn type.
@@ -1609,7 +1615,8 @@ class CallsMixin:
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
                 arg_ty = self._synth_expr(rest[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` unreached: the first pass gives each argument its parameter's type where that holds no variable, so no argument holds one here (0 hits over 4,879 tests)
+                                       )
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1618,7 +1625,8 @@ class CallsMixin:
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
                 re = self._synth_expr(rest[i], expected=param_ty,
-                                       from_sibling=False)
+                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: at this pass the argument's type holds no variable (the pass above synthesized any again against the same parameter), so no reader of the origin has a variable or a hole to fix, and no cell moves (the instrument and test_checker*.py: 78 hits, 0 under a sibling's origin; 25 hand cells unmoved)
+                                       )
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1811,7 +1819,8 @@ class CallsMixin:
         for i, arg in enumerate(args):
             exp = param_types[i] if i < len(param_types) else None
             arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False))
+                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                              ))
 
         if len(args) != len(param_types):
             self._error(
@@ -2303,9 +2312,11 @@ class CallsMixin:
                         and not contains_fresh_typevar(param_ty)
                         and isinstance(args[i], (
                             ast.ConstructorCall, ast.NullaryConstructor))):
-                    resynth = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False)
-                    if (resynth is not None
+                    resynth = self._synth_expr(
+                        args[i], expected=param_ty,
+                        from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by test_repro_an_ability_operation_s_constructor_argument_meets_its_parameter
+                    )
+                    if (resynth is not None  # pragma: no mutate — equivalent: a constructor's synthesis is UnknownType only for a constructor unknown or refused (E210, E158) or an empty Tuple, whose first synthesis was UnknownType too, so it never holds the variable that brings it here
                             and not isinstance(resynth, UnknownType)):
                         arg_ty = resynth
                         arg_types[i] = resynth
@@ -3231,7 +3242,7 @@ class CallsMixin:
                 t = self._check_in_literal_context(
                     arg, t, components[i], component=True,
                     from_sibling=self._expected_from_sibling)
-            if t is not None and not isinstance(t, UnknownType):
+            if t is not None and not isinstance(t, UnknownType):  # pragma: no mutate — equivalent: `or` differs only for a component synthesized as None, which follows only an E176 (`_SYNTH_ARMS` covers every expression class; 0 of 4,786 checker and instrument tests synthesize None), and an UnknownType appended either way is equal
                 arg_types.append(t)
             else:
                 arg_types.append(UnknownType())

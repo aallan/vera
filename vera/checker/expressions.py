@@ -612,11 +612,13 @@ class ExpressionsMixin:
             if (isinstance(expr.right, ast.IntLit)
                     and base_type(left_ty) == BYTE):
                 right_ty = self._synth_expr(expr.right, expected=BYTE,
-                                           from_sibling=False)
+                                           from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: the operand is an integer literal, which reads no origin but its target, and a `Byte` refinement's predicate reads none (verify unchanged); a predicate is checked outside any synthesis (0 of 28 hits under a sibling's origin)
+                                           )
             elif (isinstance(expr.left, ast.IntLit)
                     and base_type(right_ty) == BYTE):
                 left_ty = self._synth_expr(expr.left, expected=BYTE,
-                                          from_sibling=False)
+                                          from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too, as the right operand's
+                                          )
             if left_ty is None or right_ty is None:
                 return None
         if is_unknown_like(left_ty) or is_unknown_like(right_ty):
@@ -844,7 +846,8 @@ class ExpressionsMixin:
                 and isinstance(left_ty, AdtType)
                 and not (left_ctor and contains_fresh_typevar(left_ty))):
             new_right = self._synth_expr(expr.right, expected=left_ty,
-                                         from_sibling=False)
+                                         from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                         )
             if new_right is not None and not isinstance(
                     new_right, UnknownType):
                 right_ty = new_right
@@ -853,7 +856,8 @@ class ExpressionsMixin:
                 and isinstance(right_ty, AdtType)
                 and not (right_ctor and contains_fresh_typevar(right_ty))):
             new_left = self._synth_expr(expr.left, expected=right_ty,
-                                        from_sibling=False)
+                                        from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                        )
             if new_left is not None and not isinstance(
                     new_left, UnknownType):
                 left_ty = new_left
@@ -1180,7 +1184,8 @@ class ExpressionsMixin:
         self._check_refinement_predicates(stmt.type_expr)
         declared_type = self._resolve_type(stmt.type_expr)
         val_type = self._synth_expr(stmt.value, expected=declared_type,
-                                    from_sibling=False)
+                                    from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                    )
 
         if val_type and not isinstance(val_type, UnknownType):
             if not isinstance(declared_type, UnknownType):
@@ -1277,7 +1282,8 @@ class ExpressionsMixin:
         if tuple_shape:
             self._check_in_literal_context(
                 stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)),
-                from_sibling=False)
+                from_sibling=False,  # pragma: no mutate — equivalent: `None` is False's falsy twin, and every reader of the origin tests its truth; `True` is killed by test_repro_a_destructure_s_bindings_are_its_call_s_expected_type
+            )
 
         for te, resolved in zip(stmt.type_bindings, resolved_types):
             tname = self._type_expr_to_slot_name(te)
@@ -1427,7 +1433,8 @@ class ExpressionsMixin:
             self._closure_handler_marks.append(len(self._handled_effects))
         self._pure_predicates.append(None)
         body_type = self._synth_expr(expr.body, expected=ret_type,
-                                     from_sibling=False)
+                                     from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
+                                     )
         self._pure_predicates.pop()
         if lifted:
             self._closure_handler_marks.pop()

@@ -227,6 +227,35 @@ FORMS: dict[str, Form] = {
     # A literal's hole: a sibling's `Nat` placed `0 - 3` at `Nat`.
     "literal_hole": Form("tuple_nat", "Tuple(None, idg(0 - 3))",
                          "Tuple(Some(1), idg(0 - 3))", (), "verify"),
+    # An ability operation's constructor argument, synthesized again
+    # against the parameter its other argument fixes: the `Some` takes the
+    # parameter's `Int` into its field, which fixes `head_ord`.
+    "ability_op_ctor_arg": Form(
+        "tuple", "Tuple(None, if eq(Some(1), Some(head_ord([]))) then "
+        "{ 1 } else { 2 })",
+        "Tuple(Some(1), if eq(Some(1), Some(head_ord([]))) then "
+        "{ 1 } else { 2 })", ()),
+    # A destructure's bindings are the type its generic call is expected
+    # at: `idg` at `Tuple<Nat, Nat>`, and the -3 is refuted, in a branch as
+    # outside one.
+    "let_destructure_nat": Form(
+        "tuple", "Tuple(None, { let Tuple<@Nat, @Nat> = "
+        "idg(Tuple(1, 0 - 3)); 5 })",
+        "Tuple(Some(1), { let Tuple<@Nat, @Nat> = "
+        "idg(Tuple(1, 0 - 3)); 5 })", ("E503",), "verify"),
+    "let_destructure_nat_in_field": Form(
+        "q", "MkQ(None, { let Tuple<@Nat, @Nat> = idg(Tuple(1, 0 - 3)); 5 }, "
+        "5)",
+        "MkQ(Some(1), { let Tuple<@Nat, @Nat> = idg(Tuple(1, 0 - 3)); 5 }, "
+        "5)", ("E503",), "verify"),
+    # A generic call's argument whose literal the instantiation types
+    # (`pick` at `Nat` from its other argument): checked against that
+    # instantiation, a type of the context's, the -3 is refuted, in a
+    # constructor's field beside a sibling as outside one.
+    "generic_callee_hole_in_field": Form(
+        "q", "MkQ(None, { let @Nat = 1; pick(@Nat.0, idg(0 - 3)) }, 5)",
+        "MkQ(Some(1), { let @Nat = 1; pick(@Nat.0, idg(0 - 3)) }, 5)",
+        ("E503",), "verify"),
 }
 
 #: Each site that hands down a type of its own, in a constructor's field
@@ -249,6 +278,8 @@ _IN_FIELD = {
     "let": ("{ let @Int = head_ord([]); @Int.0 }", "5", "q"),
     "lambda_return": ("fn(@Unit -> @Int) effects(pure) { head_ord([]) }",
                       "fn(@Unit -> @Int) effects(pure) { 1 }", "q_fn"),
+    "ability_op_ctor_arg": ("eq(Some(1), Some(head_ord([])))", "true",
+                            "q_bool"),
 }
 for _name, (_value, _other, _family) in _IN_FIELD.items():
     FORMS[f"{_name}_in_field"] = Form(
@@ -306,7 +337,8 @@ SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
         1, ("callee_param", "callee_param_in_field")),
     _site("calls.py", "_check_fn_call_with_info", _S, "param_ty",
           "False"): (4, ("generic_callee_param",
-                         "generic_callee_param_in_field")),
+                         "generic_callee_param_in_field",
+                         "generic_callee_hole_in_field")),
     _site("calls.py", "_check_apply_fn", _S, "exp", "False"): (
         1, ("apply_fn_param", "apply_fn_param_in_field")),
     _site("calls.py", "_check_apply_fn", _S, "param_ty", "False"): (
@@ -314,7 +346,8 @@ SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
     _site("calls.py", "_check_op_call", _S, "exp", "False"): (
         1, ("op_param", "op_param_in_field")),
     _site("calls.py", "_check_ability_op_call", _S, "param_ty", "False"): (
-        1, ("ability_op_param",)),
+        1, ("ability_op_ctor_arg", "ability_op_ctor_arg_in_field",
+            "ability_op_param")),
     _site("control.py", "_check_handle", _S, "state_type", "False"): (
         2, ("state_init", "state_update", "state_init_in_field",
             "state_update_in_field")),
@@ -326,7 +359,8 @@ SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
         1, ("let", "let_in_field")),
     _site("expressions.py", "_check_let_destruct", _L,
           "AdtType('Tuple', tuple(resolved_types))", "False"): (
-        1, ("let_destructure",)),
+        1, ("let_destructure_nat", "let_destructure_nat_in_field",
+            "let_destructure")),
     _site("expressions.py", "_check_anon_fn", _S, "ret_type", "False"): (
         1, ("lambda_return", "lambda_return_in_field")),
     _site("core.py", "_check_fn", _S, "return_type", "False"): (
@@ -604,6 +638,10 @@ TARGET_FORMS: dict[str, tuple[str, str, str]] = {
     "nested_match": (
         "q_nat", f"match @Bool.0 {{ true -> {_MKQ}, false -> {_MKQ} }}",
         f"match @Bool.0 {{ true -> {_MKQ_CTL}, false -> {_MKQ_CTL} }}"),
+    # An index's collection checked again in the literal context the
+    # sibling's part gives (`_check_index`'s second hand-off).
+    "index_literal_context": ("q_nat", "MkQ(None, idg([0 - 3])[0], 7)",
+                              "MkQ(Some(1), idg([0 - 3])[0], 7)"),
 }
 
 
@@ -641,3 +679,85 @@ def test_repro_a_sibling_s_nat_is_no_target_for_an_int_argument() -> None:
         sib="@Q<Int, Nat>.0", open_=_MKQ))
     codes, rows = _verified(cell)
     assert codes == () and not any(k == "nat_bind" for k, _ in rows), rows
+
+
+# ---------------------------------------------------------------------
+# Killers: the sites the Mutation (diff) lane found no cell deciding
+# ---------------------------------------------------------------------
+
+
+def test_repro_an_ability_operation_s_constructor_argument_meets_its_parameter() -> None:
+    """`eq(Some(1), Some(head_ord([])))`: the `Some` is synthesized again
+    against the `Option<Int>` its sibling argument gives `eq`'s parameter,
+    a type of the context's, so its field fixes `head_ord` at `Int`, plain
+    and in a constructor's field beside a sibling.  Taken as a sibling's
+    type the parameter fixes nothing (E613)."""
+    for family, body in (
+            ("tuple", FORMS["ability_op_ctor_arg"].control),
+            ("q_bool", JOINS["if_sibling_first"].format(
+                sib="@Q<Int, Bool>.0",
+                open_=FORMS["ability_op_ctor_arg_in_field"].open_))):
+        source = _program(family, body)
+        assert _codes(source, "check") == (), body
+        assert _instances(source) == frozenset({("head_ord", ("Int",))}), body
+
+
+def test_repro_a_destructure_s_bindings_are_its_call_s_expected_type() -> None:
+    """`let Tuple<@Nat, @Nat> = idg(Tuple(1, 0 - 3))`: the bindings are the
+    type the call is expected at, so `idg` is built at `Tuple<Nat, Nat>`
+    and the -3 is refuted (E503, a violated `nat_bind`), as
+    `let @Nat = idg(0 - 3)` is; and so in a constructor's field beside a
+    sibling, where the destructure's type is still its own."""
+    plain = _program("int", "let Tuple<@Nat, @Nat> = idg(Tuple(1, 0 - 3)); "
+                            "@Nat.0")
+    assert _instances(plain) == frozenset({("idg", ("Tuple<Nat, Nat>",))})
+    codes, rows = _verified(plain)
+    assert codes == ("E503",) and ("nat_bind", "violated") in rows, rows
+    in_field = _program("q", JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Int>.0",
+        open_=FORMS["let_destructure_nat_in_field"].open_))
+    assert _instances(in_field) == frozenset({("idg", ("Tuple<Nat, Nat>",))})
+    assert _verified(in_field)[0] == ("E503",)
+
+
+def test_repro_a_generic_call_s_literal_meets_its_instantiation() -> None:
+    """`pick(@Nat.0, idg(0 - 3))`: `pick` is at `Nat`, and its argument is
+    checked again against that instantiation (#1541), so `idg` is at `Nat`
+    and the -3 refuted (E503): outside a branch, in a constructor's field
+    beside a sibling, and through a parameter a `None` leaves partly open
+    (`Tuple<Nat, Option<T>>`, #1010)."""
+    outside = _program("int", "{ let @Nat = 1; pick(@Nat.0, idg(0 - 3)); 0 }")
+    partial = _program("int", "{ let @Nat = 1; pick(Tuple(idg(0 - 3), None), "
+                              "Tuple(@Nat.0, None)); 0 }")
+    in_field = _program("q", JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Int>.0",
+        open_=FORMS["generic_callee_hole_in_field"].open_))
+    for source in (outside, partial, in_field):
+        assert ("idg", ("Nat",)) in _instances(source), source
+        assert _verified(source)[0] == ("E503",), source
+
+
+def test_repro_an_index_s_literal_context_keeps_the_sibling_s_origin() -> None:
+    """`MkQ(None, idg([0 - 3])[0], 7)` beside a `Q<Int, Nat>`: the index
+    checks its collection again in the context `Array<Nat>`, a part of the
+    sibling's type, which fills no literal's hole, so `idg` is at
+    `Array<Int>` and nothing is refuted, as outside a branch."""
+    family, open_, control = TARGET_FORMS["index_literal_context"]
+    cell = _program(family, JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Nat>.0", open_=open_))
+    assert _instances(cell) == frozenset({("idg", ("Array<Int>",))})
+    assert _verified(cell) == _verified(_program(family, control))
+    assert _verified(cell)[0] == ()
+
+
+def test_repro_a_value_with_no_target_records_none() -> None:
+    """Checked against a sibling's type the value records no target, and
+    neither table holds an entry that says so with `None`: the
+    constructor-field gap fill (#1503) fills only a missing entry, which a
+    recorded `None` would block."""
+    cell = _program("q_nat", JOINS["if_sibling_first"].format(
+        sib="@Q<Int, Nat>.0", open_=_MKQ))
+    arts = pipeline.check(cell).artifacts
+    assert arts.node_target_types and arts.expr_target_types
+    assert None not in arts.node_target_types.values()
+    assert None not in arts.expr_target_types.values()

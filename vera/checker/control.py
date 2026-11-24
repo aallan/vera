@@ -1977,7 +1977,8 @@ class ControlFlowMixin:
             # expected type to adopt the declared type arguments.
             init_type = self._synth_expr(
                 expr.state.init_expr, expected=state_type,
-                from_sibling=False)
+                from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` and the sibling's origin are killed by the state cells of tests/test_sibling_provenance_1866.py
+            )
             if init_type and not isinstance(init_type, UnknownType):  # pragma: no mutate — equivalent: `_synth_expr` returns a type, never None, and an `UnknownType` init is a subtype of every state type, so `or` enters a branch that reports nothing; with `or` here every cell of the instrument passes
                 if (not is_subtype(init_type, state_type)
                         and not self._refuse_unfit_function_value(
@@ -2209,7 +2210,9 @@ class ControlFlowMixin:
                     # with-update Byte arm unreachable from check-green
                     # source).
                     upd_type = self._synth_expr(
-                        upd_expr, expected=state_type, from_sibling=False)
+                        upd_expr, expected=state_type,
+                        from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` and the sibling's origin are killed by the state cells of tests/test_sibling_provenance_1866.py
+                    )
                     if (upd_type and state_type
                             and not isinstance(upd_type, UnknownType)
                             and not is_subtype(upd_type, state_type)

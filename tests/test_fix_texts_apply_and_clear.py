@@ -2068,3 +2068,71 @@ public fn main(@Unit -> @Int)
 """
     fix = _the("E613", "check", source).fix
     assert "bind its result" not in fix, fix
+
+
+#: A result type whose binding E613 writes out holds a type written by name
+#: beside the variable (`Bool`), and one whose variable stands in a function
+#: type, which the binding cannot write at `Int` (the Mutation (diff) lane
+#: at PR 1907's head).
+_E613_WRITTEN = """\
+private forall<T where Ord<T>> fn RET_NAME(@Unit -> RESULT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match RET_NAME(()) {
+    _ -> 0
+  }
+}
+"""
+
+_E613_PARAM = ("give '{g}' a parameter that carries T ('@T' for example) and "
+               "pass it a value at a type that supports 'Ord', Int for "
+               "example.")
+
+
+def _e613_written(name: str, result: str) -> str:
+    return _E613_WRITTEN.replace("RET_NAME", name).replace("RESULT", result)
+
+
+def test_repro_e613_s_binding_keeps_each_type_written_by_name() -> None:
+    """`tb(())` of `@Option<Tuple<T, Bool>>`: the binding writes `T` at
+    `Int` and keeps `Bool` as written; pasted where the call is, it clears
+    E613."""
+    source = _e613_written("tb", "@Option<Tuple<T, Bool>>")
+    fix = _the("E613", "check", source).fix
+    assert fix == (
+        "No argument of 'tb(())' fixes T, so the call instantiates 'tb' at "
+        "Bool, nothing giving its result a type: bind its result at a type "
+        "that supports 'Ord', where the call is: "
+        "`let @Option<Tuple<Int, Bool>> = tb(());`, then "
+        "`@Option<Tuple<Int, Bool>>.0` in its place; or "
+        + _E613_PARAM.format(g="tb")), fix
+    let, slot = re.findall(r"`([^`]+)`", fix)[:2]
+    bound = source.replace("  match tb(()) {", f"  {let}\n  match {slot} {{")
+    assert _passed_codes("check", bound) == set()
+
+
+def test_repro_e613_writes_no_binding_through_a_function_type() -> None:
+    """`fo(())` of `@Option<fn(T -> T) effects(pure)>`: `T` stands in a
+    function type, which the binding does not write at `Int`, so the fix
+    names a `let` of that type without writing one; its parameter, given,
+    clears E613."""
+    source = _e613_written("fo", "@Option<fn(T -> T) effects(pure)>")
+    fix = _the("E613", "check", source).fix
+    assert fix == (
+        "No argument of 'fo(())' fixes T, so the call instantiates 'fo' at "
+        "Bool, nothing giving its result a type: bind its result at a type "
+        "that supports 'Ord' (a `let` of that type), or "
+        + _E613_PARAM.format(g="fo")), fix
+    carried = (source.replace("fn fo(@Unit -> ", "fn fo(@Unit, @T -> ")
+               .replace("fo(())", "fo((), 1)"))
+    assert _passed_codes("check", carried) == set()
