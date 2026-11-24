@@ -891,7 +891,9 @@ public fn f(@Int, @Unit -> @Checked)
 """
 
 # A GUARDED one, for contrast: the refinement over a `@PosInt` payload gets a
-# real runtime check, so it is `tier3` and counted in `tier3_runtime`.
+# real runtime check, so it is `tier3` and counted in `tier3_runtime`.  The
+# clause returns an `Int` (`+ 0`): its slot is a `PosInt` (#1896), so the
+# handler's value is narrowed into the `Option<PosInt>` a second time.
 _GUARDED_UNDER_UNSAT = """\
 type PosInt = { @Int | @Int.0 > 0 };
 
@@ -901,7 +903,7 @@ public fn f(@Int -> @Option<PosInt>)
   effects(pure)
 {
   Some(handle[Exn<Int>] {
-    throw(@PosInt) -> { @PosInt.0 }
+    throw(@PosInt) -> { @PosInt.0 + 0 }
   } in {
     throw(@Int.0)
   })
