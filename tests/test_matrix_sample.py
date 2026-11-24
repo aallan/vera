@@ -738,6 +738,7 @@ MARKED_FILES = (
     "test_value_text_1871_1768.py",
     "test_verifier_reads_the_typed_program_1525.py",
     "test_zero_size_operands_1870.py",
+    "test_binders_held_to_is_subtype_1896.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

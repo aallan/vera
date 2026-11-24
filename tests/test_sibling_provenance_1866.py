@@ -34,6 +34,8 @@ import pytest
 from tests import pipeline
 from vera import ast as vast
 from vera import fold
+from vera import types as types_mod
+from vera.checker import control as control_mod
 from vera.checker.control import _variable_names
 from vera.types import (
     AdtType,
@@ -42,6 +44,7 @@ from vera.types import (
     contains_typevar,
     fresh_typevar_origin,
     pretty_type,
+    read_open_as_unknown,
 )
 
 pytestmark = pytest.mark.matrix(decides=[
@@ -1150,3 +1153,37 @@ def test_fresh_typevar_origin_names_a_minted_variable_alone() -> None:
     assert fresh_typevar_origin(TypeVar("Key$13")) == "Key"
     assert fresh_typevar_origin(TypeVar("T")) is None
     assert fresh_typevar_origin(AdtType("Option", (TypeVar("T$2"),))) is None
+
+
+#: Each reader of a minted variable's name outside `vera/types.py`'s own,
+#: with an input on which its answer turns on that reading: a declared
+#: `T` the function holds rigid, which is no minted variable.
+_MINTED_READERS = {
+    "control._holds_variable": (
+        lambda: control_mod._holds_variable(TypeVar("T"), {"T"}), True),
+    "control._holds_open": (
+        lambda: control_mod._holds_open(TypeVar("T"), {"T"}), False),
+    "control._rigid_named": (
+        lambda: control_mod._rigid_named(
+            AdtType("Option", (TypeVar("T"),)), {"T"}), ["T"]),
+    "types.read_open_as_unknown": (
+        lambda: read_open_as_unknown(TypeVar("T"), {"T"}, lambda _: ()),
+        TypeVar("T")),
+}
+
+
+@pytest.mark.parametrize("site", list(_MINTED_READERS))
+def test_a_minted_variable_is_read_by_its_one_reader(
+        site: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each site that tells a variable a call minted from the enclosing
+    function's own reads it through `fresh_typevar_origin`, the one reader
+    of the form `_fresh_typevar` writes: given the reader's answer, a
+    declared `T` is the function's own; with a reader that calls every
+    name minted, the site's answer turns."""
+    call, held = _MINTED_READERS[site]
+    assert call() == held, site
+    module = control_mod if site.startswith("control.") else types_mod
+    monkeypatch.setattr(module, "fresh_typevar_origin", lambda _ty: "T")
+    assert call() != held, site
+    assert control_mod._holds_variable(TypeVar("T$3"), {"T"}) is False
+    assert control_mod._holds_open(TypeVar("T$3"), {"T"}) is True

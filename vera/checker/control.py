@@ -50,14 +50,95 @@ from vera.types import (
     UnknownType,
     base_type,
     contains_typevar,
+    fresh_typevar_origin,
+    holds_function,
     is_pair_represented,
     is_subtype,
+    is_unknown_like,
     pretty_type,
     pretty_inferred_type,
+    written_type,
     state_cell_decl_equal,
     substitute,
     types_equal,
 )
+
+
+def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
+    """Whether one of the enclosing function's own type variables
+    (*rigid*) stands anywhere in *ty*."""
+    if isinstance(ty, TypeVar):
+        return fresh_typevar_origin(ty) is None and ty.name in rigid
+    if isinstance(ty, AdtType):
+        return any(_holds_variable(a, rigid) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(_holds_variable(p, rigid) for p in ty.params)
+                or _holds_variable(ty.return_type, rigid))
+    if isinstance(ty, RefinedType):
+        return _holds_variable(ty.base, rigid)
+    return False
+
+
+def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
+    """Whether a type variable not one of *rigid* stands anywhere in *ty*."""
+    if isinstance(ty, TypeVar):
+        return fresh_typevar_origin(ty) is not None or ty.name not in rigid  # pragma: no mutate — equivalent: every variable a call leaves open is a minted one, read by `fresh_typevar_origin` (0 others reached)
+    if isinstance(ty, AdtType):
+        return any(_holds_open(a, rigid) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(_holds_open(p, rigid) for p in ty.params)
+                or _holds_open(ty.return_type, rigid))
+    if isinstance(ty, RefinedType):
+        return _holds_open(ty.base, rigid)
+    return False
+
+
+def _rigid_named(ty: Type, rigid: Collection[str]) -> list[str]:
+    """The enclosing function's own type variables in *ty*, in the order
+    they first stand, each once."""
+    names: list[str] = []
+
+    def walk(t: Type) -> None:
+        t = base_type(t)
+        if isinstance(t, TypeVar):
+            if (fresh_typevar_origin(t) is None and t.name in rigid
+                    and t.name not in names):
+                names.append(t.name)
+        elif isinstance(t, AdtType):
+            for a in t.type_args:
+                walk(a)
+        elif isinstance(t, FunctionType):
+            for p in t.params:
+                walk(p)
+            walk(t.return_type)
+
+    walk(ty)
+    return names
+
+
+def _open_bindings(value: Type, written: Type,
+                   found: dict[str, Type]) -> bool:
+    """Bind each open variable of *value* to the part of *written* it
+    stands against, into *found*; False where the two differ in shape or
+    a variable meets two types."""
+    if isinstance(value, TypeVar):
+        if value.name in found:
+            return types_equal(found[value.name], written)
+        found[value.name] = written
+        return True
+    value, written = base_type(value), base_type(written)
+    if isinstance(value, AdtType) and isinstance(written, AdtType):  # pragma: no mutate — equivalent: a pair of two kinds binds nothing, and the fix then holds the instantiated value to the binder (`_holds_at`), which refuses it
+        return (value.name == written.name
+                and len(value.type_args) == len(written.type_args)
+                and all(_open_bindings(a, b, found)
+                        for a, b in zip(value.type_args, written.type_args)))
+    if isinstance(value, FunctionType) and isinstance(written, FunctionType):  # pragma: no mutate — equivalent: as for a data type, the fix's `_holds_at` refuses a pair of two kinds
+        return (len(value.params) == len(written.params)
+                and all(_open_bindings(a, b, found)
+                        for a, b in zip(value.params, written.params))
+                and _open_bindings(value.return_type, written.return_type,
+                                   found))
+    return True
 
 
 #: The State operations a bare or ``State.``-qualified call can name.
@@ -445,6 +526,10 @@ def _variable_names(ty: Type) -> set[str]:
 
 class ControlFlowMixin:
 
+    #: The scrutinee whose arm's pattern is being checked, its expression
+    #: and type, for a binder's fix that names it (`_open_variable_fix`).
+    _match_scrutinee: tuple[ast.Expr, Type] | None = None
+
     # -----------------------------------------------------------------
     # Control flow
     # -----------------------------------------------------------------
@@ -618,7 +703,7 @@ class ControlFlowMixin:
             outcome = self._join_parts(else_ty, then_ty)
             joined = outcome.joined or self._join(then_ty, else_ty)
             if (joined is None and outcome.builtin
-                    and self._fits(else_ty, then_ty)):
+                    and self._branches_agree(else_ty, then_ty)):
                 # A built-in's type variable the join leaves alone: the
                 # then branch, as two open branches always gave.
                 joined = then_ty
@@ -664,8 +749,12 @@ class ControlFlowMixin:
         result_type: Type | None = None
         arm_types: list[tuple[ast.Expr, Type]] = []
         for arm in expr.arms:
-            # Check pattern and collect bindings
+            # Check pattern and collect bindings.  A binder's fix may name
+            # the scrutinee (`_binder_mismatch`), so it is held while the
+            # arm's pattern is checked.
+            self._match_scrutinee = (expr.scrutinee, scrutinee_ty)
             bindings = self._check_pattern(arm.pattern, scrutinee_ty)
+            self._match_scrutinee = None  # pragma: no mutate — equivalent: read only while an arm's pattern is checked, after it is set; each arm sets it before its pattern, and a nested `match` is in a body, checked after
 
             # Push scope with pattern bindings
             self.env.push_scope()
@@ -697,7 +786,7 @@ class ControlFlowMixin:
                     outcome = self._join_parts(result_type, arm_ty)
                     joined = outcome.joined
                     if (joined is None and outcome.builtin
-                            and self._fits(result_type, arm_ty)):
+                            and self._branches_agree(result_type, arm_ty)):
                         # A built-in's type variable the join leaves alone
                         # (one a failed substitution left, #1688): this
                         # arm's type, as an arm after an open arm always
@@ -891,16 +980,17 @@ class ControlFlowMixin:
         its components; `Bool`'s, `true` and `false`.  Every other type has
         an open domain, which only a catch-all covers, as a scrutinee of it
         needs one (E313): every other primitive, a built-in with no
-        constructors, a function type, and a type parameter the function
-        declares, which may be `Int`, so `Some(None)` and `Some(Some(_))`
-        over `Option<T>` leave `Some(_)`.  A position typed `Unknown` is not
-        judged (``None``), as a scrutinee typed `Unknown` is not (#1671): a
-        diagnostic stands behind every `Unknown` (#1862), so the arms draw no
-        E311 beside it.  A type variable no inference bound (`T$1`, which
-        `Some(e)` has where `e` is in error, and `None` with no type to
-        take) is open, unless an error has been reported by the time the
-        scrutinee is typed (*after_error*): then the error is what left it
-        unsettled, and it is not judged either.  Nor is a `Tuple` with no
+        constructors, and a function type.  A position typed `Unknown` is
+        not judged (``None``), as a scrutinee typed `Unknown` is not
+        (#1671): a diagnostic stands behind every `Unknown` (#1862), so the
+        arms draw no E311 beside it.  A type variable is open, unless an
+        error has been reported by the time the scrutinee is typed
+        (*after_error*): then the error is what left it unsettled, and it is
+        not judged either.  One no inference bound (`T$1`, which `Some(e)`
+        has where `e` is in error, and `None` with no type to take) takes
+        any pattern; the function's own takes only a catch-all, a head there
+        being refused (E314, #1896) and read as one, so its domain decides
+        nothing.  Nor is a `Tuple` with no
         components, or a data type no declaration in reach says, as a
         scrutinee of one is not.
         """
@@ -919,8 +1009,6 @@ class ControlFlowMixin:
             elif raw.name in _CONSTRUCTORLESS_BUILTIN_TYPES:
                 return patterns.Open()
             return None
-        if isinstance(raw, TypeVar) and raw.name in self.env.type_params:
-            return patterns.Open()
         if isinstance(raw, UnknownType) or (
                 isinstance(raw, TypeVar) and after_error):
             return None
@@ -1061,9 +1149,9 @@ class ControlFlowMixin:
         * no expected type — a sub-pattern of a `Tuple` whose arity the
           expected type does not supply;
         * an unresolved scrutinee (`UnknownType`), or a `Never` one;
-        * a type variable — the deliberate boundary.  A `forall<T>` body
-          cannot decide `Some(@Int)` over `@T.0`, because `T` may be
-          instantiated at `Option<Int>`.  Only the HEAD has to be known:
+        * a type variable a call left open, which the context fixes (the
+          enclosing function's own is refused before this is asked,
+          `_check_pattern_scrutinee`, #1896).  Only the HEAD has to be known:
           `Map<T, U>` from `map_new()` still decides every pattern whose
           answer depends on the head alone;
         * a named type the checker does not know — #1315's own
@@ -1093,9 +1181,10 @@ class ControlFlowMixin:
 
     def _check_pattern_scrutinee(
         self, pat: ast.Pattern, expected: Type | None,
-        *, bound: Type | None = None,
     ) -> bool:
-        """Report E314 when *pat* cannot match a value of *expected*.
+        """Report E314 when *pat*, a constructor or a literal pattern,
+        cannot match a value of *expected*.  A binding pattern matches every
+        value: what it claims of the value is `_check_binding_pattern`'s.
 
         One rule over every pattern form (#1320), of which the
         constructor-over-a-container case (#1315) is the instance the
@@ -1104,31 +1193,23 @@ class ControlFlowMixin:
         cleared exhaustiveness ("unknown ADT, can't check") with nothing
         else to object.  A literal pattern had no comparison at all.
 
-        Returns True when a mismatch was reported.  *bound* carries a
-        binding pattern's already-resolved type (see `_check_pattern`).
-        """
-        scrut = self._scrutinee_for_pattern(expected)
-        if scrut is None:
-            return False
+        A head over a value whose type is the enclosing function's own
+        type variable is refused (#1896): the variable stands for every
+        type its calls give it, so nothing says an `A` is an `Option`, and
+        an instance at which the head matches reads the field at whatever
+        type the instance gives it.
 
-        if isinstance(pat, ast.BindingPattern):
-            # A binder's relatedness reads the type ARGUMENTS, not just the
-            # head, so an unresolved variable anywhere in either type makes
-            # the comparison undecidable here.
-            if (bound is None or isinstance(bound, UnknownType)
-                    or contains_typevar(bound) or contains_typevar(scrut)):
-                return False
-            # Relatedness in EITHER direction, not equality: `@Int` over a
-            # `Nat` scrutinee widens, and `@Nat` over an `Int` scrutinee is
-            # the verifier's narrowing obligation (E503), not a type error.
-            base_bound = base_type(bound)
-            if (is_subtype(scrut, base_bound)
-                    or is_subtype(base_bound, scrut)):
-                return False
-            return self._pattern_mismatch(
-                pat, f"Binding pattern '@{pretty_type(bound)}'",
-                f"binds a value of type {pretty_type(bound)}", scrut,
-            )
+        Returns True when a mismatch was reported.
+        """
+        rigid = base_type(expected) if expected is not None else None
+        if (isinstance(rigid, TypeVar)
+                and not isinstance(pat, (ast.BindingPattern,
+                                         ast.WildcardPattern))
+                and self._rigid_variable(rigid) is not None):
+            return self._rigid_head_mismatch(pat, rigid)
+        scrut = self._scrutinee_for_pattern(expected)
+        if scrut is None or isinstance(pat, ast.BindingPattern):
+            return False
 
         if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
             got = (len(pat.sub_patterns)
@@ -1209,9 +1290,46 @@ class ControlFlowMixin:
             owner += f"<{', '.join(ci.parent_type_params)}>"
         return _HeadMisfit(owner=owner)
 
+    def _rigid_head_mismatch(self, pat: ast.Pattern, scrut: TypeVar) -> bool:
+        """E314 at a constructor or literal pattern over a value whose type
+        is the enclosing function's own type variable *scrut* (#1896)."""
+        matches = "matches a value of another type"
+        if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
+            subject = f"Pattern '{pat.name}'"
+            if isinstance(pat, ast.ConstructorPattern) and pat.name == "Tuple":
+                subject, matches = "Pattern 'Tuple(...)'", "matches a tuple"
+            else:
+                ci = self._pattern_ctor_info(pat.name)
+                if ci is not None:
+                    owner = ci.parent_type
+                    if ci.parent_type_params:
+                        owner += f"<{', '.join(ci.parent_type_params)}>"
+                    matches = f"is a constructor of {owner}"
+        else:
+            subject = f"Pattern literal {_render_literal_pattern(pat)}"
+            literal = _LITERAL_PATTERN_TYPES.get(type(pat))
+            if literal is not None:
+                matches = f"has type {literal[0]}"
+        name = pretty_type(scrut)
+        # The type parameter as the program writes it: its name (#1778).
+        written = scrut.name
+        return self._pattern_mismatch(
+            pat, subject, matches, scrut,
+            rationale=(
+                f"{name} is a type parameter of the enclosing function, "
+                f"which stands for every type its calls give it, so nothing "
+                f"says a value of type {name} has this pattern's type; at an "
+                f"instance where the pattern matched, the arm would read its "
+                f"fields at whatever type that instance gives them."),
+            fix=(f"Take the value at the type the pattern matches: give the "
+                 f"function a parameter of that type in place of "
+                 f"`@{written}`, or match the `{written}` value with a "
+                 f"binding pattern `@{written}` or a wildcard '_'."),
+        )
+
     def _pattern_mismatch(
         self, pat: ast.Pattern, subject: str, matches: str, scrut: Type,
-        *, fix: str | None = None,
+        *, fix: str | None = None, rationale: str | None = None,
     ) -> bool:
         """Emit E314 for *pat* against the scrutinee type *scrut*."""
         # The fix writes the scrutinee's type as the program does (#1778).
@@ -1229,11 +1347,12 @@ class ControlFlowMixin:
         self._error(
             pat,
             f"{subject} {matches}, but the scrutinee has type "
-            f"{pretty_type(scrut)}.",
-            rationale="Every value reaching a match arm has the "
-                      "scrutinee's type, so a pattern of any other type "
-                      "can never be taken — the arm is dead code the "
-                      "backend has no way to lower.",
+            f"{pretty_inferred_type(scrut)}.",
+            rationale=rationale or (
+                "Every value reaching a match arm has the "
+                "scrutinee's type, so a pattern of any other type "
+                "can never be taken — the arm is dead code the "
+                "backend has no way to lower."),
             fix=fix or (
                 f"Match a {shown} with "
                 f"{' or '.join(alternatives)}, or match a scrutinee this "
@@ -1298,6 +1417,16 @@ class ControlFlowMixin:
 
         # Infer type args from expected type
         field_types = self._constructor_fields(ci, expected)
+        if ci.parent_type_params and not (
+                isinstance(base_type(expected), AdtType)
+                if expected is not None else False):
+            # No type of the value gives the constructor's own parameters
+            # (an open variable, or a head already refused): its fields
+            # hold no type of the enclosing function's, though a parameter
+            # may share a name with one (#1896).
+            unknown: dict[str, Type] = {
+                p: UnknownType() for p in ci.parent_type_params}
+            field_types = tuple(substitute(f, unknown) for f in field_types)
 
         if len(pat.sub_patterns) != len(field_types):
             self._error(
@@ -1393,18 +1522,106 @@ class ControlFlowMixin:
         """Check a binding pattern (@Type)."""
         self._check_refinement_predicates(pat.type_expr)  # #861
         resolved = self._resolve_type(pat.type_expr)
-        # The binder takes the value at the type it writes, so a function
-        # value in the scrutinee is held to rule 9 there, at any depth, as
-        # at every other flow (#1885, #1819): the relatedness below runs in
-        # either direction and skips a function-typed scrutinee.
-        if expected is None or not self._refuse_unfit_function_value(
-                pat, expected, resolved, "the binding pattern",
-                "write the binding pattern at", own_error=False):
-            # #1320: the pattern/scrutinee rule, applied here because the
-            # binder's type is resolved exactly once (see `_check_pattern`).
-            self._check_pattern_scrutinee(pat, expected, bound=resolved)
+        # A binder matches every value, so the question a constructor's or
+        # a literal's head is asked (can it match, #1315, #1320) is not its
+        # question.  It binds the value at the type it writes, a claim the
+        # value is held to as a `let`'s is (#1896): `is_subtype` from the
+        # value's type to the written one, each variable a call left open
+        # read as unknown and the function's own kept rigid.  A `@Nat` or a
+        # refined binder over an `Int` holds (rules 3b and 7), the verifier
+        # obligating it; a function type held inside is judged by rule 9,
+        # its narrowing E190 and any other misfit E314.
+        if (expected is not None and not is_unknown_like(expected)
+                and not is_unknown_like(resolved)
+                and not self._holds_at(expected, resolved)):
+            if not self._refuse_unfit_function_value(
+                    pat, self._read_open(expected), resolved,
+                    "the binding pattern", "write the binding pattern at"):
+                self._binder_mismatch(pat, resolved, expected)
         tname = self._type_expr_to_slot_name(pat.type_expr)
         return [Binding(tname, resolved, "match")]
+
+    def _binder_mismatch(self, pat: ast.BindingPattern, bound: Type,
+                         value: Type) -> None:
+        """E314 at a binder whose written type the value's is not a subtype
+        of (#1896), with the reason that holds of the pair."""
+        rigid = self.env.type_params
+        seen = self._read_open(value)
+        if _holds_variable(bound, rigid) or _holds_variable(seen, rigid):
+            why = ("A type parameter of the enclosing function stands for "
+                   "every type its calls give it, so the arm's body must hold "
+                   "for each: a binder claims the value has its type, and a "
+                   "value of the scrutinee's type has it only at some of "
+                   "them.")
+        elif is_subtype(self._read_open(bound), seen):
+            why = ("A binder claims every value it binds has the type it "
+                   "writes, and the body relies on that claim; a value of "
+                   "the scrutinee's type need not have it, and no check at "
+                   "run time can tell"
+                   + (" (a function value may take other arguments, return "
+                      "another type, or perform effects the binder's type "
+                      "does not declare)." if holds_function(seen) else "."))
+        else:
+            why = None
+        fix = None
+        if _holds_open(seen, rigid):
+            fix = self._open_variable_fix(seen, bound)
+        elif holds_function(seen):
+            # A slot names a function type through an alias, so the
+            # scrutinee's type is given in prose.
+            fix = ("Bind the value at the scrutinee's type, named by a type "
+                   "alias, and declare the effects its functions perform "
+                   "where they are applied; or match it with a wildcard '_'.")
+        self._pattern_mismatch(
+            pat, f"Binding pattern '@{pretty_type(bound)}'",
+            f"binds a value of type {pretty_type(bound)}", seen,
+            rationale=why, fix=fix)
+
+    def _open_variable_fix(self, seen: Type, bound: Type) -> str:
+        """E314's fix at a binder over a value whose type holds a variable
+        the call left open where compiled behaviour depends on it, inside a
+        function type or at a data type's behaviour position (#1896): no
+        type a program writes names it, so the variable is fixed first, by
+        a `let` at the type the binder needs, where the call is
+        instantiated.  The alias is written as source (`written_type`),
+        under a name nothing in the program declares; where the type has no
+        written form, or no one type for each variable gives the binder's,
+        the fix is prose."""
+        prose = ("The scrutinee holds a function whose type variable the "
+                 "call leaves open, which no binder can name: fix the "
+                 "variable first, binding the scrutinee with a `let` at the "
+                 "type this binder needs, named by a type alias, so the call "
+                 "is instantiated at it, and match the `let`'s slot.")
+        held = self._match_scrutinee
+        found: dict[str, Type] = {}
+        if (held is None or not _open_bindings(seen, bound, found)
+                or not self._holds_at(substitute(seen, found), bound)):
+            # No one type for each variable gives the binder's type: a
+            # `let` at the instantiated type would leave the binder refused.
+            return prose
+        scrutinee, whole = held
+        fixed = substitute(whole, found)
+        # A variable left open has no written form, so it is prose too.
+        written = written_type(fixed, self.env.type_params)
+        if written is None:
+            return prose
+        taken = set(self.env.type_aliases) | set(self.env.data_types)
+        name = next(n for n in ("Instance", *(f"Instance{i}" for i in range(
+            2, 2 + len(taken)  # pragma: no mutate — equivalent: len(taken) + 1 names, so one is free before the bound
+        ))) if n not in taken)
+        # An alias names the enclosing function's own variables it holds
+        # as its parameters, which the slot passes on.
+        own = _rigid_named(fixed, self.env.type_params)
+        if own:
+            name += f"<{', '.join(own)}>"
+        return ("The scrutinee holds a function whose type variable the "
+                "call leaves open, which no binder can name: fix the "
+                "variable first, so the call is instantiated at the type "
+                f"this binder needs.  Declare "
+                f"`type {name} = {written};`, bind the "
+                f"scrutinee before the `match` with "
+                f"`let @{name} = {format_expr_canonical(scrutinee)};`, "
+                f"and match `@{name}.0`.")
 
     # -----------------------------------------------------------------
     # A destructuring let, held to its constructor pattern (#1545)
@@ -1935,6 +2152,47 @@ class ControlFlowMixin:
     # Handlers
     # -----------------------------------------------------------------
 
+    def _refuse_clause_param(self, clause: ast.HandlerClause,
+                             param_te: ast.TypeExpr, op_ty: Type,
+                             written: Type) -> None:
+        """A handler clause's parameter written at a type the operation's
+        value is not a subtype of (#1896): E190 where it fits only by a
+        narrowing inside a function type, else E342.  The reporter is
+        handed the parameter's type expression, which is no value: it
+        prints no rewrite of it and no wrapper around it, so *value_node*
+        is left at its default."""
+        if self._refuse_unfit_function_value(
+                param_te, op_ty, written,
+                f"the parameter of the '{clause.op_name}' clause",
+                f"write the parameter at the type '{clause.op_name}' takes"):
+            return
+        # A slot names a function type through an alias, so its type is
+        # given in prose.
+        shown = (None if isinstance(base_type(op_ty), FunctionType)
+                 else self._writes_as(op_ty))
+        self._error(
+            param_te,
+            f"Handler clause '{clause.op_name}' binds its parameter at type "
+            f"{pretty_type(written)}, but the operation is performed with a "
+            f"value of type {pretty_inferred_type(op_ty)}.",
+            rationale=(
+                "A clause parameter binds the value the operation is "
+                "performed with, at the type the clause writes, so that "
+                "value's type must be a subtype of it, as a let binding's "
+                "value must be.  A narrower `@Nat` or refined parameter over "
+                "an `Int` is checked where it binds; no other type holds a "
+                "value of the operation's."),
+            fix=(f"Write the parameter as `@{shown}`, the type "
+                 f"'{clause.op_name}' takes, and bind the value at another "
+                 f"type with a `let` in the clause body where it fits there."
+                 if shown is not None else
+                 f"Write the parameter at the type '{clause.op_name}' takes, "
+                 f"and bind the value at another type with a `let` in the "
+                 f"clause body where it fits there."),
+            spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
+            error_code="E342",
+        )
+
     def _check_handle(self, expr: ast.HandleExpr) -> Type | None:
         """Type-check a handler expression."""
         # Resolve the handled effect
@@ -2168,13 +2426,22 @@ class ControlFlowMixin:
                 substitute(p, mapping) for p in op_info.param_types)
             for param_te, param_ty in zip(clause.params, op_param_types):
                 self._check_refinement_predicates(param_te)  # #861
-                # #1489: the declared type is otherwise only RENDERED here,
-                # for the slot it binds, so a name in it that nothing
-                # declares was never reported.  Resolved for its
-                # diagnostics; the binding takes the operation's type.
-                self._resolve_type(param_te)
+                # A clause parameter is a binder (#1896): the slot takes the
+                # type the clause writes, and the value the operation is
+                # performed with is held to it as a `let`'s value is.  A
+                # `@Nat` or a refined parameter over an `Int` holds, guarded
+                # where it binds (spec §11.2.1); a type no value of the
+                # operation's has is refused.
+                written = self._resolve_type(param_te)
+                bound_ty = param_ty
+                if not is_unknown_like(written):
+                    bound_ty = written
+                    if (not is_unknown_like(param_ty)
+                            and not self._holds_at(param_ty, written)):
+                        self._refuse_clause_param(
+                            clause, param_te, param_ty, written)
                 tname = self._type_expr_to_slot_name(param_te)
-                self.env.bind(tname, param_ty, "handler")
+                self.env.bind(tname, bound_ty, "handler")
 
             # Bind handler state if present
             if state_type:

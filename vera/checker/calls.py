@@ -56,6 +56,7 @@ from vera.types import (
     erases_to_unit,
     is_effect_subtype,
     is_subtype,
+    read_open_as_unknown,
     pretty_effect,
     pretty_type,
     pretty_inferred_type,
@@ -650,31 +651,61 @@ class CallsMixin:
         type its call gave it, never one no instantiation gives.  Where the
         join fails only at a
         built-in's variable a failed substitution lost (#1688), the join
-        neither fills nor refuses it, and the fit keeps the verdict it gave
-        before, each variable a wildcard one position at a time
-        (`_compatible_modulo_typevars`)."""
+        neither fills nor refuses it, and the variable is read as unknown.
+
+        The join says whether one type for each open variable gives the
+        value the target's type; whether the value fits is then
+        `is_subtype`'s, in the direction the value flows (#1896), each open
+        variable read as unknown and the enclosing function's own kept rigid
+        (`_holds_at`).  The join's bindings are not substituted: it binds a
+        variable met twice to the two types' join, the wider, where the
+        narrower one fits both positions, so a `Tuple<Option<X>,
+        Option<X>>` of two `None`s fits a `Tuple<Option<W>, Option<IOF>>`
+        at `X = W`.  The join compares each part by itself, a leaf by
+        `is_subtype` either way and an effect row inside a parameter's
+        function type the same way round as at the root, so a pair it
+        joins need not be a subtype: a `fn(P, T -> Int)` closure, `P` pure,
+        joins a `fn(I, T -> Int)` position whose `I` performs IO."""
         if is_subtype(ty, target):
             return True
         if not (contains_typevar(ty) or contains_typevar(target)):
             return False
         outcome = self._join_parts(ty, target)
+        if outcome.joined is None and not outcome.builtin:
+            return False
+        return self._holds_at(ty, target)
+
+    def _branches_agree(self, ty: Type, other: Type) -> bool:
+        """Whether two branches of an `if` or two arms of a `match`, one of
+        which the join leaves alone at a built-in's type variable a failed
+        substitution lost (#1688), may be given the other's type: a
+        symmetric question, of two values side by side, not of a value
+        flowing to a type, so it keeps the reading it had, each variable a
+        wildcard one position at a time (`_compatible_modulo_typevars`),
+        with no function value fitting only by a narrowing (#1885)."""
+        if is_subtype(ty, other):  # pragma: no mutate — unreached as taken: both callers ask where the join failed at a lost variable, which no subtype holds (0 of 28 calls)
+            return True  # pragma: no mutate — unreached, as above
+        if not (contains_typevar(ty) or contains_typevar(other)):  # pragma: no mutate — unreached as taken: a lost variable is a type variable (0 of 28 calls without one)
+            return False  # pragma: no mutate — unreached, as above
+        outcome = self._join_parts(ty, other)
         if outcome.joined is not None:
-            # `_Join` compares a leaf by `is_subtype` either way, a `Nat`
-            # beside an `Int` and a refinement beside its base, inside a
-            # function type too, where rule 9 compares under the formal
-            # relation (#1885, #1819): a fit the join gives is held to rule
-            # 9.  A type variable inside a function type is never open
-            # (`_Join` keeps it), so the join fills nothing there, and the
-            # pair is read as it stands.
-            return unfit_function_value(ty, target) is None
-        # `_compatible_modulo_typevars` compares a leaf by `is_subtype`
-        # either way too, so the verdict it keeps where a built-in's
-        # variable was lost is held to rule 9 as the join's is: a
-        # `Tuple<B, fn(Nat -> Int)>` beside a `Tuple<Int, fn(Int -> Int)>`.
+            return unfit_function_value(ty, other) is None  # pragma: no mutate — unreached: both callers ask only where this join failed, and it is asked again of the same pair (0 of 28 calls joined)
         return (outcome.builtin
                 and _compatible_modulo_typevars(
-                    ty, target, frozenset(self.env.type_params))
-                and unfit_function_value(ty, target) is None)
+                    ty, other, frozenset(self.env.type_params))
+                and unfit_function_value(ty, other) is None)
+
+    def _read_open(self, ty: Type) -> Type:
+        """*ty* as `is_subtype` judges it where it binds or flows (#1896):
+        each variable a call left open read as unknown where no compiled
+        behaviour depends on it, the enclosing function's own kept rigid,
+        and a function type or a data type's behaviour position
+        (`_behaviour_params`, the positions `_Join._kept` keeps) kept
+        whole."""
+        data_types = self.env.data_types
+        return read_open_as_unknown(
+            ty, self.env.type_params,
+            lambda name: _behaviour_params(name, data_types))
 
     def _rigid_variable(self, ty: Type) -> str | None:
         """The name of the enclosing function's own type parameter *ty* is,

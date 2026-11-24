@@ -55,7 +55,6 @@ from vera.types import (
     TO_STRING_BUILTINS,
     Type,
     types_equal,
-    unfit_function_value,
     TypeVar,
     UNIT,
     UnknownType,
@@ -2571,12 +2570,14 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
     # fixes `T`, is not taken as a `Two<Int, String>`, nor `Two<A, A>` in
     # a `forall<A>` body as a `Two<Int, Int>`: the call keeps its type,
     # and the site's own judgement refuses it.  A built-in's variable a
-    # failed substitution lost keeps the adoption it had (#1688).  Neither
-    # adopts a type whose function value the result fits only by a
-    # narrowing (#1885, #1819): the join compares a leaf either way, so
-    # `first([Tuple(b, fn(@Nat -> @Int) ...)])` would be taken at a
-    # `Tuple<Int, fn(Int -> Int)>`, and the site compares the expected type
-    # with itself.  The call keeps its type, and the site refuses it.
+    # failed substitution lost keeps the adoption it had (#1688).  The
+    # adoption is the fit an argument is given (`_fits`, #1896): the join
+    # says what the open variables are and `is_subtype` whether the result
+    # is the expected type, so `first([Tuple(b, fn(@Nat -> @Int) ...)])` is
+    # not taken at a `Tuple<Int, fn(Int -> Int)>`, nor a `fn(P -> Int)`
+    # beside an open `Option<X>` at a `fn(I -> Int)` whose `I` performs IO,
+    # where the site would compare the expected type with itself.  The
+    # call keeps its type, and the site refuses it.
     if (result is not None
             and expected is not None
             and contains_typevar(result)
@@ -2585,9 +2586,7 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
             and isinstance(expected, AdtType)
             and result.name == expected.name
             and len(result.type_args) == len(expected.type_args)):
-        outcome = ctx._join_parts(result, expected)
-        if ((outcome.joined is not None or outcome.builtin)
-                and unfit_function_value(result, expected) is None):
+        if ctx._fits(result, expected):
             return expected
     return result
 
