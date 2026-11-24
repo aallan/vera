@@ -1321,7 +1321,7 @@ class TypeChecker(
         if severity == "error":
             # Counted before the duplicate collapse below: a synthesis that
             # met an error is one, whether or not the error was new (#1812).
-            self._errors_raised += 1
+            self._errors_raised += 1  # pragma: no mutate (equivalent: its one reader, `_synth_held`, asks only whether the count moved, `== before`, and `-= 1` or `+= 2` moves it exactly when `+= 1` does; measured, #1812)
         span = self._placement(node)
         placed = locate_at(self.file, self.source, span)
         loc = placed["location"]
