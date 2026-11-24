@@ -2532,6 +2532,26 @@ def test_repro_lane_an_unprojected_binder_after_a_wildcard_is_left_to_its_check(
         "Refinement predicate at a ADT sub-pattern bind in 'go'"), records
 
 
+_CLOSURE_RETURN_NARROWING = """\
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { @Int.0 } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+"""
+
+
+def test_repro_a_closure_return_narrowing_is_left_to_its_check() -> None:
+    """A closure whose `@Int` body narrows into its `@Nat` return: the
+    verifier cannot see into the body, so the return's row is recorded
+    `tier3` in the closure's enclosing function and left to its check
+    (`_binding_closure`; the status argument's mutants, which a pragma on
+    the call's first line hid until #1838 moved it onto the site)."""
+    assert _narrowing_records(_CLOSURE_RETURN_NARROWING) == [
+        ("mk", "nat_bind", "tier3", 3, 36, "", "{ @Int.0 }"),
+    ]
+
+
 def test_repro_lane_a_literal_destructure_binder_is_left_to_its_check() -> None:
     """A literal `Tuple` destructure's refined binder: the component's
     record is the component's row (disclosed, E506), and the binder's row is

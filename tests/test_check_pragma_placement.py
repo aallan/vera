@@ -105,8 +105,6 @@ def test_main_exits_one_on_a_misplaced_pragma_and_names_it(tmp_path: Path, capsy
     assert "bad.py:3" in capsys.readouterr().err
 
 
-@pytest.mark.xfail(strict=True, reason="four pragmas in vera/verifier.py and vera/obligations/table.py "
-                   "move once #1917 has merged; this mark goes with them")
 def test_every_pragma_under_vera_is_filed_under_its_own_line() -> None:
     assert gate.main([]) == 0
 
