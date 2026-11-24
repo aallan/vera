@@ -187,8 +187,7 @@ class ExpressionsMixin:
     # -----------------------------------------------------------------
 
     def _synth_expr(self, expr: ast.Expr, *,
-                    expected: Type | None = None,
-                    from_sibling: bool = False) -> Type | None:
+                    expected: Type | None = None) -> Type | None:
         """Synthesise an expression's type, recording it when artifact
         collection is on (#222 Phase D).
 
@@ -197,20 +196,7 @@ class ExpressionsMixin:
         flows through here, so the ``expr_types`` side-table covers the
         whole tree.  With collection off (``self.expr_types is None``,
         the default), this adds a single attribute test per expression.
-
-        *from_sibling* says where *expected* came from (#1866): a sibling
-        branch's or arm's type (`_synth_against`), or a part of a type that
-        came from one, rather than the value's context.  Every site that
-        passes *expected* states it, a site handing down a part of its own
-        expected type as ``self._expected_from_sibling``, so the origin
-        passes through each wrapper the checker builds around a type, and
-        a type no sibling gave (a parameter's, a binding's, a return
-        type) is the context's whatever object it is
-        (`tests/test_sibling_provenance_1866.py` holds every site to it).
         """
-        # Read before a pattern's type stands in for a missing one: that
-        # type is the context's.
-        from_sibling = from_sibling and expected is not None
         if (expected is None and self._pattern_arg_targets
                 and isinstance(expr, (ast.ConstructorCall, ast.ArrayLit))):
             # #1503: a pattern that binds this construction at a composite
@@ -218,24 +204,15 @@ class ExpressionsMixin:
             pattern_key = ast.span_key(expr)
             if pattern_key is not None:
                 expected = self._pattern_arg_targets.get(pattern_key)
-        outer = self._expected_from_sibling
-        self._expected_from_sibling = from_sibling
-        try:
-            result = self._synth_expr_impl(expr, expected=expected)
-        finally:
-            self._expected_from_sibling = outer
-        # The target is the type the value is expected at, which a sibling's
-        # type is not (spec §5.9, #1866): checked against one, the value
-        # keeps the target its context recorded, or none.
-        target = None if from_sibling else expected
+        result = self._synth_expr_impl(expr, expected=expected)
         # #1679: the same two types by the node's identity, which every
         # check records: the typed program reads them, a span table being
         # unable to tell a clone's node from its template's.
         if self.node_semantic_types is not None and expr.node_id is not None:
             if result is not None:
                 self.node_semantic_types[expr.node_id] = result
-            if target is not None and self.node_target_types is not None:
-                self.node_target_types[expr.node_id] = target
+            if expected is not None and self.node_target_types is not None:
+                self.node_target_types[expr.node_id] = expected
         if self.expr_types is not None and expr.span is not None:
             key = ast.span_key(expr)
             if result is not None:
@@ -248,8 +225,8 @@ class ExpressionsMixin:
             # #747: the ``expected`` (instantiated target) type the
             # expression was checked against — e.g. a generic formal or
             # field fixed to @Nat at this call/construction site.
-            if self.expr_target_types is not None and target is not None:
-                self.expr_target_types[key] = target
+            if self.expr_target_types is not None and expected is not None:
+                self.expr_target_types[key] = expected
         return result
 
     def _synth_expr_impl(self, expr: ast.Expr, *,
@@ -656,14 +633,10 @@ class ExpressionsMixin:
                 and base_type(self.env.refinement_bases[-1]) == BYTE):
             if (isinstance(expr.right, ast.IntLit)
                     and base_type(left_ty) == BYTE):
-                right_ty = self._synth_expr(expr.right, expected=BYTE,
-                                           from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: the operand is an integer literal, which reads no origin but its target, and a `Byte` refinement's predicate reads none (verify unchanged); a predicate is checked outside any synthesis (0 of 28 hits under a sibling's origin)
-                                           )
+                right_ty = self._synth_expr(expr.right, expected=BYTE)
             elif (isinstance(expr.left, ast.IntLit)
                     and base_type(right_ty) == BYTE):
-                left_ty = self._synth_expr(expr.left, expected=BYTE,
-                                          from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too, as the right operand's
-                                          )
+                left_ty = self._synth_expr(expr.left, expected=BYTE)
             if left_ty is None or right_ty is None:
                 return None
         if is_unknown_like(left_ty) or is_unknown_like(right_ty):
@@ -890,9 +863,7 @@ class ExpressionsMixin:
                 and contains_typevar(right_ty)
                 and isinstance(left_ty, AdtType)
                 and not (left_ctor and contains_fresh_typevar(left_ty))):
-            new_right = self._synth_expr(expr.right, expected=left_ty,
-                                         from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                         )
+            new_right = self._synth_expr(expr.right, expected=left_ty)
             if new_right is not None and not isinstance(
                     new_right, UnknownType):
                 right_ty = new_right
@@ -900,9 +871,7 @@ class ExpressionsMixin:
                 and contains_typevar(left_ty)
                 and isinstance(right_ty, AdtType)
                 and not (right_ctor and contains_fresh_typevar(right_ty))):
-            new_left = self._synth_expr(expr.left, expected=right_ty,
-                                        from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                        )
+            new_left = self._synth_expr(expr.left, expected=right_ty)
             if new_left is not None and not isinstance(
                     new_left, UnknownType):
                 left_ty = new_left
@@ -1085,14 +1054,12 @@ class ExpressionsMixin:
                 and (contains_unknown(coll_base.type_args[0])
                      or contains_fresh_typevar(coll_base.type_args[0]))):
             again = self._synth_expr(
-                expr.collection, expected=AdtType("Array", (expected,)),
-                from_sibling=self._expected_from_sibling)
+                expr.collection, expected=AdtType("Array", (expected,)))
             if again is not None:
                 coll_ty = again
         if expected is not None:
             coll_ty = self._check_in_literal_context(
-                expr.collection, coll_ty, AdtType("Array", (expected,)),
-                from_sibling=self._expected_from_sibling)
+                expr.collection, coll_ty, AdtType("Array", (expected,)))
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
@@ -1206,8 +1173,7 @@ class ExpressionsMixin:
         self.env.push_scope()
         for stmt in block.statements:
             self._check_stmt(stmt)
-        result = self._synth_expr(block.expr, expected=expected,
-                                  from_sibling=self._expected_from_sibling)
+        result = self._synth_expr(block.expr, expected=expected)
         self.env.pop_scope()
         return result
 
@@ -1228,9 +1194,7 @@ class ExpressionsMixin:
         # binding obligation).
         self._check_refinement_predicates(stmt.type_expr)
         declared_type = self._resolve_type(stmt.type_expr)
-        val_type = self._synth_expr(stmt.value, expected=declared_type,
-                                    from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                    )
+        val_type = self._synth_expr(stmt.value, expected=declared_type)
 
         if val_type and not isinstance(val_type, UnknownType):
             if not isinstance(declared_type, UnknownType):
@@ -1326,9 +1290,7 @@ class ExpressionsMixin:
         # branch.
         if tuple_shape:
             self._check_in_literal_context(
-                stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)),
-                from_sibling=False,  # pragma: no mutate — equivalent: `None` is False's falsy twin, and every reader of the origin tests its truth; `True` is killed by test_repro_a_destructure_s_bindings_are_its_call_s_expected_type
-            )
+                stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)))
 
         for te, resolved in zip(stmt.type_bindings, resolved_types):
             tname = self._type_expr_to_slot_name(te)
@@ -1336,7 +1298,6 @@ class ExpressionsMixin:
 
     def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
                                   context: Type, *,
-                                  from_sibling: bool,
                                   component: bool = False) -> Type | None:
         """*expr*, synthesized as *ty* without an expected type, checked
         again against *context* where a generic call it reaches let its
@@ -1360,9 +1321,7 @@ class ExpressionsMixin:
         variable open (`None`, `Nil`, `Some(None)`) the same way, as a
         user constructor's field does (`P(None, 1)`); an array literal's
         element takes the context's part through the element rule instead
-        (spec §4.12.1).  *from_sibling* says whether *context* is a part of
-        a sibling's type (`_synth_expr`, #1866).  Returns the type the check
-        settled on."""
+        (spec §4.12.1).  Returns the type the check settled on."""
         if ty is None or isinstance(ty, UnknownType):
             return ty
         # The open call's re-check is blocked only by what cannot fix its
@@ -1385,8 +1344,7 @@ class ExpressionsMixin:
                 or contains_typevar(context)  # pragma: no mutate — the mutant's verdict is the stronger one: without the test a negative literal reached through an open call inside a `forall` body's `Array<Tuple<T, Nat>>` is refuted at verify (E503), as the concrete form is; that is issue #1605's rule, and a cell now would pin the weaker verdict
         ):
             return ty
-        return self._synth_expr(expr, expected=context,
-                                from_sibling=from_sibling)
+        return self._synth_expr(expr, expected=context)
 
     def _call_literal_meets_nat(self, expr: ast.Expr, context: Type) -> bool:
         """Whether a generic call that *expr* evaluates to, or builds into
@@ -1477,9 +1435,7 @@ class ExpressionsMixin:
         if lifted:
             self._closure_handler_marks.append(len(self._handled_effects))
         self._pure_predicates.append(None)
-        body_type = self._synth_expr(expr.body, expected=ret_type,
-                                     from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                     )
+        body_type = self._synth_expr(expr.body, expected=ret_type)
         self._pure_predicates.pop()
         if lifted:
             self._closure_handler_marks.pop()
@@ -1617,9 +1573,7 @@ class ExpressionsMixin:
         for elem in expr.elements:
             et = self._synth_expr(elem)
             if element_ctx is not None:
-                et = self._check_in_literal_context(
-                    elem, et, element_ctx,
-                    from_sibling=self._expected_from_sibling)
+                et = self._check_in_literal_context(elem, et, element_ctx)
             elem_types.append(et)
 
         first = None

@@ -1271,11 +1271,7 @@ class ResolutionMixin:
                     mapping[tv] = filled
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if holed:
-            # A sibling's type fills no literal's hole either (#1866): the
-            # literal takes the type the value is expected at (spec §4.2),
-            # and a sibling's is none (spec §5.9).
             if (expected is not None and result_type is not None
-                    and not self._expected_from_sibling
                     and not isinstance(expected, UnknownType)):
                 from_expected: dict[str, Type] = {}
                 self._unify_for_inference(result_type, expected, from_expected)
@@ -1333,12 +1329,8 @@ class ResolutionMixin:
                            expected: Type | None) -> dict[str, Type]:
         """Each type variable of a call's *result_type* the type the result
         is expected at gives a type with no open part (#1684): no variable
-        a call left open, no literal's hole and no unknown.  A type a
-        sibling branch or arm gave, or a part of one, gives none (spec
-        §5.9, #1866): the synthesis in progress says where its expected
-        type came from (`_synth_expr`'s *from_sibling*)."""
+        a call left open, no literal's hole and no unknown."""
         if (expected is None or result_type is None
-                or self._expected_from_sibling
                 or is_unknown_like(expected)
                 or contains_fresh_typevar(expected)):
             return {}

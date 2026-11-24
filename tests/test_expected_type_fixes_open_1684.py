@@ -40,6 +40,14 @@ import typing
 import pytest
 
 from tests import pipeline
+from vera import ast, fold
+from vera.types import (
+    AdtType,
+    FunctionType,
+    Type,
+    base_type,
+    fresh_typevar_origin,
+)
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
@@ -1406,20 +1414,45 @@ _REBUILT = {
 @pytest.mark.parametrize("shape", list(_REBUILT))
 def test_repro_a_branch_takes_its_sibling_s_type_for_its_constructors(
         shape: str) -> None:
-    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the `None`
-    branch is synthesized again against its sibling's `Option<Option<Int>>`
-    (`_synth_against`), so no type the check records holds the variable
-    `None` left open.  Synthesized again with nothing expected, the
-    branch's constructors were recorded at `Option<Option<T$n>>`."""
+    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the join
+    completes the variable the `None` branch's constructors left open in
+    that branch's recorded types (`_complete_arms`, #1866), so no type the
+    check records for a node of the join holds an open variable.  Left as
+    synthesized, the branch's constructors were recorded at
+    `Option<Option<T$n>>`."""
     source = _IDG + "\n" + _fn(
         "f", "@Bool", "Int",
         f"match idg({_REBUILT[shape]}) {{\n  Some(Some(@Int)) -> @Int.0,\n"
         "  Some(None) -> 7,\n  None -> 9\n}")
     checked = pipeline.check(source)
     assert checked.ok, [e.format() for e in checked.errors]
-    open_ = sorted({t for t in checked.artifacts.expr_types.values()
-                    if "$" in t})
+    recorded = checked.artifacts.node_semantic_types
+    joins = [n for tld in checked.program.declarations
+             if isinstance(tld.decl, ast.FnDecl)
+             for n in fold.walk(tld.decl.body)
+             if isinstance(n, (ast.IfExpr, ast.MatchExpr))
+             and any(isinstance(c, ast.ConstructorCall)
+                     for c in fold.walk(n))]
+    assert joins
+    open_ = sorted({str(recorded[n.node_id]) for j in joins
+                    for n in fold.walk(j)
+                    if n.node_id in recorded
+                    and _holds_open_variable(recorded[n.node_id])})
     assert open_ == [], open_
+
+
+def _holds_open_variable(ty: Type) -> bool:
+    """Whether *ty* holds, at any depth, a variable the check minted and
+    left open (`fresh_typevar_origin` names its declared variable)."""
+    base = base_type(ty)
+    if fresh_typevar_origin(base) is not None:
+        return True
+    if isinstance(base, AdtType):
+        return any(_holds_open_variable(a) for a in base.type_args)
+    if isinstance(base, FunctionType):
+        return any(_holds_open_variable(p)
+                   for p in (*base.params, base.return_type))
+    return False
 
 
 @pytest.mark.parametrize("order", ["open_first", "open_second"])
@@ -1431,9 +1464,9 @@ def test_repro_a_sibling_with_no_type_arguments_fixes_nothing(
     `Int`, a type with no type arguments, which fixes no variable either,
     so `head_plain` keeps the instance c35763d6 gave it (`Bool`, as an
     operand gives it nothing), in both orders.  Pins the sibling's own
-    type as no expected type (`_synth_against`'s *from_sibling*, #1866):
-    under a guard that searched the sibling's arguments alone, `Int` was
-    taken as expected and fixed `T`."""
+    type as no expected type (#1866: no join hands an arm its sibling's
+    type): under a guard that searched the sibling's arguments alone,
+    `Int` was taken as expected and fixed `T`."""
     shape, _ = _SIBLING_SITES[site]
     a, b = "head_plain([])", "@Int.0"
     if order == "open_second":

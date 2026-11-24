@@ -909,16 +909,12 @@ class TypeChecker(
         # `ResolutionMixin._literal_soft_type`.
         self._literal_soft_results: dict[
             tuple[int, int, int, int], Type] = {}
-        # #1684, #1866: whether the type the synthesis in progress is
-        # expected at came from a sibling `if` branch or `match` arm
-        # (`_synth_against`) rather than from the value's context.  Every
-        # site that hands an expected type down states where it came from
-        # (`_synth_expr`'s `from_sibling`): a part of the type it was
-        # itself expected at keeps that origin, any other type is the
-        # context's.  A sibling's type is no type the value is expected
-        # at, so it fixes no variable a call leaves open
-        # (`ResolutionMixin._infer_type_args_in_context`).
-        self._expected_from_sibling: bool = False
+        # #1866: the names of the type variables a constructor minted
+        # (`_ctor_result_type`), the one mark that tells them from a generic
+        # call's.  Read by `ControlFlowMixin._complete_arm` alone: an arm a
+        # join completes takes the joined type for these, never for a
+        # variable a call's instantiation holds.
+        self._constructor_minted: set[str] = set()
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:
@@ -1924,9 +1920,7 @@ class TypeChecker(
             self._check_contract(contract, decl)
 
         # 6. Check body (pass return type as expected for bidirectional)
-        body_type = self._synth_expr(decl.body, expected=return_type,
-                                     from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                     )
+        body_type = self._synth_expr(decl.body, expected=return_type)
         if body_type and not isinstance(body_type, UnknownType):
             if (not is_subtype(body_type, return_type)
                     and not self._refuse_unfit_function_value(

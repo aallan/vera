@@ -1895,16 +1895,14 @@ def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
     assert fix == (
         "No argument of 'pair_ord(())' fixes A, B, so the call "
         "instantiates 'pair_ord' at Bool, nothing giving its result a "
-        "type: bind its result at a type that supports 'Ord', where the "
-        "call is: `let @Option<Tuple<Int, Int>> = pair_ord(());`, then "
-        "`@Option<Tuple<Int, Int>>.0` in its place; or give 'pair_ord' a "
-        "parameter for each of A, B "
+        "type: bind its result at a type that supports 'Ord', with the "
+        "block `{ let @Option<Tuple<Int, Int>> = pair_ord(()); "
+        "@Option<Tuple<Int, Int>>.0 }` in the call's place; or give "
+        "'pair_ord' a parameter for each of A, B "
         "('@A', '@B') and pass each a value at a type that supports "
         "'Ord', Int for example."), fix
-    bound = _E613_TWO_VARIABLES.replace(
-        "  match pair_ord(()) {",
-        "  let @Option<Tuple<Int, Int>> = pair_ord(());\n"
-        "  match @Option<Tuple<Int, Int>>.0 {")
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    bound = _E613_TWO_VARIABLES.replace("pair_ord(()) {", f"{block} {{")
     assert "E613" not in _passed_codes("check", bound)
     carried = (_E613_TWO_VARIABLES
                .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
@@ -2009,12 +2007,12 @@ def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
     files = _e613_one(place, result)
     checked = _tree_codes(tmp_path / "given", files)
     (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
-    offered = re.findall(r"`(let @[^`]+ = one_ord\(\(\)\);)`, then "
-                         r"`(@[^`]+\.0)` in its place", found.fix)
+    offered = re.findall(r"`(\{ let @[^`]+ = one_ord\(\(\)\); @[^`]+\.0 \})` "
+                         r"in the call's place", found.fix)
     assert bool(offered) == (result == "plain"), found.fix
-    for let, slot in offered:
-        bound = {name: text.replace("  match one_ord(()) {",
-                                    f"  {let}\n  match {slot} {{")
+    for block in offered:
+        bound = {name: text.replace("match one_ord(()) {",
+                                    f"match {block} {{")
                  for name, text in files.items()}
         after = _tree_codes(tmp_path / "bound", bound)
         assert after.ok, [d.format() for d in after.errors]
@@ -2108,19 +2106,19 @@ def _e613_written(name: str, result: str) -> str:
 
 def test_repro_e613_s_binding_keeps_each_type_written_by_name() -> None:
     """`tb(())` of `@Option<Tuple<T, Bool>>`: the binding writes `T` at
-    `Int` and keeps `Bool` as written; pasted where the call is, it clears
+    `Int` and keeps `Bool` as written; the block in the call's place clears
     E613."""
     source = _e613_written("tb", "@Option<Tuple<T, Bool>>")
     fix = _the("E613", "check", source).fix
     assert fix == (
         "No argument of 'tb(())' fixes T, so the call instantiates 'tb' at "
         "Bool, nothing giving its result a type: bind its result at a type "
-        "that supports 'Ord', where the call is: "
-        "`let @Option<Tuple<Int, Bool>> = tb(());`, then "
-        "`@Option<Tuple<Int, Bool>>.0` in its place; or "
+        "that supports 'Ord', with the block "
+        "`{ let @Option<Tuple<Int, Bool>> = tb(()); "
+        "@Option<Tuple<Int, Bool>>.0 }` in the call's place; or "
         + _E613_PARAM.format(g="tb")), fix
-    let, slot = re.findall(r"`([^`]+)`", fix)[:2]
-    bound = source.replace("  match tb(()) {", f"  {let}\n  match {slot} {{")
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    bound = source.replace("match tb(()) {", f"match {block} {{")
     assert _passed_codes("check", bound) == set()
 
 
@@ -2139,3 +2137,95 @@ def test_repro_e613_writes_no_binding_through_a_function_type() -> None:
     carried = (source.replace("fn fo(@Unit -> ", "fn fo(@Unit, @T -> ")
                .replace("fo(())", "fo((), 1)"))
     assert _passed_codes("check", carried) == set()
+
+
+_E613_ALIAS_LIB = """\
+module elib;
+
+type Answer<T> = Option<T>;
+
+public forall<T where Ord<T>> fn one_ord(@Unit -> @Answer<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+"""
+
+
+def test_repro_e613_writes_no_binding_its_call_site_cannot_name(
+        tmp_path: Path) -> None:
+    """An imported generic whose result is its module's alias
+    (`Answer<T>`): the call's file cannot name `Answer`, so the fix writes
+    no block (it would not resolve, E136) and names a `let` of the type
+    and the parameter; the parameter, given, clears E613."""
+    files = {"elib.vera": _E613_ALIAS_LIB,
+             "main.vera": "import elib;\n\n" + _E613_ONE_MAIN.format(where="")}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    assert found.fix == (
+        "No argument of 'one_ord(())' fixes T, so the call instantiates "
+        "'one_ord' at Bool, nothing giving its result a type: bind its "
+        "result at a type that supports 'Ord' (a `let` of that type), or "
+        + _E613_PARAM.format(g="one_ord")), found.fix
+    carried = {name: text.replace("fn one_ord(@Unit -> ",
+                                  "fn one_ord(@Unit, @T -> ")
+               .replace("one_ord(())", "one_ord((), 1)")
+               for name, text in files.items()}
+    after = _tree_codes(tmp_path / "carried", carried)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+_E613_LATER_READ = """\
+private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn f(@Option<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = match none_ord(()) {
+    _ -> 0
+  };
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 7
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(5))
+}
+"""
+
+
+def test_repro_e613_s_binding_leaves_a_later_read_as_it_was() -> None:
+    """The fix's block binds the call's result up to its brace, so a later
+    read of a slot of that type (`@Option<Int>.0`, the parameter) still
+    reads the parameter: the program, fixed as the fix says, runs to 5.  A
+    `let` statement in the call's place would have shadowed it, and the
+    same read gave the call's `None`, 7."""
+    fix = _the("E613", "check", _E613_LATER_READ).fix
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    assert block == ("{ let @Option<Int> = none_ord(()); "
+                     "@Option<Int>.0 }"), fix
+    fixed = _E613_LATER_READ.replace("match none_ord(()) {",
+                                     f"match {block} {{")
+    assert _passed_codes("check", fixed) == set()
+    assert pipeline.run(fixed).value == 5
+    shadowed = _E613_LATER_READ.replace(
+        "  let @Int = match none_ord(()) {",
+        "  let @Option<Int> = none_ord(());\n"
+        "  let @Int = match @Option<Int>.0 {")
+    assert pipeline.run(shadowed).value == 7

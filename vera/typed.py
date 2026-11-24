@@ -911,9 +911,31 @@ def _mentions(te: object, variables: frozenset[str]) -> bool:
                for n in _walk(te))
 
 
+def _local_type_names(program: ast.Program) -> frozenset[str]:
+    """The type names *program* declares that no importer sees: every
+    alias (aliases are module-local) and each private data type."""
+    return frozenset(
+        tld.decl.name for tld in program.declarations
+        if isinstance(tld.decl, ast.TypeAliasDecl)
+        or (isinstance(tld.decl, ast.DataDecl)
+            and tld.visibility != "public"))
+
+
+def _hidden_at(root: Template, at: tuple[str, ...] | None,
+               local_names: Mapping[tuple[str, ...] | None, frozenset[str]],
+               ) -> frozenset[str]:
+    """The type names the generic *root* may write in its result that a
+    call written in the file *at* cannot name: none where the generic is
+    the call's own file's, else its file's local names."""
+    if root.origin == at:
+        return frozenset()
+    return local_names.get(root.origin, frozenset())
+
+
 def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
               result: Type | None = None,
-              record: Instantiation | None = None) -> str:
+              record: Instantiation | None = None,
+              hidden: frozenset[str] = frozenset()) -> str:
     """The root call's fix: instantiate its generic at Int, which every
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
@@ -929,7 +951,11 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
     variable its written form names (`type Erased<T> = Int;`), and a
     binding of that type fixes none, so the written form is never read
     for it.  The call's own type serves the entry's generic, a module's
-    and a `where` helper's alike."""
+    and a `where` helper's alike.  The binding is written as a block in
+    the call's place, `{ let @T = call; @T.0 }`, so it ends at its brace
+    and no later slot of its type reads it, and only where every name it
+    writes resolves where the call is: *hidden* names the types the
+    generic's file declares that the call's file cannot see."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -962,13 +988,18 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,
             return f"{head}: {param}"
         # The binding written out, each variable at Int, where the call is
         # (inside a branch too: a sibling's type gives it none, #1866).
+        # Written as a block in the call's place, so the binding ends at
+        # its brace and no later slot of that type reads it; and only
+        # where each name it writes resolves where the call is (an
+        # imported generic's alias does not).
         bound = _at_int(root.decl.return_type, variables)
-        if text is None or bound is None:
+        if (text is None or bound is None
+                or _mentions(root.decl.return_type, hidden)):
             return (f"{head}: bind its result at a type that {needs} (a "
                     f"`let` of that type), or {param}")
-        return (f"{head}: bind its result at a type that {needs}, where "
-                f"the call is: `let @{bound} = {text};`, then "
-                f"`@{bound}.0` in its place; or {param}")
+        return (f"{head}: bind its result at a type that {needs}, with "
+                f"the block `{{ let @{bound} = {text}; @{bound}.0 }}` in "
+                f"the call's place; or {param}")
     if text is None or call.span is None or len(args) != len(root.decl.params):  # pragma: no mutate — unreached: `judge` calls this only at a call the check recorded an instantiation for, which a call of the wrong arity never gets (E201 returns before inference), and every such call has its text in its source (0 of 120 calls over the instrument, the fix-text file and test_checker*.py)
         return advice + "."  # pragma: no mutate — unreached, as the guard above: the guard is never true
     edits: list[tuple[int, int, str]] = []
@@ -1071,17 +1102,23 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
             refusals[id(inst)] = done
         return done
 
-    bodies: list[tuple[str | None, str, ast.FnDecl]] = [
-        (entry_file, entry_source, tld.decl)
+    bodies: list[tuple[str | None, str, ast.FnDecl,
+                       tuple[str, ...] | None]] = [
+        (entry_file, entry_source, tld.decl, None)
         for tld in derivation.linked.program.declarations
         if isinstance(tld.decl, ast.FnDecl)]
+    # The type names each file declares that no other file sees: its
+    # aliases, which are module-local, and its private data types.
+    local_names: dict[tuple[str, ...] | None, frozenset[str]] = {
+        None: _local_type_names(derivation.linked.program)}
     for mod in derivation.linked.modules:
         file, source = files[mod.path]
-        bodies.extend((file, source, tld.decl)
+        bodies.extend((file, source, tld.decl, mod.path)
                       for tld in mod.program.declarations
                       if isinstance(tld.decl, ast.FnDecl))
+        local_names[mod.path] = _local_type_names(mod.program)
 
-    for file, source, decl in bodies:
+    for file, source, decl, at in bodies:
         # A Map or Set operation whose component holds no type parameter,
         # in any body: the same at every instantiation, so judged as written.
         for node in _walk(decl):
@@ -1115,7 +1152,9 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
                                node, source, templates[root.key],
                                refusal.needs,
                                result=types.get(nid),
-                               record=(recorded or {}).get(nid)))
+                               record=(recorded or {}).get(nid),
+                               hidden=_hidden_at(templates[root.key], at,
+                                                 local_names)))
                     found.append(_diagnostic(
                         refusal.code, file, source, node,
                         f"The call '{call_text}' instantiates "

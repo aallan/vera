@@ -1077,9 +1077,7 @@ class CallsMixin:
                 pt = fn_info.param_types[i]
                 if not contains_fresh_typevar(pt):
                     exp = pt
-            arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                              ))
+            arg_types.append(self._synth_expr(arg, expected=exp))
 
         # Arity check
         if len(args) != len(fn_info.param_types):
@@ -1276,9 +1274,7 @@ class CallsMixin:
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
-                arg_ty = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                       )
+                arg_ty = self._synth_expr(args[i], expected=param_ty)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1286,9 +1282,7 @@ class CallsMixin:
             # enables bidirectional coercion (e.g. IntLit → Byte).
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
-                re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: at this pass the argument's type holds no variable (the pass above synthesized any again against the same parameter), so no reader of the origin has a variable or a hole to fix, and no cell moves (the instrument and test_checker*.py: 402 hits, 0 under a sibling's origin; 25 hand cells unmoved)
-                                       )
+                re = self._synth_expr(args[i], expected=param_ty)
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1305,9 +1299,7 @@ class CallsMixin:
                     and contains_literal_hole(
                         self._literal_soft_type(args[i], arg_ty)
                         or arg_ty)):
-                re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                       )
+                re = self._synth_expr(args[i], expected=param_ty)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, param_ty)):
                     arg_ty = re
@@ -1326,9 +1318,7 @@ class CallsMixin:
                     and isinstance(param_ty, AdtType)
                     and isinstance(args[i], (
                         ast.ConstructorCall, ast.NullaryConstructor))):
-                re = self._synth_expr(args[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                       )
+                re = self._synth_expr(args[i], expected=param_ty)
                 if re is not None and not isinstance(re, UnknownType):
                     arg_ty = re
                     arg_types[i] = re
@@ -1574,9 +1564,7 @@ class CallsMixin:
                 pt = fn_ty.params[i]
                 if not contains_typevar(pt):
                     exp = pt
-            arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                              ))
+            arg_types.append(self._synth_expr(arg, expected=exp))
 
         # Arity: every argument after the function value maps to one
         # parameter of the applied fn type.
@@ -1614,9 +1602,7 @@ class CallsMixin:
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
-                arg_ty = self._synth_expr(rest[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` unreached: the first pass gives each argument its parameter's type where that holds no variable, so no argument holds one here (0 hits over 4,879 tests)
-                                       )
+                arg_ty = self._synth_expr(rest[i], expected=param_ty)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -1624,9 +1610,7 @@ class CallsMixin:
             # enables bidirectional coercion (e.g. IntLit → Byte).
             if (not is_subtype(arg_ty, param_ty)
                     and not contains_typevar(param_ty)):
-                re = self._synth_expr(rest[i], expected=param_ty,
-                                       from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` too: at this pass the argument's type holds no variable (the pass above synthesized any again against the same parameter), so no reader of the origin has a variable or a hole to fix, and no cell moves (the instrument and test_checker*.py: 78 hits, 0 under a sibling's origin; 25 hand cells unmoved)
-                                       )
+                re = self._synth_expr(rest[i], expected=param_ty)
                 if re is not None and not isinstance(re, UnknownType):
                     if is_subtype(re, param_ty):
                         arg_ty = re
@@ -1818,9 +1802,7 @@ class CallsMixin:
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
             exp = param_types[i] if i < len(param_types) else None
-            arg_types.append(self._synth_expr(arg, expected=exp,
-                                              from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by the cells of tests/test_sibling_provenance_1866.py
-                                              ))
+            arg_types.append(self._synth_expr(arg, expected=exp))
 
         if len(args) != len(param_types):
             self._error(
@@ -2312,11 +2294,8 @@ class CallsMixin:
                         and not contains_fresh_typevar(param_ty)
                         and isinstance(args[i], (
                             ast.ConstructorCall, ast.NullaryConstructor))):
-                    resynth = self._synth_expr(
-                        args[i], expected=param_ty,
-                        from_sibling=False,  # pragma: no mutate — equivalent: `None` and the default are False's falsy twin, and every reader of the origin tests its truth; `True` is killed by test_repro_an_ability_operation_s_constructor_argument_meets_its_parameter
-                    )
-                    if (resynth is not None  # pragma: no mutate — equivalent: a constructor's synthesis is UnknownType only for a constructor unknown or refused (E210, E158) or an empty Tuple, whose first synthesis was UnknownType too, so it never holds the variable that brings it here
+                    resynth = self._synth_expr(args[i], expected=param_ty)
+                    if (resynth is not None
                             and not isinstance(resynth, UnknownType)):
                         arg_ty = resynth
                         arg_types[i] = resynth
@@ -2887,9 +2866,7 @@ class CallsMixin:
                     # sees a name mismatch, mints fresh, and the field-type
                     # check then rejects the genuinely ill-typed nesting).
                     field_expected = ft
-            arg_types.append(self._synth_expr(
-                arg, expected=field_expected,
-                from_sibling=self._expected_from_sibling))
+            arg_types.append(self._synth_expr(arg, expected=field_expected))
 
         if ci.field_types is None:
             if expr.args:
@@ -2935,16 +2912,10 @@ class CallsMixin:
             soft.get(tv, TypeVar(tv))
             for tv in ci.parent_type_params or ())))
 
-        # Merge expected-type mapping for unresolved vars.  Not a sibling's
-        # type (#1866): it gives the construction's own type the arguments
-        # nothing else fixes (`_ctor_result_type`), but it is no type an
-        # argument is expected at, so each argument is held to the field
-        # type the arguments give, as the same construction is outside a
-        # branch.
-        if not self._expected_from_sibling:
-            for tv, exp_ty in expected_mapping.items():
-                if tv not in mapping:
-                    mapping[tv] = exp_ty
+        # Merge expected-type mapping for unresolved vars
+        for tv, exp_ty in expected_mapping.items():
+            if tv not in mapping:
+                mapping[tv] = exp_ty
 
         field_types = ci.field_types
         if mapping:
@@ -3014,9 +2985,7 @@ class CallsMixin:
             # Re-synth if arg still has unresolved TypeVars and the
             # subtype check would fail (e.g. List<T$2> vs List<Option<Int>>).
             if contains_typevar(arg_ty) and not is_subtype(arg_ty, field_ty):
-                arg_ty = self._synth_expr(
-                    expr.args[i], expected=field_ty,
-                    from_sibling=False)
+                arg_ty = self._synth_expr(expr.args[i], expected=field_ty)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
@@ -3042,9 +3011,7 @@ class CallsMixin:
                     and contains_literal_hole(
                         self._literal_soft_type(expr.args[i], arg_ty)
                         or arg_ty)):
-                re = self._synth_expr(
-                    expr.args[i], expected=field_ty,
-                    from_sibling=False)
+                re = self._synth_expr(expr.args[i], expected=field_ty)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, field_ty)):
                     arg_ty = re
@@ -3240,9 +3207,8 @@ class CallsMixin:
             t = self._synth_expr(arg)
             if components is not None:
                 t = self._check_in_literal_context(
-                    arg, t, components[i], component=True,
-                    from_sibling=self._expected_from_sibling)
-            if t is not None and not isinstance(t, UnknownType):  # pragma: no mutate — equivalent: `or` differs only for a component synthesized as None, which follows only an E176 (`_SYNTH_ARMS` covers every expression class; 0 of 4,786 checker and instrument tests synthesize None), and an UnknownType appended either way is equal
+                    arg, t, components[i], component=True)
+            if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:
                 arg_types.append(UnknownType())
@@ -3312,6 +3278,19 @@ class CallsMixin:
         self._fresh_id += 1
         return TypeVar(f"{name}${self._fresh_id}")
 
+    def _constructor_typevar(self, name: str,
+                             mapping: dict[str, Type]) -> Type:
+        """The type the constructor's parameter *name* takes: its binding in
+        *mapping*, or a fresh variable marked as a constructor's
+        (`_constructor_minted`, #1866), which a join completes in an arm's
+        recorded types (`ControlFlowMixin._complete_arm`).  A fresh name is
+        minted either way, so the numbering is the one it was."""
+        fresh = self._fresh_typevar(name)
+        if name in mapping:
+            return mapping[name]
+        self._constructor_minted.add(fresh.name)
+        return fresh
+
     def _ctor_result_type(self, ci: ConstructorInfo,
                           arg_types: list[Type | None], *,
                           expected: Type | None = None,
@@ -3361,7 +3340,7 @@ class CallsMixin:
             # self-referential mappings when different ADTs share a param
             # name (e.g. both Option<T> and List<T> use "T").
             type_args = tuple(
-                mapping.get(tv, self._fresh_typevar(tv))
+                self._constructor_typevar(tv, mapping)
                 for tv in ci.parent_type_params
             )
             return AdtType(ci.parent_type, type_args)

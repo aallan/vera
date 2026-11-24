@@ -1011,7 +1011,11 @@ SHAPES: dict[str, _Shape] = {
         ("Tuple([1], [])", "dup(None)", 'Tuple([2], ["s"])'),
         {"literal": (2, "Tuple<Array<Int>, Array<Int>>"),
          "if": (2, None),
-         "match": (None, "Tuple<Array<Int>, Array<String>>")},
+         # Refused at the third arm as at the third element and the `if`'s
+         # else branch: `dup`'s two arrays are one type, which the first
+         # arm makes `Array<Int>` (#1866: the arms are no longer checked
+         # again against each other, which accepted the match alone).
+         "match": (2, None)},
         description=(
             "Array literal element 2 has type Tuple<Array<Int>, "
             "Array<String>>, but the literal's element type is "

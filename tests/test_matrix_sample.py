@@ -725,6 +725,7 @@ MARKED_FILES = (
     "test_secret_redaction_1854.py",
     "test_self_qualified_calls_1558.py",
     "test_short_circuit_1501.py",
+    "test_sibling_provenance_1866.py",
     "test_source_boundary_chars_1790.py",
     "test_source_encoding_1728_1666.py",
     "test_tail_call_guards_1849.py",
@@ -737,7 +738,6 @@ MARKED_FILES = (
     "test_value_text_1871_1768.py",
     "test_verifier_reads_the_typed_program_1525.py",
     "test_zero_size_operands_1870.py",
-    "test_sibling_provenance_1866.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

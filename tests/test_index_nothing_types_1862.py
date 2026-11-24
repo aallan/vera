@@ -886,10 +886,8 @@ def _unreported_unknowns(source: str | Path, file: str | None
     found: list[tuple[str, int]] = []
     original = TypeChecker._synth_expr
 
-    def hooked(self, expr, *, expected=None,  # type: ignore[no-untyped-def]
-               from_sibling=False):
-        result = original(self, expr, expected=expected,
-                          from_sibling=from_sibling)
+    def hooked(self, expr, *, expected=None):  # type: ignore[no-untyped-def]
+        result = original(self, expr, expected=expected)
         if (isinstance(base_type(result) if result is not None else None,
                        UnknownType)
                 and not any(d.severity == "error" for d in self.errors)

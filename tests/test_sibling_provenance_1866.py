@@ -1,25 +1,22 @@
-"""A sibling's type fixes no variable, whichever wrapper hands it down and
-whatever object it is (#1866).
+"""A sibling's type is no expected type: a branch is judged as the same
+value outside one (#1866).
 
-An `if` branch or a `match` arm whose type a call left open is synthesized
-again against its sibling's type (`_synth_against`), so a constructor takes
-the type arguments it cannot fix itself.  That type is no type the value is
-expected at (spec §5.9), so it fixes no variable a call leaves open, and
-fills no literal's hole.  Before #1866 the check told the sibling's type
-from another expected type by the object's identity (`_part_of`): an index
-wraps the type in a new `Array`, so the sibling fixed the indexed call in
-three arm orders of four, and a callee's parameter that is the shared
-`Int` object was taken for the sibling's, so a call accepted outside a
-branch was refused inside one, except where the `match` put it first.
+Before #1866 an `if` branch or a `match` arm whose type a call left open
+was synthesized again against its sibling's type, and the check told that
+type from one the context gives by the object's identity (`_part_of`):
+an index wrapped it in a new `Array`, a callee's parameter that is the
+shared `Int` object was taken for it, and a constructor's field
+expectation carried it into the constructor's inference
+(`MkW(None, head_ord([]), None)`).  Each moved a verdict with the order of
+the arms.
 
-Now every site that hands an expected type down states where it came from
-(`_synth_expr`'s *from_sibling*).  `SITES` lists each such site with the
-origin it states and the forms that reach it; `test_every_handoff_is_
-classified` holds the code to the table, so a new site fails until it is
-classified and given a form, and the matrix runs every form in every join
-and both orders against its control, the same expression with no sibling:
-the order of the arms never decides a verdict, and a branch is judged as
-the same expression outside one.
+Now no join hands an arm a type derived from another arm's: each arm is
+synthesized once, against the type the join's context expects, and the
+join completes in an arm's recorded types only the variables its
+constructors left open (`_complete_arms`), never one a call's
+instantiation holds.  `test_no_join_hands_an_arm_s_type_down` holds every
+join to that rule, and the matrix runs every form in every join and both
+orders against its control, the same expression with no sibling.
 """
 
 from __future__ import annotations
@@ -34,6 +31,9 @@ from typing import NamedTuple
 import pytest
 
 from tests import pipeline
+from vera import ast as vast
+from vera import fold
+from vera.types import contains_typevar
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
@@ -51,6 +51,10 @@ type PosInt = { @Int | @Int.0 > 0 };
 type UF = fn(Unit -> Int) effects(pure);
 
 private data Q<A, B> { MkQ(Option<A>, B, B) }
+
+private data W<A, B> { MkW(Option<A>, B, Option<B>) }
+
+private data V<B> { MkV(Array<B>, B) }
 
 private forall<T> fn idg(@T -> @T)
   requires(true)
@@ -82,6 +86,22 @@ private forall<T where Ord<T>> fn head_ord(@Array<T> -> @T)
   effects(pure)
 {
   @Array<T>.0[0]
+}
+
+private forall<T where Ord<T>> fn ido(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+private forall<T> fn none_any(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
 }
 
 private forall<T> fn first(@Array<T> -> @T)
@@ -117,6 +137,8 @@ _FAMILIES = {
     "q_nat": "Q<Int, Nat>",
     "array_option_nat": "Array<Option<Nat>>",
     "q_tuple_open": "Q<Int, Tuple<Nat, Option<Bool>>>",
+    "w": "W<Int, Int>",
+    "v": "V<Int>",
 }
 
 
@@ -253,6 +275,18 @@ FORMS: dict[str, Form] = {
     # (`pick` at `Nat` from its other argument): checked against that
     # instantiation, a type of the context's, the -3 is refuted, in a
     # constructor's field beside a sibling as outside one.
+    # A constructor's field expectation from the sibling completed a
+    # nested `None`, and the constructor's inference read it back as an
+    # argument's type, fixing `B` and so `head_ord` (PR 1907, fourth
+    # review); a call's result and an array literal carried it the same way.
+    "nested_ctor_feeds_inference": Form(
+        "w", "MkW(None, head_ord([]), None)",
+        "MkW(None, head_ord([]), None)", ("E613",)),
+    "nested_call_feeds_inference": Form(
+        "w", "MkW(None, head_ord([]), none_any(()))",
+        "MkW(None, head_ord([]), none_any(()))", ("E613",)),
+    "nested_array_feeds_inference": Form(
+        "v", "MkV([], head_ord([]))", "MkV([], head_ord([]))", ("E613",)),
     "generic_callee_hole_in_field": Form(
         "q", "MkQ(None, { let @Nat = 1; pick(@Nat.0, idg(0 - 3)) }, 5)",
         "MkQ(Some(1), { let @Nat = 1; pick(@Nat.0, idg(0 - 3)) }, 5)",
@@ -288,160 +322,151 @@ for _name, (_value, _other, _family) in _IN_FIELD.items():
         f"MkQ(Some(1), {_value}, {_other})", ())
 
 
-class Site(NamedTuple):
-    module: str
-    function: str
-    callee: str
-    expected: str
-    origin: str
+#: The functions that join values (`_join`, `_join_parts`, `_join_either`,
+#: `_value_join`): an `if`'s branches, a `match`'s arms, an `Exn`
+#: handler's clauses, an array literal's elements, and the checks that
+#: fit one type to another.
+_JOINS = frozenset({"_join", "_join_parts", "_join_either", "_value_join"})
+#: The sub-expressions whose type a join may hand down: they are no arm.
+_NOT_ARMS = frozenset({"condition", "scrutinee"})
 
 
-def _site(module: str, function: str, callee: str, expected: str,
-          origin: str) -> Site:
-    return Site(module, function, callee, expected, origin)
+def _refused_expectations(fn: pyast.FunctionDef) -> list[str]:
+    """Each `expected=` in *fn* a join may not write: one that names a
+    value derived from an arm's synthesized type.  A name is derived when
+    it is assigned the result of `_synth_expr` on anything but a condition
+    or a scrutinee, or any expression naming a derived name; the closure
+    is taken to a fixed point.  Allowed: the function's own `expected`
+    parameter, a type no arm gave (a condition's `Bool`), and a
+    scrutinee's own type."""
+    tainted: set[str] = set()
+
+    def names(node: pyast.AST) -> set[str]:
+        return {n.id for n in pyast.walk(node) if isinstance(n, pyast.Name)}
+
+    def from_arm(value: pyast.AST) -> bool:
+        for call in pyast.walk(value):
+            if (isinstance(call, pyast.Call)
+                    and isinstance(call.func, pyast.Attribute)
+                    and call.func.attr == "_synth_expr" and call.args):
+                arg = call.args[0]
+                if not (isinstance(arg, pyast.Attribute)
+                        and arg.attr in _NOT_ARMS):
+                    return True
+        return bool(names(value) & tainted)
+
+    changed = True
+    while changed:
+        changed = False
+        for node in pyast.walk(fn):
+            targets: list[pyast.AST] = []
+            value: pyast.AST | None = None
+            if isinstance(node, pyast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, (pyast.AnnAssign, pyast.AugAssign)):
+                targets, value = [node.target], node.value
+            elif isinstance(node, pyast.For):
+                targets, value = [node.target], node.iter
+            if value is None or not from_arm(value):
+                continue
+            for target in targets:
+                new = names(target) - tainted
+                if new:
+                    tainted |= new
+                    changed = True
+    return [pyast.unparse(kw.value) for node in pyast.walk(fn)
+            if isinstance(node, pyast.Call) for kw in node.keywords
+            if kw.arg == "expected" and names(kw.value) & tainted]
 
 
-_S = "_synth_expr"
-_L = "_check_in_literal_context"
-_FWD = "self._expected_from_sibling"
-
-#: Every site that hands an expected type to a sub-expression, the origin
-#: it states, how many calls of that shape it has, and the forms that reach
-#: it (or why none can: a site no branch's call meets).
-SITES: dict[Site, tuple[int, tuple[str, ...] | str]] = {
-    _site("control.py", "_synth_against", _S, "sibling", "True"): (
-        1, ("direct",)),
-    _site("control.py", "_check_if", _S, "expected", _FWD): (
-        2, ("nested_if",)),
-    _site("control.py", "_check_match", _S, "expected", _FWD): (
-        1, ("nested_match",)),
-    _site("expressions.py", "_check_block", _S, "expected", _FWD): (
-        1, ("block_tail",)),
-    _site("expressions.py", "_check_index", _S,
-          "AdtType('Array', (expected,))", _FWD): (1, ("index",)),
-    _site("expressions.py", "_check_index", _L,
-          "AdtType('Array', (expected,))", _FWD): (1, ("index_refined",)),
-    _site("calls.py", "_check_tuple_constructor", _L, "components[i]",
-          _FWD): (1, ("index_component", "literal_hole")),
-    _site("expressions.py", "_check_array_lit", _L, "element_ctx", _FWD): (
-        1, ("index_element",)),
-    _site("calls.py", "_check_constructor_call", _S, "field_expected",
-          _FWD): (1, ("index_field",)),
-    _site("calls.py", "_check_constructor_call", _S, "field_ty",
-          "False"): (
-        2, ("field_sibling_only", "field_other_arg", "field_literal",
-            "field_only_sibling_binds")),
-    _site("expressions.py", "_check_in_literal_context", _S, "context",
-          "from_sibling"): (
-        1, ("index_refined", "index_component", "index_element")),
-    _site("calls.py", "_check_fn_call_with_info", _S, "exp", "False"): (
-        1, ("callee_param", "callee_param_in_field")),
-    _site("calls.py", "_check_fn_call_with_info", _S, "param_ty",
-          "False"): (4, ("generic_callee_param",
-                         "generic_callee_param_in_field",
-                         "generic_callee_hole_in_field")),
-    _site("calls.py", "_check_apply_fn", _S, "exp", "False"): (
-        1, ("apply_fn_param", "apply_fn_param_in_field")),
-    _site("calls.py", "_check_apply_fn", _S, "param_ty", "False"): (
-        2, ("apply_fn_param", "lambda_return")),
-    _site("calls.py", "_check_op_call", _S, "exp", "False"): (
-        1, ("op_param", "op_param_in_field")),
-    _site("calls.py", "_check_ability_op_call", _S, "param_ty", "False"): (
-        1, ("ability_op_ctor_arg", "ability_op_ctor_arg_in_field",
-            "ability_op_param")),
-    _site("control.py", "_check_handle", _S, "state_type", "False"): (
-        2, ("state_init", "state_update", "state_init_in_field",
-            "state_update_in_field")),
-    _site("expressions.py", "_resynth_eq_ctor_operand", _S, "left_ty",
-          "False"): (1, ("eq_right_operand", "eq_right_operand_in_field")),
-    _site("expressions.py", "_resynth_eq_ctor_operand", _S, "right_ty",
-          "False"): (1, ("eq_left_operand", "eq_left_operand_in_field")),
-    _site("expressions.py", "_check_let", _S, "declared_type", "False"): (
-        1, ("let", "let_in_field")),
-    _site("expressions.py", "_check_let_destruct", _L,
-          "AdtType('Tuple', tuple(resolved_types))", "False"): (
-        1, ("let_destructure_nat", "let_destructure_nat_in_field",
-            "let_destructure")),
-    _site("expressions.py", "_check_anon_fn", _S, "ret_type", "False"): (
-        1, ("lambda_return", "lambda_return_in_field")),
-    _site("core.py", "_check_fn", _S, "return_type", "False"): (
-        1, "a function's body is a declaration's, never a branch's"),
-    _site("expressions.py", "_check_binary", _S, "BYTE", "False"): (
-        2, "an integer literal operand, which no call leaves open"),
-}
-
-#: Calls that pass `expected=` something other than their own `expected`
-#: and are no handoff to a sub-expression's synthesis: each is read in the
-#: frame of the synthesis in progress.
-SAME_FRAME = {
-    ("calls.py", "_infer_ctor_type_args", "_infer_type_args_in_context"):
-        "the construction's own expected type, narrowed to its data type",
-    ("expressions.py", "_check_hole", "HoleSite"):
-        "a hole's record of the type's text",
-}
-
-_HANDOFFS = {_S: "expected", _L: 2}
-
-
-class _Scan(pyast.NodeVisitor):
-    def __init__(self, module: str) -> None:
-        self.module = module
-        self.stack: list[str] = []
-        self.sites: Counter[Site] = Counter()
-        self.other: set[tuple[str, str, str]] = set()
-
-    def visit_FunctionDef(self, node: pyast.FunctionDef) -> None:
-        self.stack.append(node.name)
-        self.generic_visit(node)
-        self.stack.pop()
-
-    def visit_Call(self, node: pyast.Call) -> None:
-        func = node.func
-        name = (func.attr if isinstance(func, pyast.Attribute)
-                else getattr(func, "id", ""))
-        kws = {k.arg: k.value for k in node.keywords}
-        where = self.stack[-1] if self.stack else "<module>"
-        if name in _HANDOFFS:
-            at = _HANDOFFS[name]
-            exp = (kws.get("expected") if isinstance(at, str)
-                   else node.args[at] if len(node.args) > at else None)
-            if exp is not None:
-                origin = kws.get("from_sibling")
-                self.sites[Site(
-                    self.module, where, name, pyast.unparse(exp),
-                    "<unstated>" if origin is None
-                    else pyast.unparse(origin))] += 1
-        elif ("expected" in kws
-                and pyast.unparse(kws["expected"]) != "expected"):
-            self.other.add((self.module, where, name))
-        self.generic_visit(node)
-
-
-def _scan() -> tuple[Counter[Site], set[tuple[str, str, str]]]:
-    sites: Counter[Site] = Counter()
-    other: set[tuple[str, str, str]] = set()
+def _join_functions() -> dict[str, pyast.FunctionDef]:
+    found: dict[str, pyast.FunctionDef] = {}
     for path in sorted((ROOT / "vera" / "checker").glob("*.py")):
-        scan = _Scan(path.name)
-        scan.visit(pyast.parse(path.read_text(encoding="utf-8")))
-        sites += scan.sites
-        other |= scan.other
-    return sites, other
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        for fn in pyast.walk(tree):
+            if (isinstance(fn, pyast.FunctionDef) and fn.name not in _JOINS
+                    and any(isinstance(c, pyast.Call)
+                            and isinstance(c.func, pyast.Attribute)
+                            and c.func.attr in _JOINS
+                            for c in pyast.walk(fn))):
+                found[f"{path.name}:{fn.name}"] = fn
+    return found
 
 
-def test_every_handoff_is_classified() -> None:
-    """Every call that hands a sub-expression an expected type states its
-    origin, and is the site the table names with that origin, as many
-    times: a new site, or one whose origin changes, fails here until it is
-    classified and given a form."""
-    sites, other = _scan()
-    assert dict(sites) == {s: n for s, (n, _) in SITES.items()}
-    assert other == set(SAME_FRAME)
+#: The rule, by shape: each row a join's body and whether its `expected=`
+#: is allowed.  The rule is read off these rows.
+_SHAPES: dict[str, tuple[str, bool]] = {
+    "the join's own expected": (
+        "t = self._synth_expr(expr.then_branch, expected=expected)", True),
+    "a condition's Bool": (
+        "c = self._synth_expr(expr.condition, expected=BOOL)", True),
+    "a scrutinee's own type": (
+        "s = self._synth_expr(expr.scrutinee)\n"
+        "b = self._check_pattern(arm.pattern, expected=s)", True),
+    "a sibling's type": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "e = self._synth_expr(expr.else_branch, expected=t)", False),
+    "the joined type": (
+        "t = self._synth_expr(expr.then_branch)\n"
+        "j = self._join(t, BOOL)\n"
+        "e = self._synth_expr(expr.else_branch, expected=j)", False),
+    "a part of an arm's type": (
+        "for arm in expr.arms:\n"
+        "    a = self._synth_expr(arm.body)\n"
+        "    self._synth_expr(x, expected=AdtType('Array', (a,)))", False),
+}
 
 
-def test_every_form_is_reached_by_a_site() -> None:
-    named = {f for _, forms in SITES.values() if not isinstance(forms, str)
-             for f in forms}
-    assert named == set(FORMS)
+@pytest.mark.parametrize("shape", list(_SHAPES))
+def test_the_rule_reads_each_shape(shape: str) -> None:
+    body, allowed = _SHAPES[shape]
+    fn = pyast.parse("def j(self, expr, expected):\n"
+                     + "\n".join("    " + ln for ln in body.splitlines())
+                     ).body[0]
+    assert isinstance(fn, pyast.FunctionDef)
+    assert (_refused_expectations(fn) == []) is allowed
+
+
+def test_no_join_hands_an_arm_s_type_down() -> None:
+    """No function that joins values hands a sub-expression an expected
+    type derived from an arm's type: a sibling's type, the joined type or
+    a part of either (spec §5.9, #1866).  An arm is synthesized once,
+    against the type the join's context expects; a new join, or a new
+    hand-down from an arm's type, fails here."""
+    joins = _join_functions()
+    assert {"control.py:_check_if", "control.py:_check_match"} <= set(joins)
+    refused = {name: bad for name, fn in joins.items()
+               if (bad := _refused_expectations(fn))}
+    assert refused == {}
+
+
+def test_the_completion_has_one_writer_and_one_reader() -> None:
+    """The mark of a constructor's variable is written where a constructor
+    mints one and read by the join's completion alone, and the completion
+    is called by the two joins whose arms it completes."""
+    uses: Counter[tuple[str, str]] = Counter()
+    calls: Counter[str] = Counter()
+    source = ""
+    for path in sorted((ROOT / "vera").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        source += text
+        tree = pyast.parse(text)
+        for fn in pyast.walk(tree):
+            if not isinstance(fn, pyast.FunctionDef):
+                continue
+            for node in pyast.walk(fn):
+                if (isinstance(node, pyast.Attribute)
+                        and node.attr == "_constructor_minted"):
+                    uses[(fn.name, type(node.ctx).__name__)] += 1
+                if (isinstance(node, pyast.Call)
+                        and isinstance(node.func, pyast.Attribute)
+                        and node.func.attr == "_complete_arms"):
+                    calls[fn.name] += 1
+    assert set(uses) == {("__init__", "Store"),
+                         ("_constructor_typevar", "Load"),
+                         ("_complete_arms", "Load")}, uses
+    assert calls == Counter({"_check_if": 1, "_check_match": 1}), calls
+    assert "from_sibling" not in source and "_synth_against" not in source
 
 
 #: Each join of a sibling and an open arm, in both orders.
@@ -591,25 +616,24 @@ def test_repro_a_sibling_fills_no_literal_s_hole() -> None:
 
 
 def test_repro_the_fix_binds_the_open_call_in_the_arm() -> None:
-    """E613 at an index a sibling no longer types names the `let` that
-    does, written where the call is; made in the arm, the program checks
-    clean in every order."""
+    """E613 at an index a sibling no longer types names the binding that
+    does, as a block in the call's place; made in the arm, the program
+    checks clean in every order."""
     source = _ISSUE_PRE.replace("JOIN", _ORDERS_1["match_open_first"])
     (found,) = [e for e in pipeline.check(source).errors
                 if e.error_code == "E613"]
     assert found.fix == (
         "No argument of 'empty_ord(())' fixes T, so the call instantiates "
         "'empty_ord' at Bool, nothing giving its result a type: bind its "
-        "result at a type that supports 'Ord', where the call is: "
-        "`let @Array<Int> = empty_ord(());`, then `@Array<Int>.0` in its "
-        "place; or give 'empty_ord' a parameter that carries T ('@T' for "
-        "example) and pass it a value at a type that supports 'Ord', Int "
-        "for example."), found.fix
-    let, slot = re.findall(r"`([^`]+)`", found.fix)[:2]
-    arm = f"{{ {let} {slot}[0] }}"
+        "result at a type that supports 'Ord', with the block "
+        "`{ let @Array<Int> = empty_ord(()); @Array<Int>.0 }` in the "
+        "call's place; or give 'empty_ord' a parameter that carries T "
+        "('@T' for example) and pass it a value at a type that supports "
+        "'Ord', Int for example."), found.fix
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", found.fix)
     for order, join in _ORDERS_1.items():
         fixed = _ISSUE_PRE.replace(
-            "JOIN", join.replace("empty_ord(())[0]", arm))
+            "JOIN", join.replace("empty_ord(())", block))
         assert _codes(fixed, "check") == (), order
 
 
@@ -796,3 +820,42 @@ def test_repro_a_partly_open_parameter_in_a_field_is_judged_as_outside() -> None
         open_=f"MkQ(None, {_PARTLY_OPEN}, Tuple(1, None))"))
     assert _instances(cell) == _instances(control)
     assert _verified(cell) == _verified(control)
+
+
+def test_repro_a_join_completes_no_call_s_type_arguments() -> None:
+    """`idg(None)` and `ido(None)` in a branch beside an `Option<Int>`: the
+    `None`'s variable is the call's (its instantiation holds it), so the
+    join completes it nowhere.  `ido(None)` is refused (E613) in both
+    orders as outside a branch, and `idg(None)`'s recorded type keeps the
+    open variable it has outside one."""
+    for order in ("if_sibling_first", "if_open_first",
+                  "match_sibling_first", "match_open_first"):
+        join = JOINS[order].format(sib="@Option<Int>.0", open_="ido(None)")
+        assert _codes(_program("option", join), "check") == ("E613",), order
+        cell = _program("option", JOINS[order].format(
+            sib="@Option<Int>.0", open_="idg(None)"))
+        checked = pipeline.check(cell)
+        assert checked.ok, order
+        recorded = checked.artifacts.node_semantic_types
+        calls = [n for tld in checked.program.declarations
+                 if isinstance(tld.decl, vast.FnDecl)
+                 for n in fold.walk(tld.decl.body)
+                 if isinstance(n, vast.FnCall) and n.name == "idg"]
+        assert calls and all(
+            contains_typevar(recorded[n.node_id]) for n in calls), order
+    assert _codes(_program("option", "ido(None)"), "check") == ("E613",)
+
+
+def test_repro_an_arm_left_open_runs_as_outside_a_branch() -> None:
+    """An arm whose recorded type keeps a constructor's variable after the
+    join (`idg(None)`, the call's own) is built and run as outside a
+    branch: the typed program instantiates `idg` at the phantom
+    `Option<Bool>`, and the value is the `None` either way."""
+    source = _PRELUDE + (
+        "public fn h(@Bool -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  match (if @Bool.0 then { idg(None) } "
+        "else { Some(4) }) {\n    Some(@Int) -> @Int.0,\n"
+        "    None -> 7\n  }\n}\n")
+    for arg, value in (("true", 7), ("false", 4)):
+        ran = pipeline.run(source, fn="h", raw_args=[arg])
+        assert ran.value == value, (arg, ran.value)
