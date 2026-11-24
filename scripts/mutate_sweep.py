@@ -2496,8 +2496,8 @@ def name_killers(mutants_dir: Path, flips: Sequence[str], tests: Sequence[str], 
     (``scripts/mutate_diff.py``'s :func:`run_probe`)."""
     found = md.run_probe(mutants_dir, flips, tests, pytest_args, env, budget_s, killers_file, cap_s=cap_s,
                          run=run, drop=(CAP_ENV, SLOW_ENV, INFLIGHT_ENV, md.ORACLE_MAP_ENV),
-                         what="the covered selection", out_of_time="the slice's time for probes ran out")
-    return {name: (killer if killer.startswith("not named") else killer[:LISTED_MAX]) for name, killer in found.items()}
+                         what="the covered selection", out_of_time="not named: the slice's time for probes ran out")
+    return {name: (killer if killer.startswith("not ") else killer[:LISTED_MAX]) for name, killer in found.items()}
 
 
 def probe_flips(tree: Path, flips: Sequence[str], oracle: Mapping[str, Any], files: Sequence[str],

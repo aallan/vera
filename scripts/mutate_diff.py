@@ -1297,21 +1297,25 @@ FULL_PROBE_CAP_S = 300.0
 def run_probe(mutants_dir: Path, mutants: Sequence[str], tests: Sequence[str], pytest_args: Sequence[str],
               env: Mapping[str, str], budget_s: float, killers_file: Path, *, cap_s: float,
               run: Callable[..., Any] = subprocess.run, drop: Iterable[str] = (),
-              what: str = "the probe's tests", out_of_time: str = "the time for probes ran out") -> dict[str, str]:
+              what: str = "the probe's tests", out_of_time: str = "not named: the time for probes ran out",
+              ) -> dict[str, str]:
     """Each mutant's killer: pytest run in the engine's generated tree with
     the mutant active (``MUTANT_UNDER_TEST``, as mutmut runs one) over
     ``tests``, stopping at the first failure, which the oracle plugin names
     (``KILLERS_ENV``).  No mutmut run, so no stats pass: a probe costs the
     tests up to its killer, at most ``cap_s``, all of them at most
-    ``budget_s``.  A mutant no test fails is named why, as ``not named: ...``;
-    the variables in ``drop`` are not passed on."""
+    ``budget_s``.  A killer counts only when that test, run alone in the
+    same tree with no mutant active, passes (:func:`_passes_alone`, once a
+    test).  A mutant no test fails is named why, as ``not ...``; the
+    variables in ``drop`` are not passed on."""
     out: dict[str, str] = {}
     started = time.monotonic()
     leave = set(drop)
+    baseline: dict[str, bool] = {}
     for name in mutants:
         left = budget_s - (time.monotonic() - started)
         if left <= 1:
-            out[name] = f"not named: {out_of_time}"
+            out[name] = out_of_time
             continue
         child = {k: v for k, v in env.items() if k not in leave}
         child.update({"MUTANT_UNDER_TEST": name, KILLERS_ENV: str(killers_file), "PYTHONPATH": str(mutants_dir)})
@@ -1329,7 +1333,13 @@ def run_probe(mutants_dir: Path, mutants: Sequence[str], tests: Sequence[str], p
                 if mutant and nodeid:
                     named.setdefault(mutant, nodeid)
         if name in named:
-            out[name] = named[name]
+            # A killer counts only if it passes with no mutant active: a test
+            # red in the copy for a reason of its own kills nothing.
+            nodeid = named[name]
+            if nodeid not in baseline:
+                baseline[nodeid] = _passes_alone(mutants_dir, nodeid, pytest_args, env, leave, run)
+            out[name] = (nodeid if baseline[nodeid]
+                         else f"not named: its only failing test fails with no mutant active ({nodeid})")
         elif code is None:
             out[name] = f"not named: no test failed in the probe's {min(cap_s, left):.0f} s"
         elif code == 0:
@@ -1337,6 +1347,26 @@ def run_probe(mutants_dir: Path, mutants: Sequence[str], tests: Sequence[str], p
         else:
             out[name] = f"not named: the probe exited {code} with no test failing"
     return out
+
+
+#: The most seconds a named killer's run with no mutant active may take.
+BASELINE_CAP_S = 120.0
+
+
+def _passes_alone(mutants_dir: Path, nodeid: str, pytest_args: Sequence[str], env: Mapping[str, str],
+                  leave: Iterable[str], run: Callable[..., Any]) -> bool:
+    """Whether test ``nodeid`` passes alone in the generated tree, with the
+    probe's arguments and no mutant active, within ``BASELINE_CAP_S``."""
+    drop = {*leave, "MUTANT_UNDER_TEST", KILLERS_ENV}
+    child = {k: v for k, v in env.items() if k not in drop}
+    child["PYTHONPATH"] = str(mutants_dir)
+    try:
+        done = run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *pytest_args, nodeid],
+                   cwd=str(mutants_dir), env=child, capture_output=True, text=True, encoding="utf-8",
+                   errors="replace", timeout=BASELINE_CAP_S, check=False)
+    except subprocess.TimeoutExpired:
+        return False
+    return done.returncode == 0
 
 
 def full_cell_probe(rows: Sequence[UnitResult], tree: Path, oracle: Mapping[str, Any], pytest_args: Sequence[str],
@@ -1363,9 +1393,10 @@ def full_cell_probe(rows: Sequence[UnitResult], tree: Path, oracle: Mapping[str,
             continue
         found = run_probe(tree / "mutants", row.survivors, files, [*pytest_args, "--matrix=full"], env,
                           deadline - time.monotonic(), killers_file, cap_s=cap_s, run=run, drop=(ORACLE_MAP_ENV, MATRIX_CHANGED_ENV),
-                          what="its module's instruments in full", out_of_time="the probe's share of the budget ran out")
+                          what="its module's instruments in full",
+                          out_of_time="not looked at: the probe's share of the budget ran out")
         for name, killer in found.items():
-            if killer.startswith("not named"):
+            if killer.startswith("not "):
                 row.probes[name] = killer
             else:
                 row.full_kills[name] = killer

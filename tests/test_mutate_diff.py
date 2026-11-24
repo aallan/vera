@@ -3365,6 +3365,8 @@ class TestEndToEnd:
         calls: list[dict[str, Any]] = []
 
         def run(argv: list[str], **kw: Any) -> Any:
+            if "MUTANT_UNDER_TEST" not in kw["env"]:
+                return subprocess.CompletedProcess(argv, 0)  # the killer, alone, with no mutant: green
             calls.append({"argv": argv, **kw})
             if outcome == "timeout":
                 raise subprocess.TimeoutExpired(argv, kw["timeout"])
@@ -3391,6 +3393,40 @@ class TestEndToEnd:
         else:
             assert rows[0].full_kills == {f"{F}1": "tests/test_inst.py::test_cell[sampled-out]"}
 
+    @pytest.mark.parametrize("green", [True, False], ids=["killer-green-alone", "killer-red-alone"])
+    def test_repro_a_killer_counts_only_if_it_passes_with_no_mutant_active(
+        self, tmp_path: Path, green: bool,
+    ) -> None:
+        """A test red in the copy for a reason of its own would read as every
+        survivor's killer, and the check would pass on mutants nothing kills.
+        The named test is run alone, no mutant active, once for every
+        survivor that names it: green, the kills stand; red, the survivors
+        stay, with why, and the check fails."""
+        tree = self._probe_tree(tmp_path)
+        killers = tmp_path / "killers.txt"
+        alone: list[list[str]] = []
+        test = "tests/test_inst.py::test_cell[red-at-head]"
+
+        def run(argv: list[str], **kw: Any) -> Any:
+            if "MUTANT_UNDER_TEST" not in kw["env"]:
+                assert md.KILLERS_ENV not in kw["env"] and argv[-1] == test
+                alone.append(argv)
+                return subprocess.CompletedProcess(argv, 0 if green else 1)
+            with open(killers, "a", encoding="utf-8") as fh:
+                fh.write(f"{kw['env']['MUTANT_UNDER_TEST']}\t{test}\n")
+            return subprocess.CompletedProcess(argv, 1)
+
+        rows = md.tally([_unit("x_free")], {f"{F}1": "survived", f"{F}2": "survived"})
+        md.full_cell_probe(rows, tree, {"modules": {"vera/smt.py": ["tests/test_inst.py"]}}, ["-p", "x"], {},
+                           1000.0, killers, run=run)
+        assert len(alone) == 1 and "--matrix=full" in alone[0]  # once for the two survivors
+        if green:
+            assert rows[0].survivors == [] and md.exit_code(rows, stopped=None) == 0
+        else:
+            assert rows[0].survivors == [f"{F}1", f"{F}2"] and md.exit_code(rows, stopped=None) == 1
+            assert rows[0].probes[f"{F}1"] == (
+                f"not named: its only failing test fails with no mutant active ({test})")
+
     def test_a_survivor_whose_module_no_instrument_names_still_fails(self, tmp_path: Path) -> None:
         tree = self._probe_tree(tmp_path)
         rows = md.tally([_unit("x_free")], {f"{F}1": "survived"})
@@ -3404,7 +3440,7 @@ class TestEndToEnd:
         assert rows[0].probes == {f"{F}1": "not run: no class instrument names its module"}
         md.full_cell_probe(rows, tree, {"modules": {"vera/smt.py": ["tests/test_inst.py"]}}, [], {}, 0.0,
                            tmp_path / "k.txt", run=run)
-        assert rows[0].probes[f"{F}1"] == "not named: the probe's share of the budget ran out"
+        assert rows[0].probes[f"{F}1"] == "not looked at: the probe's share of the budget ran out"
 
     def test_a_survivor_is_split_by_the_engines_neighbour_numbers(self) -> None:
         rows = md.tally([_unit("x_free")], {f"{F}1": "survived", f"{F}2": "survived", f"{F}3": "killed"})

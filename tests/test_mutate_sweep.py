@@ -1816,6 +1816,8 @@ class TestRedraw:
         killers = tmp_path / "killers.txt"
 
         def run(argv: list[str], **kw: Any) -> Any:
+            if "MUTANT_UNDER_TEST" not in kw["env"]:
+                return subprocess.CompletedProcess(argv, 0)  # the killer, alone, with no mutant: green
             calls.append({"argv": argv, **kw})
             if kw["env"]["MUTANT_UNDER_TEST"] == "vera.a.x_f__mutmut_4":
                 killers.write_text("vera.a.x_f__mutmut_4\ttests/test_b.py::test_y\n", encoding="utf-8")
