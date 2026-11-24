@@ -3265,6 +3265,66 @@ class TestEndToEnd:
         assert (code, record["stopped"]) == (2, "unmapped")
         assert record["outside_window"] == ["`vera/m.py` `kept`: 2 generated, 1 in the window"]
 
+    @pytest.mark.parametrize(("neighbours", "code", "own", "apart"), [
+        ([], 1, ["vera.m.x_kept__mutmut_1", "vera.m.x_kept__mutmut_2"], []),
+        ([1, 2], 0, [], ["vera.m.x_kept__mutmut_1", "vera.m.x_kept__mutmut_2"]),
+        ([1], 1, ["vera.m.x_kept__mutmut_2"], ["vera.m.x_kept__mutmut_1"])],
+        ids=["on-changed-lines", "on-neighbour-lines", "mixed"])
+    def test_repro_a_pull_request_is_gated_on_its_own_lines(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        neighbours: list[int], code: int, own: list[str], apart: list[str],
+    ) -> None:
+        """The maintainer's rule of 24 November 2026: a survivor on a line
+        the diff changes fails the check; the same survivor on a line the
+        two-line window pulled in does not, and is listed apart, with its
+        diff, for the standing sweep issue; a mixed run fails and lists
+        both, the headline counting each."""
+        monkeypatch.setenv("FAKE_WINDOW_COUNTS", json.dumps(
+            {"vera/m.py": {"x_kept": {"held": 5, "window": 2, "neighbours": neighbours}}}))
+        results = "    vera.m.x_kept__mutmut_1: survived\n    vera.m.x_kept__mutmut_2: survived\n"
+        got, record, _ = _main(repo, tmp_path, results)
+        (row,) = [f for f in record["functions"] if f["key"] == "x_kept"]
+        assert got == record["exit_code"] == code
+        assert [s["name"] for s in row["survivors"]] == own
+        assert [s["name"] for s in row["neighbour_survivors"]] == apart
+        assert all("diff" in s for s in row["neighbour_survivors"])
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        if own:
+            assert record["outcome"].startswith(f"Fail: {len(own)} mutant(s) of the diff survive")
+        if apart:
+            assert (f"{len(apart)} survivor(s) on unchanged lines the window pulled in, not this pull "
+                    "request's (listed apart for the standing sweep issue #1888)") in record["outcome"]
+            assert "### Survivors on unchanged lines: not this pull request's" in summary
+        else:
+            assert "on unchanged lines" not in record["outcome"] and "unchanged lines:" not in summary
+        window = json.loads((tmp_path / "work" / "window.json").read_text(encoding="utf-8"))
+        assert window["changed"]["vera/m.py"]  # the engine is told the diff's own lines
+
+    def test_the_engine_names_a_mutant_on_a_changed_line_by_its_node_and_the_children_it_takes(self) -> None:
+        """mutmut's own visitor, no test run: a mutant whose node starts on
+        a changed line is the pull request's; so is one placed on a call's
+        first line that removes or replaces an argument starting on a
+        changed line (mutmut's rule for an ignored line); one that touches
+        no changed line is a neighbour."""
+        pytest.importorskip("mutmut")
+        source = "def g(x):\n    return h(\n        x,\n        2,\n    )\n\n\ndef h(a, b):\n    return a\n"
+        lines = [2, 3, 4, 5]
+        listed = json.loads(md.list_window(json.dumps({"sources": {"m.py": source}, "lines": {"m.py": lines}})))
+        made = listed["m.py"]["x_g"]
+        apart = set(md.neighbour_numbers("m.py", source, lines, [4])["x_g"])
+        assert apart and len(apart) < len(made)
+        assert all(m["line"] != 4 for m in made if m["n"] in apart)
+        taking = [m for m in made if m["line"] == 2 and "2" not in m["mutated"].replace("h(", "")]
+        assert all(m["n"] not in apart for m in taking)  # takes the `2` argument: own
+
+    def test_a_survivor_is_split_by_the_engines_neighbour_numbers(self) -> None:
+        rows = md.tally([_unit("x_free")], {f"{F}1": "survived", f"{F}2": "survived", f"{F}3": "killed"})
+        md.split_neighbours(rows, {("vera/smt.py", "x_free"): frozenset({2})})
+        assert (rows[0].survivors, rows[0].neighbours) == ([f"{F}1"], [f"{F}2"])
+        assert md.selection(rows)["survived"] == 1 and md.selection(rows)["neighbours_survived"] == 1
+        md.split_neighbours(rows, {})  # no record: every survivor gates
+        assert rows[0].survivors == [f"{F}1"]
+
     def test_fewer_mutants_than_the_window_stop_the_run_short(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -3310,7 +3370,8 @@ class TestEndToEnd:
         code, record, _ = _main(repo, tmp_path, results)
         assert code == 1
         assert record["window"]["selection"] == {
-            "functions": 1, "held": 5, "window": 2, "generated": 2, "decided": 2, "survived": 1}
+            "functions": 1, "held": 5, "window": 2, "generated": 2, "decided": 2, "survived": 1,
+            "neighbours_survived": 0}
         assert [(f["held"], f["window"]) for f in record["functions"]] == [(5, 2)]
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert ("Selection: the mutants whose node starts within 2 lines of a line the diff adds "

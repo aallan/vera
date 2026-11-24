@@ -1091,6 +1091,11 @@ def install_window(engine: Any, window_file: Path) -> None:
         inside = _unit_counts(create_mutations, path, source, lines)
         counts[path] = {key: {"held": held[key], "window": inside[key]}
                         for key in sorted(set(held) | set(inside))}
+        if path in spec.get("changed", {}):
+            # Which of each unit's window mutants sit on no changed line:
+            # the window's neighbours, which do not gate the pull request.
+            for key, numbers in neighbour_numbers(path, source, lines, spec["changed"][path]).items():
+                counts[path].setdefault(key, {"held": held[key], "window": inside[key]})["neighbours"] = numbers
     Path(spec["record"]).write_text(json.dumps({"files": counts}, indent=1) + "\n", encoding="utf-8")
 
     def covered(filename: str, covered_lines: Any) -> Any:
@@ -1206,6 +1211,79 @@ def show_mutants(request: str) -> str:
                          "mutated": text(made[n - 1].mutated_node)}
                 for n in (int(v) for v in numbers) if 1 <= n <= len(made)}
     return json.dumps(shown)
+
+
+def touched_lines(original: Any, mutated: Any, positions: Mapping[Any, Any]) -> frozenset[int]:
+    """The lines a mutation is on: its node's first line, and the first line
+    of each child of the node it removes or replaces (one the mutated node
+    does not hold), the rule mutmut reads an ignored line by."""
+    import libcst as cst
+
+    lines = {positions[original].start.line}
+    kept = mutated.children if isinstance(mutated, cst.CSTNode) else []
+    for child in original.children:
+        if not any(child is k for k in kept) and child in positions:
+            lines.add(positions[child].start.line)
+    return frozenset(lines)
+
+
+def neighbour_numbers(path: str, source: str, lines: Iterable[int],
+                      changed: Iterable[int]) -> dict[str, list[int]]:
+    """For each unit, the numbers the window's run gives its mutants (from
+    one, in the order mutmut's visitor makes them over ``lines``) that are on
+    no ``changed`` line (:func:`touched_lines`): the mutants the two-line
+    window pulled in from the lines around the diff's own."""
+    import libcst as cst
+    from libcst.metadata import MetadataWrapper, PositionProvider
+    from mutmut.mutation.file_mutation import MutationVisitor
+    from mutmut.mutation.mutators import mutation_operators
+    from mutmut.mutation.pragma_handling import get_ignored_lines
+
+    wanted = frozenset(changed)
+    wrapper = MetadataWrapper(cst.parse_module(source))
+    visitor = MutationVisitor(mutation_operators, get_ignored_lines(path, source, wrapper, None), set(lines))
+    wrapper.visit(visitor)
+    positions = wrapper.resolve(PositionProvider)
+    keys: dict[Any, str] = {}
+    for stmt in wrapper.module.body:
+        if isinstance(stmt, cst.FunctionDef):
+            keys[stmt] = _key(stmt.name.value, None)
+        elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+            keys.update({m: _key(m.name.value, stmt.name.value) for m in stmt.body.body
+                         if isinstance(m, cst.FunctionDef)})
+    made: dict[str, int] = {}
+    out: dict[str, list[int]] = {}
+    for mutation in visitor.mutations:
+        key = keys.get(mutation.contained_by_top_level_function)
+        if key is None:
+            continue
+        made[key] = made.get(key, 0) + 1
+        out.setdefault(key, [])
+        if not touched_lines(mutation.original_node, mutation.mutated_node, positions) & wanted:
+            out[key].append(made[key])
+    return out
+
+
+def read_window_neighbours(path: Path) -> dict[tuple[str, str], frozenset[int]]:
+    """The engine's neighbours of each unit (:func:`neighbour_numbers`), by
+    ``(path, key)``; none where it wrote none, so every survivor gates."""
+    try:
+        files = json.loads(path.read_text(encoding="utf-8"))["files"]
+        return {(file, key): frozenset(int(n) for n in rec.get("neighbours", []))
+                for file, units in files.items() for key, rec in units.items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def split_neighbours(rows: Sequence[UnitResult],
+                     neighbours: Mapping[tuple[str, str], frozenset[int]]) -> None:
+    """Move each row's survivors on no changed line into ``neighbours``: a
+    pull request is gated on its own lines, and a survivor on a line the
+    window pulled in is the standing sweep's (#1888)."""
+    for row in rows:
+        apart = neighbours.get((row.path, row.key), frozenset())
+        row.neighbours = [n for n in row.survivors if _mutant_number(n) in apart]
+        row.survivors = [n for n in row.survivors if _mutant_number(n) not in apart]
 
 
 def list_window(request: str) -> str:
@@ -1663,6 +1741,9 @@ class UnitResult:
     #: visitor; None where the engine counted none.
     held: int | None = None
     window: int | None = None
+    #: The survivors on no line the diff changes, which the two-line window
+    #: pulled in (:func:`split_neighbours`): listed, never gating.
+    neighbours: list[str] = field(default_factory=list)
 
 
 def tally(units: Sequence[Unit], results: Mapping[str, str]) -> list[UnitResult]:
@@ -1731,6 +1812,7 @@ def selection(rows: Sequence[UnitResult]) -> dict[str, int | None]:
         "decided": sum(n for r in rows for status, n in r.counts.items()
                        if STATUSES[status] != "undecided"),
         "survived": sum(len(r.survivors) for r in rows),
+        "neighbours_survived": sum(len(r.neighbours) for r in rows),
     }
 
 
@@ -1763,13 +1845,14 @@ def not_measured(rows: Sequence[UnitResult]) -> list[UnitResult]:
 
 
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
-    """1: a survivor, whatever stopped the run; 2: the run itself failed (the
-    engine, or a mutant the lane did not map); 3 (:data:`NOT_MEASURED`): a
-    changed function with mutants in its window had none decided; 0
-    otherwise, a run that decided some of every function's mutants and not
-    all of them included."""
-    statuses = {status for row in rows for status, n in row.counts.items() if n}
-    if "survived" in statuses:
+    """1: a survivor on a line the diff changes, whatever stopped the run (a
+    survivor on a neighbour line the window pulled in gates nothing:
+    :func:`split_neighbours`); 2: the run itself failed (the engine, or a
+    mutant the lane did not map); 3 (:data:`NOT_MEASURED`): a changed
+    function with mutants in its window had none decided; 0 otherwise, a
+    run that decided some of every function's mutants and not all of them
+    included."""
+    if any(row.survivors for row in rows):
         return 1
     if stopped in ("engine", "unmapped"):
         return 2
@@ -1894,6 +1977,25 @@ def render(record: Mapping[str, Any]) -> str:
                        "(the `mutation-diff` artifact), each with its diff unless the show "
                        "budget ran out first.")
             out.append("")
+    apart = [s for row in functions for s in row.get("neighbour_survivors", [])]
+    if apart:
+        out.append("### Survivors on unchanged lines: not this pull request's")
+        out.append("")
+        out.append("Each sits on a line the diff does not change, which the two-line window pulled in. "
+                   "It does not fail this check: the standing sweep issue #1888 records it, and the "
+                   "pull request owes it nothing.")
+        out.append("")
+        shown = [s for s in apart if s["diff"]][:MAX_SHOWN_SURVIVORS]
+        for survivor in shown:
+            out.append(f"`{survivor['name']}`")
+            out.append("")
+            out.append("```diff")
+            out.extend(survivor["diff"].rstrip("\n").splitlines())
+            out.append("```")
+            out.append("")
+        if len(apart) > len(shown):
+            out.append(f"{len(apart) - len(shown)} more are in the JSON record (`neighbour_survivors`).")
+            out.append("")
     if record.get("dropped_tests"):
         out.append("### Dropped from the oracle")
         out.append("")
@@ -1974,6 +2076,12 @@ def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None, *,
     are in a module with no declared oracle (``undeclared``), whose mutants
     the lane does not run."""
     head = _outcome(code, rows, stopped)
+    apart = sum(len(r.neighbours) for r in rows)
+    if apart:
+        if head == "Pass: every mutant of the diff is killed or timed out.":
+            head = "Pass: every mutant on the diff's own lines is killed or timed out."
+        head = (f"{head.removesuffix('.')}; {apart} survivor(s) on unchanged lines the window pulled in, "
+                "not this pull request's (listed apart for the standing sweep issue #1888).")
     if undeclared:
         head = (f"{head.removesuffix('.')}; {undeclared} changed function(s) in a module with "
                 "no declared oracle, not mutated.")
@@ -2355,8 +2463,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                 for path in files}
         counts_file = workdir / "window-counts.json"
         window_file = workdir / "window.json"
+        # The lines the diff changes in each file, so the engine can name the
+        # window's mutants on none of them (neighbour_numbers).
         window_file.write_text(json.dumps({"context": args.context, "record": str(counts_file),
-                                           "lines": kept}, indent=1) + "\n", encoding="utf-8")
+                                           "lines": kept,
+                                           "changed": {path: sorted(change_of[path].added) for path in files}},
+                                          indent=1) + "\n", encoding="utf-8")
         record["window"] = {"context": args.context, "rule": rule(args.context), "lines": kept}
         if args.list:
             return _list(args, engine, tree, files, kept, record, env)
@@ -2417,8 +2529,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             record["outside_window"] = place_in_window(rows, counts)
             if record["outside_window"]:
                 stopped = failed(stopped, "unmapped")
+        split_neighbours(rows, read_window_neighbours(counts_file))
         show_until = time.monotonic() + SHOW_BUDGET_S
-        for row, name in [(row, name) for row in rows for name in row.survivors]:
+        for row, name in [(row, name) for row in rows for name in [*row.survivors, *row.neighbours]]:
             left = show_until - time.monotonic()
             if left <= 0:
                 row.diffs[name] = SHOW_BUDGET_NOTE
@@ -2451,8 +2564,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         1 for u in units if (u.excluded or "").startswith("no declared oracle")))
     record["elapsed_s"] = round(time.monotonic() - started, 1)
     record["functions"] = [
-        {**{k: v for k, v in asdict(row).items() if k != "diffs"},
-         "survivors": [{"name": n, "diff": row.diffs.get(n, "")} for n in row.survivors]}
+        {**{k: v for k, v in asdict(row).items() if k not in ("diffs", "neighbours")},
+         "survivors": [{"name": n, "diff": row.diffs.get(n, "")} for n in row.survivors],
+         "neighbour_survivors": [{"name": n, "diff": row.diffs.get(n, "")} for n in row.neighbours]}
         for row in [*rows, *excluded_rows]
     ]
     summary = render(record)
