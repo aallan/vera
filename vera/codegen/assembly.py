@@ -128,7 +128,10 @@ class AssemblyMixin:
             if row.needs_alloc:
                 self._needs_alloc = True
             if row.needs_memory:
-                self._needs_memory = True
+                # Implied by `needs_alloc` on every such row (the allocator's
+                # text declares the memory), which a test pins; the census
+                # with this set removed moves no module (#1900).
+                self._needs_memory = True  # pragma: no mutate
             if row.needs_wrap_table:
                 # #573: the 64 KiB wrap table, `$register_wrapper`, phase 2c
                 # of `$gc_collect` and the two helpers declared below.

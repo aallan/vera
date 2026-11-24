@@ -209,6 +209,63 @@ def test_the_scan_ignores_text_that_only_looks_like_one(text: str) -> None:
     assert not holds_memory_instruction(f"(func $f\n    {text}\n  )")
 
 
+def test_repro_the_scan_reads_each_token_whole() -> None:
+    """The scan's boundaries, unparametrised so every run holds them: a
+    string is read past an escaped quote, a `$name` past its first
+    character (a user function's name starts `$:`), a block comment to its
+    own `;)` and no further, and an instruction is a whole token, neither
+    the tail nor the head of a longer word.  The instruction families no
+    corpus module holds yet are found too."""
+    def wat(text: str) -> str:
+        return f"(func $f\n    {text}\n  )"
+
+    for text in ('(data (i32.const 0) "a\\" i32.load \\"b")',
+                 "call $:i32.load",
+                 "nopi32.load", "x.i32.load",
+                 "memory.sizes", "memory.size.x"):
+        assert not holds_memory_instruction(wat(text)), text
+    for text in ("(; a ;) i32.load (; b ;)",
+                 "v128.load", "v128.store", "memory.init 0", "data.drop 0"):
+        assert holds_memory_instruction(wat(text)), text
+
+
+def test_repro_a_host_row_that_reads_no_memory_declares_none() -> None:
+    """`Random.random_int` passes and returns scalars: its row asks for no
+    memory, and a module whose only host contact it is declares none."""
+    result = _compiled(
+        "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<Random>)\n{\n  Random.random_int(1, 6)\n}\n")
+    assert '"random_int"' in result.wat
+    assert "(memory" not in result.wat
+    wasmtime.Module.validate(_engine(), result.wasm_bytes)
+
+
+def test_repro_every_host_row_that_asks_for_memory_allocates() -> None:
+    """A host row's `needs_memory` is implied by its `needs_alloc`: the
+    allocator a row brings in holds loads and stores, so its memory is
+    declared from the text whatever the row says.  This pins why the
+    row's own memory flag changes no module (the hunt's census, #1900); a
+    row that asks for memory without allocating breaks it."""
+    from vera.builtins import HOST_FAMILIES, family_rows
+
+    rows = [row for family in HOST_FAMILIES for row in family_rows(family.name)]
+    asking = [row.name for row in rows if row.needs_memory]
+    assert asking
+    assert [r for r in rows if r.needs_memory and not r.needs_alloc] == []
+
+
+def test_repro_a_data_segment_alone_declares_memory() -> None:
+    """A module whose only contact with memory is a string the pool holds:
+    no memory instruction and no host row, so only the data segment asks
+    for the memory it is written into."""
+    result = _compiled(
+        "public fn f(-> @String)\n" + _C + '{\n  "hello"\n}\n')
+    assert not holds_memory_instruction(result.wat)
+    assert "(data" in result.wat
+    assert '(memory (export "vera.memory") 1)' in result.wat
+    wasmtime.Module.validate(_engine(), result.wasm_bytes)
+
+
 def test_a_name_and_a_comment_that_look_like_loads_declare_no_memory() -> None:
     """Assembly-level: a module whose only `load` text is in a name and a
     comment declares no memory, and validates without one."""
@@ -240,7 +297,9 @@ def test_a_module_that_does_not_validate_is_e699_with_no_bytes() -> None:
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert [d.error_code for d in errors] == ["E699"]
     text = errors[0].description
-    assert "does not validate" in text
+    assert text.startswith(
+        "Internal compiler error while assembling the module: "
+        "the module does not validate: ")
     assert "unknown memory 0" in text
     assert "`unwrap_or`" in text
     assert result.wasm_bytes == b""
@@ -287,6 +346,11 @@ _MAIN = "public fn main(-> @Int)\n" + _C + "{\n  42\n}\n"
 def bad_component(monkeypatch: pytest.MonkeyPatch) -> None:
     """The wasi-p2 emitter builds a component that assembles and does not
     validate (its core module loads from a memory it does not declare)."""
+    # The host binds the emitter by name at its own import, so it is
+    # imported before either is patched: imported while the emitter is
+    # patched, it would bind the stand-in and keep it after the test.
+    import vera.runtime.wasi_host  # noqa: F401
+
     for site in ("vera.codegen.wasi", "vera.runtime.wasi_host"):
         monkeypatch.setattr(
             f"{site}.emit_wasi_component",
@@ -343,3 +407,18 @@ def test_a_valid_wasi_p2_component_is_written(tmp_path: Path) -> None:
     out = tmp_path / "main.wasm"
     assert cmd_compile(str(src), output=str(out), target="wasi-p2") == 0
     assert out.read_bytes()[:4] == b"\0asm"
+
+
+def test_repro_the_host_runs_the_component_it_checked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`vera run --target wasi-p2` runs the component `build_component`
+    constructed, on the engine it was constructed with."""
+    from vera.cli import cmd_run
+
+    src = tmp_path / "hello.vera"
+    src.write_text(
+        "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
+        '  effects(<IO>)\n{\n  IO.print("checked\\n")\n}\n', encoding="utf-8")
+    assert cmd_run(str(src), target="wasi-p2") == 0
+    assert "checked" in capsys.readouterr().out
