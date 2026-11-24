@@ -1727,6 +1727,23 @@ def test_e006_an_unknown_character(tmp_path: Path) -> None:
           'error_code': 'E006'}])
 
 
+def test_e007_an_exception_the_parser_does_not_raise(tmp_path: Path) -> None:
+    """diagnose_lark_error: the fallback for an exception that is no Lark
+    error.  The LALR parser raises only UnexpectedToken and
+    UnexpectedCharacters, so no source reaches it: it is read from the
+    function, with an exception of another type."""
+    from vera.errors import diagnose_lark_error
+
+    assert _found(
+        _reported([diagnose_lark_error(ValueError("something weird"), _OK,
+                                       "main.vera")]),
+        "E007", tmp_path) == (
+        [{'severity': 'error',
+          'description': 'Internal parser error: something weird',
+          'location': {'line': 0, 'column': 0, 'file': 'main.vera'},
+          'error_code': 'E007'}])
+
+
 def test_e008_a_module_call_with_a_dot(tmp_path: Path) -> None:
     """module_call_dot_syntax: `m.g(...)` where `m::g(...)` is meant."""
     assert _found(
@@ -3798,6 +3815,49 @@ def test_e699_the_language_server_s_analysis_raised(tmp_path: Path) -> None:
           'code': 'E699',
           'source': 'vera',
           'error_code': 'E699'}])
+
+
+def test_e624_a_call_with_no_target(tmp_path: Path) -> None:
+    """_emit_cross_module_error: code generation's rail for a call with no
+    target, module-qualified and bare.  The check refuses such a call
+    first (E200, E230, E233, E340), so no command reaches it: it is read
+    from the emitter, at the node it is handed."""
+    from vera.codegen import CodeGenerator
+
+    node = pipeline.parse(_OK).program.declarations[0].decl
+    gen = CodeGenerator(pipeline.typed(), source=_OK, file="main.vera")
+    gen._emit_cross_module_error(node, "f", "m::f")
+    gen._emit_cross_module_error(node, "g")
+    rationale = (
+        'The WASM code generator compiles imported functions into the '
+        'same binary.  An unresolved call has no target to compile '
+        'against.  The checker refuses a call that names nothing '
+        '(E200, E230, E233), and a call to an operation of a '
+        'user-declared ability (E340), so a call reaching this was '
+        'compiled without being checked.')
+    assert _found(_reported(gen.diagnostics), "E624", tmp_path) == (
+        [{'severity': 'error',
+          'description': "Function 'm::f' is not defined in this module and "
+                         'was not found in any imported module.',
+          'location': {'line': 1, 'column': 8, 'file': 'main.vera'},
+          'source_line': 'public fn f(@Int -> @Int)',
+          'rationale': rationale,
+          'fix': "Ensure 'm::f' names a function exported by a module this "
+                 'file imports — check the import path and that the target '
+                 'module declares it.',
+          'spec_ref': 'Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+          'error_code': 'E624'},
+         {'severity': 'error',
+          'description': "Function 'g' is not defined in this module and was "
+                         'not found in any imported module.',
+          'location': {'line': 1, 'column': 8, 'file': 'main.vera'},
+          'source_line': 'public fn f(@Int -> @Int)',
+          'rationale': rationale,
+          'fix': "Define 'g' in this module, or import it from the module "
+                 "that declares it with 'import <module>(g);' (replace "
+                 "<module> with that module's path, e.g. 'vera.math').",
+          'spec_ref': 'Chapter 8, Section 8.5.1 "Bare Calls"',
+          'error_code': 'E624'}])
 
 
 @pytest.mark.usefixtures("injected_false_proof")

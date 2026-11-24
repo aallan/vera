@@ -1055,13 +1055,11 @@ def diagnose_lark_error(
         )
 
     # Unknown exception type — wrap it
-    # pragma: no mutate start — E007: the LALR parser raises only UnexpectedToken and UnexpectedCharacters, both diagnosed above; no source reaches this
     return Diagnostic(  # diag-fields-exempt: internal fallback for an unrecognised Lark exception; indicates a parser bug, not a user error, so no source-level fix or spec section applies.
         description=f"Internal parser error: {exc}",
         **locate(file, source),
         error_code="E007",
     )
-    # pragma: no mutate end
 
 
 # =====================================================================

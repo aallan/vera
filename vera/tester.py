@@ -595,7 +595,7 @@ class _TestEngine:
                     typed=self.typed)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
-                # pragma: no mutate start — unreached: _classify_functions skips an unencodable parameter first (the if is excluded from coverage)
+                # pragma: no mutate start — unreached: _classify_functions skips an unencodable parameter first; no test reaches these lines (line coverage with test contexts over every test file that runs the tester or imports vera.tester)
                 unsupported_names = _unsupported_type_names(param_types)
                 skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
                 _record_unrun(
