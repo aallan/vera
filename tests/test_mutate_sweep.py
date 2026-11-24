@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -4497,10 +4498,24 @@ class TestNightComment:
     def test_repro_the_show_call_ends_before_the_render_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The workflow stops the render step at 600 s; the engine's calls of
         one render share ``SHOW_BUDGET_S`` (300 s), so a hung engine leaves
-        time to write the parts with each line's text (PR #1882 review)."""
+        time to write the parts with each line's text (PR #1882 review).
+
+        The clock is held at one reading, as a clock that does not tick
+        between the deadline's read and a call's gives (``time.monotonic``
+        on Windows before Python 3.13 ticks every 15.6 ms), and at a reading
+        where ``(m + budget) - m`` rounds one place above the budget (any
+        reading between 1748 and 2048 seconds whose last place is odd, about
+        half an hour after the machine starts).  A call's timeout is the
+        budget to within that rounding, never a second budget."""
         steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["stitch"]["steps"]
         (render,) = [s for s in steps if s.get("name") == "Render the night's comments"]
         assert sw.SHOW_BUDGET_S <= render["timeout-minutes"] * 60 - 300
+        held = 1900.3
+        assert (held + sw.SHOW_BUDGET_S) - held > sw.SHOW_BUDGET_S  # this reading rounds up
+        clock = types.ModuleType("time")
+        clock.__dict__.update(vars(sw.time))
+        clock.monotonic = lambda: held  # type: ignore[attr-defined]
+        monkeypatch.setattr(sw, "time", clock)
         timeouts: list[float] = []
 
         def engine_call(engine: Any, args: Any, **kw: Any) -> Any:
@@ -4513,7 +4528,7 @@ class TestNightComment:
         rows = [("vera/a.py", "x_f", 1, 3, "survived")]
         deadline = sw.time.monotonic() + sw.SHOW_BUDGET_S
         assert sw.cycle_mutations(["e"], {"cycle": 2, "engine": "3.8.1"}, {"vera/a.py": "x"}, rows, deadline) == {}
-        assert len(timeouts) == 2 and all(0 < t <= sw.SHOW_BUDGET_S for t in timeouts)
+        assert len(timeouts) == 2 and all(0 < t <= sw.SHOW_BUDGET_S + 1e-9 for t in timeouts), timeouts
         timeouts.clear()
         assert sw.cycle_mutations(["e"], {"cycle": 2, "engine": "3.8.1"}, {"vera/a.py": "x"}, rows, 0.0) == {}
         assert timeouts == []  # past the deadline: no call at all

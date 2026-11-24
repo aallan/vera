@@ -1,0 +1,19 @@
+-- Conformance: a handler clause's parameter is a binder, held to the type the
+-- operation is performed with (Chapter 7, Section 7.5.1).  Tests: E342 —
+-- `throw(@String)` under `handle[Exn<Int>]` is refused: the value `throw`
+-- passes is an Int, and a clause parameter binds it at the type it writes,
+-- so that type must be the operation's parameter type or a supertype of it,
+-- as a let binding's must be (#1896).  A `@Nat` or refined parameter over an
+-- Int is checked where it binds (see ch07_exn_payload_guard), and an alias
+-- of the operation's type stays accepted (see ch07_exn_param_alias).
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@String) -> { 0 }
+  } in {
+    throw(@Int.0)
+  }
+}

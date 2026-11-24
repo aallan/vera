@@ -1143,27 +1143,20 @@ def verify(
 _TABLE_KINDS = frozenset({
     "requires", "ensures", "decreases", "nat_sub", "nat_bind", "refine_bind",
     "call_pre", "div_zero", "index_bounds", "int_overflow", "assert",
-    "float_to_int_domain", "effect_bind",
+    "float_to_int_domain",
 })
 
 #: The disclosure code of a row neither proved nor guardable, by kind.
 _DISCLOSURE_CODES: dict[str, str] = {
-    "nat_bind": "E504", "refine_bind": "E506", "effect_bind": "E542",
+    "nat_bind": "E504", "refine_bind": "E506",
 }
 
 _DISCLOSED_WHAT: dict[str, str] = {
     "nat_bind": "The @Nat narrowing",
     "refine_bind": "The refinement narrowing",
-    "effect_bind": "The narrower effect row",
     "ensures": "The postcondition",
     "requires": "The precondition",
     "decreases": "The termination measure",
-}
-
-_DISCLOSURE_FIXES: dict[str, str] = {
-    "E542": ("Bind the field at its own type: write the binder at the "
-             "field's declared function type, with its effect row, and "
-             "declare those effects on the function that applies it."),
 }
 
 #: The fix of a disclosure whose reason has a repair of its own, by reason.
@@ -4001,19 +3994,12 @@ class ContractVerifier:
                 rows=tuple(r.id for r in left),  # pragma: no mutate — equivalent: without it the record is keyed at the binder by `_rows_discharged`, which finds the same rows
                 expr_text=left[0].content_key[2])
 
-    def _discharge_effect_rows(
+    def _discharge_pattern_walks(
         self, decl: ast.FnDecl, pattern: ast.Pattern,
     ) -> None:
-        """Record each ``effect_bind`` row at a binder of *pattern*
-        (#1725): a binder at a narrower effect row is left to a check no
-        code can make, so its record is undecided and its row discloses it."""
+        """Record the composite-walk rows at each node of *pattern*
+        (`_discharge_walked_rows`)."""
         for node in obligation_table.pattern_nodes(pattern):
-            rows = self._binder_rows(node, "effect_bind")
-            if rows:
-                self._record_obligation(
-                    decl.name, "effect_bind", node, "tier3",
-                    rows=tuple(r.id for r in rows),
-                    expr_text=rows[0].content_key[2])
             self._discharge_walked_rows(decl, node)
 
     def _walked(self, row: obligation_table.Row) -> bool:
@@ -4343,9 +4329,9 @@ class ContractVerifier:
                 + f"No runtime check guards this site because {row.guard.reason}, "
                 "so a value that violates it is not caught at run time; the "
                 "verifier discloses it rather than claim a runtime check."),
-            fix=_REASON_FIXES.get(row.guard.reason) or _DISCLOSURE_FIXES.get(code, (
+            fix=_REASON_FIXES.get(row.guard.reason) or (
                 "Restate the obligation so the solver can prove it, or move "
-                "the fact to a site a runtime check guards.")),
+                "the fact to a site a runtime check guards."),
             spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
             severity="warning",
             error_code=code,
@@ -9405,7 +9391,7 @@ class ContractVerifier:
                 # A downstream narrowing that depends on a binding's own
                 # invariant discharges from the arm's facts instead of
                 # reporting a false E503 (CR).
-                self._discharge_effect_rows(decl, match_arm.pattern)
+                self._discharge_pattern_walks(decl, match_arm.pattern)
                 arm_assumptions = arm.assuming(arm_assumptions)
                 yield match_arm, _Path(arm_assumptions, arm_env)
 

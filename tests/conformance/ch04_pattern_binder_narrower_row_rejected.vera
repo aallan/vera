@@ -1,0 +1,20 @@
+-- Conformance: a binding pattern claims its value has the type it writes, and
+-- is held to it as a let binding is (Chapter 4, Section 4.9.1).  Tests: E314
+-- — `@Pure` over a scrutinee of type `Io`, a function performing IO, is
+-- refused: a value of the scrutinee's type need not be pure, and no check at
+-- run time can tell, so the arm would apply an IO function from a function
+-- declared `pure` (#1896).  The wider binder, `@Io` over a `Pure` scrutinee,
+-- stays accepted.
+type Pure = fn(Int -> Int) effects(pure);
+
+type Io = fn(Int -> Int) effects(<IO>);
+
+public fn run(@Io -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Io.0 {
+    @Pure -> apply_fn(@Pure.0, 5)
+  }
+}
