@@ -49,8 +49,9 @@ mutmut over the lines of those functions near the diff:
    each, bar the families left out on purpose (:data:`NOT_ORACLE`).
    ``tests/mutation_oracle.py`` confines each function's tests to its own
    module's oracle (``MUTATION_ORACLE_MAP``); the matrices run at their
-   sample under a seed fixed for the run, bar the ones the change decides,
-   which run in full (``VERA_MATRIX_CHANGED``).  A changed function of a
+   sample under a seed fixed for the run, and each survivor on the diff's
+   own lines is run again against its module's instruments in full
+   (:func:`full_cell_probe`).  A changed function of a
    module no test file declares (:data:`UNDECLARED`) is named, not mutated.
    mutmut runs in two passes: the first names each changed unit's first
    window mutant (:func:`first_mutant`), which also makes the clean run the
@@ -1275,6 +1276,94 @@ def read_window_neighbours(path: Path) -> dict[tuple[str, str], frozenset[int]]:
         return {}
 
 
+#: The variable naming the file ``tests/mutation_oracle.py`` appends each
+#: mutant's first failing test to.
+KILLERS_ENV = "MUTATION_ORACLE_KILLERS"
+#: The diff lane's second look at its survivors on the diff's own lines
+#: (:func:`full_cell_probe`): the seconds of the budget kept back from the
+#: engine for it, and the most one survivor's probe may take.
+FULL_PROBE_RESERVE_S = 600.0
+FULL_PROBE_CAP_S = 300.0
+
+
+def run_probe(mutants_dir: Path, mutants: Sequence[str], tests: Sequence[str], pytest_args: Sequence[str],
+              env: Mapping[str, str], budget_s: float, killers_file: Path, *, cap_s: float,
+              run: Callable[..., Any] = subprocess.run, drop: Iterable[str] = (),
+              what: str = "the probe's tests", out_of_time: str = "the time for probes ran out") -> dict[str, str]:
+    """Each mutant's killer: pytest run in the engine's generated tree with
+    the mutant active (``MUTANT_UNDER_TEST``, as mutmut runs one) over
+    ``tests``, stopping at the first failure, which the oracle plugin names
+    (``KILLERS_ENV``).  No mutmut run, so no stats pass: a probe costs the
+    tests up to its killer, at most ``cap_s``, all of them at most
+    ``budget_s``.  A mutant no test fails is named why, as ``not named: ...``;
+    the variables in ``drop`` are not passed on."""
+    out: dict[str, str] = {}
+    started = time.monotonic()
+    leave = set(drop)
+    for name in mutants:
+        left = budget_s - (time.monotonic() - started)
+        if left <= 1:
+            out[name] = f"not named: {out_of_time}"
+            continue
+        child = {k: v for k, v in env.items() if k not in leave}
+        child.update({"MUTANT_UNDER_TEST": name, KILLERS_ENV: str(killers_file), "PYTHONPATH": str(mutants_dir)})
+        try:
+            done = run([sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *pytest_args, *tests],
+                       cwd=str(mutants_dir), env=child, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=min(cap_s, left), check=False)
+            code = done.returncode
+        except subprocess.TimeoutExpired:
+            code = None
+        named: dict[str, str] = {}
+        if killers_file.exists():
+            for line in killers_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                mutant, _, nodeid = line.partition("\t")
+                if mutant and nodeid:
+                    named.setdefault(mutant, nodeid)
+        if name in named:
+            out[name] = named[name]
+        elif code is None:
+            out[name] = f"not named: no test failed in the probe's {min(cap_s, left):.0f} s"
+        elif code == 0:
+            out[name] = f"not named: no test of {what} fails with it"
+        else:
+            out[name] = f"not named: the probe exited {code} with no test failing"
+    return out
+
+
+def full_cell_probe(rows: Sequence[UnitResult], tree: Path, oracle: Mapping[str, Any], pytest_args: Sequence[str],
+                    env: Mapping[str, str], budget_s: float, killers_file: Path, *,
+                    cap_s: float = FULL_PROBE_CAP_S, run: Callable[..., Any] = subprocess.run) -> None:
+    """The lane's second look at each survivor on the diff's own lines: its
+    module's class instruments (the oracle files whose ``matrix`` marker
+    names the module) at ``--matrix=full``, the mutant active.  The engine
+    ran every instrument at its sample, so a mutant only a cell the sample
+    left out kills survived there (#1926's eight in
+    `_emit_written_store_guard`).  A test that fails is its killer: the
+    survivor is recorded killed, by that test, in ``full_kills``, and leaves
+    the survivors.  A probe that finds none, does not finish, or cannot run
+    (no instrument names the module) leaves it a survivor, its reason in
+    ``probes``: never a silent pass."""
+    deadline = time.monotonic() + budget_s
+    for row in rows:
+        if not row.survivors:
+            continue
+        files = [t for t in oracle.get("modules", {}).get(row.path, [])
+                 if (tree / t).is_file() and row.path in (matrix_decides((tree / t).read_text(encoding="utf-8")) or [])]
+        if not files:
+            row.probes.update({n: "not run: no class instrument names its module" for n in row.survivors})
+            continue
+        found = run_probe(tree / "mutants", row.survivors, files, [*pytest_args, "--matrix=full"], env,
+                          deadline - time.monotonic(), killers_file, cap_s=cap_s, run=run, drop=(ORACLE_MAP_ENV, MATRIX_CHANGED_ENV),
+                          what="its module's instruments in full", out_of_time="the probe's share of the budget ran out")
+        for name, killer in found.items():
+            if killer.startswith("not named"):
+                row.probes[name] = killer
+            else:
+                row.full_kills[name] = killer
+        row.survivors = [n for n in row.survivors if n not in row.full_kills]
+
+
 def split_neighbours(rows: Sequence[UnitResult],
                      neighbours: Mapping[tuple[str, str], frozenset[int]]) -> None:
     """Move each row's survivors on no changed line into ``neighbours``: a
@@ -1744,6 +1833,11 @@ class UnitResult:
     #: The survivors on no line the diff changes, which the two-line window
     #: pulled in (:func:`split_neighbours`): listed, never gating.
     neighbours: list[str] = field(default_factory=list)
+    #: Survivors on the diff's own lines a cell of their module's instruments
+    #: at ``--matrix=full`` kills, by that test (:func:`full_cell_probe`).
+    full_kills: dict[str, str] = field(default_factory=dict)
+    #: Why the probe left each survivor it looked at a survivor.
+    probes: dict[str, str] = field(default_factory=dict)
 
 
 def tally(units: Sequence[Unit], results: Mapping[str, str]) -> list[UnitResult]:
@@ -1918,8 +2012,15 @@ def render(record: Mapping[str, Any]) -> str:
         out.append("")
     if record.get("oracle"):
         out.append(f"Oracle: {record['oracle']['tests']} test file(s) the changed modules declare "
-                   f"({record['oracle']['rule']}), every matrix at its sample bar the ones the "
-                   f"change decides, seed `{record.get('matrix_seed')}`.")
+                   f"({record['oracle']['rule']}), every matrix at its sample, seed "
+                   f"`{record.get('matrix_seed')}`.")
+        out.append("")
+    if record.get("budget_split"):
+        split = record["budget_split"]
+        out.append(f"Budget: {split['engine_s']:.0f} s to the engine, every matrix at its sample; "
+                   f"{split['probe_s']:.0f} s left to look again at the survivors on the diff's own lines "
+                   f"with their module's instruments in full, at most {split['probe_cap_s']:.0f} s each "
+                   f"({split.get('probed', 0)} looked at, {split.get('killed_in_full', 0)} killed there).")
         out.append("")
     if record.get("passes"):
         out.append("| Pass | Named | Stats | Listing | Clean | Forced | Mutants | First mutant | Ended | Decided |")
@@ -1966,7 +2067,7 @@ def render(record: Mapping[str, Any]) -> str:
         out.append("")
         shown = [s for s in survivors if s["diff"]][:MAX_SHOWN_SURVIVORS]
         for survivor in shown:
-            out.append(f"`{survivor['name']}`")
+            out.append(f"`{survivor['name']}`" + (f" ({survivor['probe']})" if survivor.get("probe") else ""))
             out.append("")
             out.append("```diff")
             out.extend(survivor["diff"].rstrip("\n").splitlines())
@@ -1977,6 +2078,15 @@ def render(record: Mapping[str, Any]) -> str:
                        "(the `mutation-diff` artifact), each with its diff unless the show "
                        "budget ran out first.")
             out.append("")
+    full = [(row, k) for row in functions for k in row.get("killed_in_full", [])]
+    if full:
+        out.append("### Killed by a cell the sample left out")
+        out.append("")
+        out.append("Each survived the engine's run, where every matrix ran at its sample, and a cell of "
+                   "its module's instruments at `--matrix=full` kills it, with the mutant active:")
+        out.append("")
+        out.extend(f"- `{k['name']}`: `{k['test']}`" for _, k in full)
+        out.append("")
     apart = [s for row in functions for s in row.get("neighbour_survivors", [])]
     if apart:
         out.append("### Survivors on unchanged lines: not this pull request's")
@@ -2445,7 +2555,13 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         map_file = workdir / "oracle-map.json"
         map_file.write_text(json.dumps(oracle, indent=1) + "\n", encoding="utf-8")
         env[ORACLE_MAP_ENV] = str(map_file)
-        env[MATRIX_CHANGED_ENV] = "\n".join(matrix_changed)
+        # Every matrix at its sample in the engine's run, under the run's
+        # seed: run in full under mutmut's stats tracer, the changed modules'
+        # instruments took a whole budget's stats pass (#1907's replay, run
+        # 45406471525).  The cells the sample leaves out get their look at
+        # the survivors alone (full_cell_probe).
+        env.pop(MATRIX_CHANGED_ENV, None)
+        record["matrix_changed"] = matrix_changed
         seed = f"diff-{head[:12]}"
         record["matrix_seed"] = seed
         record["oracle"] = {"rule": oracle["rule"], "tests": len(tests),
@@ -2485,14 +2601,15 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         # names one window mutant of each changed function; the second the
         # mutants the first left undecided, in what is left of the budget.
         lane_start = time.monotonic()
+        engine_budget = max(float(args.budget) - FULL_PROBE_RESERVE_S, float(args.budget) / 2)
         run_env = {**env, WINDOW_ENV: str(window_file)}
         first = [first_mutant(u.path, u.key) for u in mutable]
         done = _pass(1, first, engine, args, tree, pyproject, workdir, run_env, config_for,
-                     args.budget, (), started)
+                     engine_budget, (), started)
         owned = {(module_name(u.path), u.key) for u in mutable}
         rest = sorted(n for n, s in done.results.items()
                       if STATUSES[s] == "undecided" and unit_of_mutant(n) in owned)
-        remaining = args.budget - (time.monotonic() - lane_start)
+        remaining = engine_budget - (time.monotonic() - lane_start)
         record["passes"].append(done.record(len(first)))
         if done.stopped is None and rest and not done.no_tests:
             if remaining > 0:
@@ -2530,6 +2647,17 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             if record["outside_window"]:
                 stopped = failed(stopped, "unmapped")
         split_neighbours(rows, read_window_neighbours(counts_file))
+        probe_budget = max(float(args.budget) - (time.monotonic() - lane_start), 0.0)
+        record["budget_split"] = {"engine_s": round(engine_budget, 1), "probe_s": round(probe_budget, 1),
+                                  "probe_cap_s": FULL_PROBE_CAP_S}
+        if (tree / "mutants").is_dir():
+            full_cell_probe(rows, tree, oracle, tomllib.loads(config_for(dropped))["tool"]["mutmut"].get(
+                "pytest_add_cli_args", []), env, probe_budget, workdir / "oracle-killers.txt")
+        else:
+            for row in rows:
+                row.probes.update({n: "not run: the engine left no generated tree" for n in row.survivors})
+        record["budget_split"]["probed"] = sum(len(r.full_kills) + len(r.probes) for r in rows)
+        record["budget_split"]["killed_in_full"] = sum(len(r.full_kills) for r in rows)
         show_until = time.monotonic() + SHOW_BUDGET_S
         for row, name in [(row, name) for row in rows for name in [*row.survivors, *row.neighbours]]:
             left = show_until - time.monotonic()
@@ -2564,8 +2692,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         1 for u in units if (u.excluded or "").startswith("no declared oracle")))
     record["elapsed_s"] = round(time.monotonic() - started, 1)
     record["functions"] = [
-        {**{k: v for k, v in asdict(row).items() if k not in ("diffs", "neighbours")},
-         "survivors": [{"name": n, "diff": row.diffs.get(n, "")} for n in row.survivors],
+        {**{k: v for k, v in asdict(row).items() if k not in ("diffs", "neighbours", "full_kills", "probes")},
+         "survivors": [{"name": n, "diff": row.diffs.get(n, ""), "probe": row.probes.get(n)} for n in row.survivors],
+         "killed_in_full": [{"name": n, "test": t} for n, t in sorted(row.full_kills.items())],
          "neighbour_survivors": [{"name": n, "diff": row.diffs.get(n, "")} for n in row.neighbours]}
         for row in [*rows, *excluded_rows]
     ]

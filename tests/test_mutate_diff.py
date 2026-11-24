@@ -3317,6 +3317,76 @@ class TestEndToEnd:
         taking = [m for m in made if m["line"] == 2 and "2" not in m["mutated"].replace("h(", "")]
         assert all(m["n"] not in apart for m in taking)  # takes the `2` argument: own
 
+    def _probe_tree(self, tmp_path: Path) -> Path:
+        tree = tmp_path / "tree"
+        (tree / "tests").mkdir(parents=True)
+        (tree / "mutants").mkdir()
+        (tree / "tests" / "test_inst.py").write_text(
+            'import pytest\npytestmark = pytest.mark.matrix(decides=["vera/smt.py"])\n', encoding="utf-8")
+        (tree / "tests" / "test_smt.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+        return tree
+
+    @pytest.mark.parametrize(("outcome", "survives", "why"), [
+        ("killed", False, None),
+        ("clean", True, "not named: no test of its module's instruments in full fails with it"),
+        ("timeout", True, "not named: no test failed in the probe's 300 s")],
+        ids=["killed-by-a-sampled-out-cell", "no-test-fails", "out-of-time"])
+    def test_repro_a_survivor_a_sampled_out_cell_kills_is_killed_by_the_full_look(
+        self, tmp_path: Path, outcome: str, survives: bool, why: str | None,
+    ) -> None:
+        """#1926's eight false survivors in `_emit_written_store_guard`: each
+        killed first by a cell the weekly sample left out of an instrument
+        naming the module.  Each survivor on the diff's own lines is run
+        again with the mutant active against its module's instruments at
+        `--matrix=full`: a failing test kills it, named; no failure, or no
+        end in its bound, leaves it a survivor that fails the check, with
+        why."""
+        tree = self._probe_tree(tmp_path)
+        killers = tmp_path / "killers.txt"
+        calls: list[dict[str, Any]] = []
+
+        def run(argv: list[str], **kw: Any) -> Any:
+            calls.append({"argv": argv, **kw})
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(argv, kw["timeout"])
+            if outcome == "killed":
+                killers.write_text(f"{F}1\ttests/test_inst.py::test_cell[sampled-out]\n", encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 1)
+            return subprocess.CompletedProcess(argv, 0)
+
+        rows = md.tally([_unit("x_free")], {f"{F}1": "survived", f"{F}2": "killed"})
+        oracle = {"modules": {"vera/smt.py": ["tests/test_inst.py", "tests/test_smt.py"]}}
+        env = {md.ORACLE_MAP_ENV: "map.json", md.MATRIX_CHANGED_ENV: "vera/smt.py", "KEEP": "1"}
+        md.full_cell_probe(rows, tree, oracle, ["-p", "tests.mutation_oracle", "--matrix-seed=diff-x"], env,
+                           1000.0, killers, run=run)
+        (call,) = calls
+        assert call["argv"][-1] == "tests/test_inst.py" and "tests/test_smt.py" not in call["argv"]
+        assert "--matrix=full" in call["argv"] and "-x" in call["argv"]
+        assert call["cwd"] == str(tree / "mutants") and call["env"]["MUTANT_UNDER_TEST"] == f"{F}1"
+        assert md.ORACLE_MAP_ENV not in call["env"] and md.MATRIX_CHANGED_ENV not in call["env"]
+        assert call["env"]["KEEP"] == "1" and call["timeout"] == md.FULL_PROBE_CAP_S
+        assert (rows[0].survivors == [f"{F}1"]) is survives
+        assert md.exit_code(rows, stopped=None) == (1 if survives else 0)
+        if survives:
+            assert rows[0].probes == {f"{F}1": why} and not rows[0].full_kills
+        else:
+            assert rows[0].full_kills == {f"{F}1": "tests/test_inst.py::test_cell[sampled-out]"}
+
+    def test_a_survivor_whose_module_no_instrument_names_still_fails(self, tmp_path: Path) -> None:
+        tree = self._probe_tree(tmp_path)
+        rows = md.tally([_unit("x_free")], {f"{F}1": "survived"})
+
+        def run(argv: list[str], **kw: Any) -> Any:
+            raise AssertionError("no probe to run")
+
+        md.full_cell_probe(rows, tree, {"modules": {"vera/smt.py": ["tests/test_smt.py"]}}, [], {}, 100.0,
+                           tmp_path / "k.txt", run=run)
+        assert rows[0].survivors == [f"{F}1"] and md.exit_code(rows, stopped=None) == 1
+        assert rows[0].probes == {f"{F}1": "not run: no class instrument names its module"}
+        md.full_cell_probe(rows, tree, {"modules": {"vera/smt.py": ["tests/test_inst.py"]}}, [], {}, 0.0,
+                           tmp_path / "k.txt", run=run)
+        assert rows[0].probes[f"{F}1"] == "not named: the probe's share of the budget ran out"
+
     def test_a_survivor_is_split_by_the_engines_neighbour_numbers(self) -> None:
         rows = md.tally([_unit("x_free")], {f"{F}1": "survived", f"{F}2": "survived", f"{F}3": "killed"})
         md.split_neighbours(rows, {("vera/smt.py", "x_free"): frozenset({2})})
@@ -3598,18 +3668,25 @@ class TestEndToEnd:
         assert code == 0 and record["outcome"].startswith("Incomplete:")
         assert runs[0]["cwd"] == runs[1]["cwd"]
 
-    def test_the_engine_runs_under_the_changed_files_and_the_oracle_map(
-        self, repo: Path, tmp_path: Path,
+    def test_repro_the_engine_runs_every_matrix_at_its_sample_under_the_oracle_map(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The matrices the change decides run in full in the copy, as in the
-        pull request's test jobs (#1838: 19 of 54 survivors on #1859 were
-        cells the sample left out), and the plugin is handed the map, from
-        the lane's own plugin copied into the scratch tree."""
+        """#1907's replay (run 45406471525): with the changed modules'
+        instruments in full under mutmut's stats tracer (25,860 cells against
+        7,302 at the sample), the stats pass took the whole budget and no
+        mutant was decided.  The engine runs every matrix at its sample,
+        whatever the job's environment says; the cells the sample leaves out
+        look at the survivors alone (full_cell_probe).  The plugin is handed
+        the map, from the lane's own plugin copied into the scratch tree."""
+        monkeypatch.setenv("VERA_MATRIX_CHANGED", "vera/m.py")
         code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
         (run,) = [c for c in calls if c["args"][0] == "run"]
-        assert sorted(run["matrix_changed"].splitlines()) == [
+        assert run["matrix_changed"] is None
+        assert sorted(record["matrix_changed"]) == [
             "tests/drive.py", "tests/test_cli_new.py", "tests/test_new.py",
             "tests/test_tooling.py", "tests/test_via_helper.py", "vera/m.py"]
+        assert record["budget_split"]["engine_s"] == max(record["budget_s"] - md.FULL_PROBE_RESERVE_S,
+                                                          record["budget_s"] / 2)
         assert run["oracle_map"] == str((tmp_path / "work" / "oracle-map.json").resolve())
         plugin = Path(run["cwd"]) / "tests" / "mutation_oracle.py"
         assert plugin.read_bytes() == (ROOT / "tests" / "mutation_oracle.py").read_bytes()

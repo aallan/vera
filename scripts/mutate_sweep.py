@@ -2492,39 +2492,12 @@ def name_killers(mutants_dir: Path, flips: Sequence[str], tests: Sequence[str], 
     covered selection's rest) until the first failure, which the oracle
     plugin names (``KILLERS_ENV``).  No mutmut run, so no stats pass: each
     probe costs the tests up to its killer, at most ``cap_s``, all of them
-    at most ``budget_s``.  A flip no test fails is named why instead."""
-    out: dict[str, str] = {}
-    started = time.monotonic()
-    for name in flips:
-        left = budget_s - (time.monotonic() - started)
-        if left <= 1:
-            out[name] = "not named: the slice's time for probes ran out"
-            continue
-        child = {k: v for k, v in env.items() if k not in (CAP_ENV, SLOW_ENV, INFLIGHT_ENV, md.ORACLE_MAP_ENV)}
-        child.update({"MUTANT_UNDER_TEST": name, KILLERS_ENV: str(killers_file),
-                      "PYTHONPATH": str(mutants_dir)})
-        try:
-            done = run([sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *pytest_args, *tests],
-                       cwd=str(mutants_dir), env=child, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=min(cap_s, left), check=False)
-            code = done.returncode
-        except subprocess.TimeoutExpired:
-            code = None
-        named = {}
-        if killers_file.exists():
-            for line in killers_file.read_text(encoding="utf-8", errors="replace").splitlines():
-                mutant, _, nodeid = line.partition("\t")
-                if mutant and nodeid:
-                    named.setdefault(mutant, nodeid)
-        if name in named:
-            out[name] = named[name][:LISTED_MAX]
-        elif code is None:
-            out[name] = f"not named: no test failed in the probe's {min(cap_s, left):.0f} s"
-        elif code == 0:
-            out[name] = "not named: no test of the covered selection fails with it"
-        else:
-            out[name] = f"not named: the probe exited {code} with no test failing"
-    return out
+    at most ``budget_s``.  A flip no test fails is named why instead
+    (``scripts/mutate_diff.py``'s :func:`run_probe`)."""
+    found = md.run_probe(mutants_dir, flips, tests, pytest_args, env, budget_s, killers_file, cap_s=cap_s,
+                         run=run, drop=(CAP_ENV, SLOW_ENV, INFLIGHT_ENV, md.ORACLE_MAP_ENV),
+                         what="the covered selection", out_of_time="the slice's time for probes ran out")
+    return {name: (killer if killer.startswith("not named") else killer[:LISTED_MAX]) for name, killer in found.items()}
 
 
 def probe_flips(tree: Path, flips: Sequence[str], oracle: Mapping[str, Any], files: Sequence[str],
