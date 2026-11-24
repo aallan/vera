@@ -710,6 +710,7 @@ MARKED_FILES = (
     "test_lsp_gate_status_1610.py",
     "test_lsp_positions_1788.py",
     "test_match_unknown_scrutinee_1671.py",
+    "test_memory_follows_reads_1900.py",
     "test_module_identity_1904.py",
     "test_named_traps_1479.py",
     "test_narrower_closure_refused_1885.py",

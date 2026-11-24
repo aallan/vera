@@ -169,7 +169,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  functions.py` | | Function body compilation, GC prologue/epilogue (Pass 2); the exception boundary an export declaring `Exn<T>` is called through, which names an escaping exception `uncaught_exception` (`_exn_boundary`) | |
 | `  closures.py` | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks); the refinement boundary guard derives its binder from `naming.refinement_binder_parts` and layers the erased-base skip and the nested-base E618 on top.  Also the ONE derivation of what that guard layer lowers: `_tuple_component_guard_sites` decomposes a boundary tuple for the emitter, the return-epilogue gate and the handler walk alike, and `_signature_refinement_predicates` enumerates every predicate a signature will be guarded by | |
-| `  assembly.py` | | WAT module assembly: the host imports a module uses, declared from the registry's rows; `$alloc`, `$gc_collect` | |
+| `  assembly.py` | | WAT module assembly: the host imports a module uses, declared from the registry's rows; the memory, declared when the assembled text holds a memory instruction (`holds_memory_instruction`), a data segment or a host row asking for it; `$alloc`, `$gc_collect` | |
+| `  validation.py` | | The check of every artifact the compiler builds, where it is built: the core module validated after assembly (`validate_module`), the wasi-p2 component constructed (`build_component`); a failure is E699 and nothing is written | |
 | `  compilability.py` | | Compilability checks, a row entry asking `lowering.py` rule 6 as the E699 backstop; the handler walk, which refuses a function whose handler names a `State` cell or `Exn` payload no lowering exists for (E607/E612) and declares nothing, walking each function's body, its contract predicates and every signature the guard layer will check, closures' included, cycle-guarded; and the declaration of a cell or tag, from the records each emitter keeps of the ones it uses, at the per-function and closure merges | |
 | `  wasi.py` | | WASI Preview 2 component/adapter emitter for `--target wasi-p2` / `--world server`; what each world refuses follows each registry row's WASI worlds | |
 | `runtime/` | Execute | wasmtime host layer: traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
@@ -622,7 +623,10 @@ TypedProgram → CodeGenerator._compile_program()
                  Pass 2     compile function bodies
              → WAT module text
              → wasmtime.wat2wasm() → WASM bytes
+             → validation.validate_module() → a valid module, or E699
 ```
+
+`wat2wasm` assembles: it resolves names and encodes, and checks nothing else, so a module can assemble and still be one no loader accepts (a load names memory 0 implicitly, and a module that declares no memory assembles, #1900).  `compile_program` therefore validates the bytes once, right after assembly (`codegen/validation.py`), and a module that does not validate is an E699 with the validator's message and no bytes, so no command writes or runs it.  The `--target wasi-p2` component is checked where it is built, by constructing it (`build_component`, from `vera compile` and from `wasi_host.py`).
 
 Registration before compilation mirrors the type checker: Pass 1 registers every function signature so forward references and mutual recursion work, and Pass 2 compiles the bodies.
 
