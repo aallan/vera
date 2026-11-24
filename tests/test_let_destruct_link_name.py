@@ -19,6 +19,7 @@ destructure that swapped them proves nothing, and the built cells are run.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import pytest
 
@@ -151,3 +152,46 @@ def test_the_linker_names_a_destructures_constructor(shape: str, linked: str) ->
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
     assert found == [linked], found
+
+
+_IMPORTED_LIB = """\
+module boxlib;
+
+public data Box {
+  MkBox(Int)
+}
+"""
+
+_IMPORTED = """\
+import boxlib;
+
+type Alias = Box;
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{{
+  let {shape}<@Int> = MkBox(5);
+  @Int.0
+}}
+"""
+
+
+@pytest.mark.parametrize("shape", ["MkBox", "Box", "Alias"])
+def test_repro_a_destructure_of_an_imported_data_type_is_proved(
+    tmp_path: Path, shape: str,
+) -> None:
+    """An imported type's link name (`mod$boxlib$Box`) is not the name it is
+    written by, so the destructure reads it only under that link name.  `Box`
+    was `E522` (no term) at 58084ab0: the SMT layer took a shape for a type
+    only when its name was among the local data types and aliases."""
+    (tmp_path / "boxlib.vera").write_text(_IMPORTED_LIB, encoding="utf-8")
+    main = tmp_path / "main.vera"
+    main.write_text(_IMPORTED.format(shape=shape), encoding="utf-8")
+    verified = pipeline.verify(main)
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+    assert [(o.kind, o.status) for o in verified.obligations
+            if o.fn_name == "f" and o.kind == "ensures"] == [("ensures", "verified")]
+    ran = pipeline.run(main, "f", [0])
+    assert ran.ok and ran.value == 5, ran.trap

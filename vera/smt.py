@@ -4267,15 +4267,14 @@ class SmtContext:
                         idx = self._find_ctor_index(
                             val.sort(), stmt.constructor)
                         if (idx is None
-                                and (stmt.constructor
-                                     in self._alias_env.data_types
-                                     or stmt.constructor
-                                     in self._alias_env.aliases)
                                 and isinstance(val.sort(), z3.DatatypeSortRef)
                                 and val.sort().num_constructors() == 1):
                             # The shape named by its TYPE (`let Box<…>`, an
-                            # alias of it), which the checker accepted for
-                            # the value's one constructor.  A shape named by
+                            # alias of it, an imported type by its link
+                            # name `mod$lib$Box`), which the checker
+                            # accepted for the value's one constructor: a
+                            # linked name that is no constructor of the sort
+                            # is a type's or an alias's.  A shape named by
                             # its constructor is found above under the link
                             # name the linker gave it (#1924).
                             idx = 0
