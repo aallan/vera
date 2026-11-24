@@ -40,13 +40,24 @@ mutmut over the lines of those functions near the diff:
    covered-lines hook, the filter it reads a node's start line against; the
    lane checks the mutants mutmut lists against those counts.
 4. The scratch tree's ``[tool.mutmut]`` is the repository's, with
-   ``only_mutate`` set to those files and the pull request's own changed
-   test files that reach the compiler in process (they import ``vera``,
-   directly or through a ``tests/`` helper) added to the test selection, bar
-   the families the selection leaves out on purpose.  mutmut then runs over
-   one glob per changed unit (``vera.smt.xǁSmtContextǁreset__mutmut_*``),
-   with the unit's first mutant by its name, which adds the unit's covering
-   tests to the clean run (:func:`mutant_targets`): its stats pass records
+   ``only_mutate`` set to those files and the test selection replaced by
+   the changed modules' declared oracles (:func:`oracle_map`: the class
+   instruments whose ``matrix`` marker names the module, the test files
+   named after it, and its :data:`ORACLE_FAMILIES`), with the pull
+   request's own changed test files that reach the compiler in process
+   (they import ``vera``, directly or through a ``tests/`` helper) added to
+   each, bar the families left out on purpose (:data:`NOT_ORACLE`).
+   ``tests/mutation_oracle.py`` confines each function's tests to its own
+   module's oracle (``MUTATION_ORACLE_MAP``); the matrices run at their
+   sample under a seed fixed for the run, bar the ones the change decides,
+   which run in full (``VERA_MATRIX_CHANGED``).  A changed function of a
+   module no test file declares (:data:`UNDECLARED`) is named, not mutated.
+   mutmut runs in two passes: the first names each changed unit's first
+   window mutant (:func:`first_mutant`), which also makes the clean run the
+   changed units' covering tests, and the second names the mutants the
+   first left undecided, in what is left of the budget, since mutmut runs a
+   run's mutants cheapest first across every function and a widely covered
+   function's would otherwise wait behind them all.  Its stats pass records
    which tests reach each function, and each mutant runs only those tests,
    fastest first, stopping at the first failure.  A
    test that fails inside mutmut's copy with no mutant active (as one that
@@ -64,17 +75,22 @@ mutmut over the lines of those functions near the diff:
 Outputs: a table per function on stdout (and in ``--summary``, the job
 summary in CI), under a line that names the selection rule and counts the
 functions, their mutants on every line and in the window, and the mutants
-generated, decided and surviving; the first ``MAX_SHOWN_SURVIVORS``
-survivors' ``mutmut show`` diffs; and a JSON record (``--json``) that lists
-every survivor.
+generated, decided and surviving, the oracle and each pass's phases in
+seconds; the first ``MAX_SHOWN_SURVIVORS`` survivors' ``mutmut show``
+diffs; and a JSON record (``--json``) that lists every survivor with its
+diff, as far as the show budget (``SHOW_BUDGET_S``) reaches.  ``--list``
+lists the window's mutants with their code from mutmut's visitor and runs
+no test.
 
-The exit code is red for a defect and green for an unfinished run.  It is 1
-when a mutant of the diff survives, whatever else stopped the run; 2 when the
-run itself failed, whether or not the budget ran out first: the engine
-failed or counted no window, mutmut reported a mutant of a function the lane
-did not map to the diff or more or fewer of a function's mutants than its
-window holds, or the lane itself failed before mutmut decided anything; and
-0 otherwise, a run the budget stopped included.
+The exit code is red for a defect or an unmeasured diff.  It is 1 when a
+mutant of the diff survives, whatever else stopped the run; 2 when the run
+itself failed, whether or not the budget ran out first: the engine failed or
+counted no window, mutmut reported a mutant of a function the lane did not
+map to the diff or more or fewer of a function's mutants than its window
+holds, or the lane itself failed before mutmut decided anything; 3 when a
+changed function with mutants in its window had none decided (not
+measured); and 0 otherwise, a run that decided some of every function's
+mutants before the budget ran out included.
 An exit 0 says what it decided in the headline: every mutant killed or timed
 out, or how many functions no in-process test reaches, or, where the budget
 ran out or a mutant was left undecided (``not checked``, ``suspicious``,
@@ -104,12 +120,14 @@ import signal
 import subprocess
 import sys
 import tarfile
+import shutil
 import tempfile
+import threading
 import time
 import tokenize
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +184,11 @@ DEFAULT_BUDGET_S = 2400
 
 #: Lines either side of a changed line whose mutants the lane keeps.
 CONTEXT_LINES = 2
+
+#: The variable the matrix sample reads the changed files from
+#: (``tests/matrix_sample.py``): a marked file that names one of them, or is
+#: one, runs every cell.
+MATRIX_CHANGED_ENV = "VERA_MATRIX_CHANGED"
 
 #: The variable that names the window file for the engine's ``run``.
 WINDOW_ENV = "MUTATE_DIFF_WINDOW"
@@ -284,8 +307,25 @@ _COPY_FILE = re.compile(r"(?:^|[\\/])(?:mutants|tests)[\\/]")
 RECURSION_FRAMES = 10
 
 #: Survivors whose ``mutmut show`` diff the summary carries: a step summary
-#: over 1 MiB is dropped whole, and the record lists every survivor.
+#: over 1 MiB is dropped whole.  The record carries every survivor's diff
+#: that the show budget reaches.
 MAX_SHOWN_SURVIVORS = 60
+
+#: Seconds the lane spends asking the engine for survivors' diffs; a
+#: survivor past it is named in the record with
+#: :data:`SHOW_BUDGET_NOTE` in place of its diff.
+SHOW_BUDGET_S = 300
+SHOW_BUDGET_NOTE = "(not shown: the show budget ran out)"
+
+#: The engine's command that lists the window's mutants with their code
+#: (:func:`list_window`), from mutmut's visitor alone: no test runs.
+LIST_ARG = "list-window"
+
+#: The spinner titles of the engine's phases in its log, and the key each
+#: phase's start goes under in a pass's ``phases``.
+PHASE_TITLES = (("Running stats", "stats_s"), ("Listing all tests", "listing_s"),
+                ("Running clean tests", "clean_s"), ("Running forced fail test", "forced_s"),
+                ("Running mutation testing", "mutants_s"))
 
 
 class DiffError(ValueError):
@@ -619,16 +659,15 @@ def mutant_glob(path: str, key: str) -> str:
     return f"{module_name(path)}.{key}__mutmut_*"
 
 
-def mutant_targets(path: str, key: str) -> list[str]:
-    """mutmut's arguments for one unit: its glob, which selects every mutant
-    the window generates for it, and its first mutant by name.  mutmut reads
-    the clean run's tests off the arguments (``tests_for_mutant_names``): a
-    glob is matched against the functions' names, which hold no
-    ``__mutmut_``, so it adds no test, and a run of globs alone runs the
-    whole selection clean; a name adds its function's covering tests
-    (#1838).  The name selects a mutant the glob already does, or none when
-    the window holds none of the unit's."""
-    return [mutant_glob(path, key), f"{module_name(path)}.{key}__mutmut_1"]
+def first_mutant(path: str, key: str) -> str:
+    """The name of one unit's first window mutant, which the lane's first
+    pass hands mutmut for each changed unit.  mutmut reads the clean run's
+    tests off the names it is handed (``tests_for_mutant_names``): a name
+    adds its function's covering tests, where a glob, matched against the
+    functions' names, which hold no ``__mutmut_``, adds none, and a run of
+    globs alone runs the whole selection clean (#1838).  A unit whose window
+    holds no mutant has no such mutant, and the name selects nothing."""
+    return f"{module_name(path)}.{key}__mutmut_1"
 
 
 def unit_of_mutant(name: str) -> tuple[str, str]:
@@ -696,9 +735,11 @@ def _toml_value(value: Any) -> str:
 
 
 def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequence[str],
-                   extra_args: Sequence[str] = (), also_copy: Sequence[str] | None = None) -> str:
-    """``text`` with ``[tool.mutmut]``'s ``only_mutate`` replaced, ``extra_tests``
-    added to its test selection and ``extra_args`` to its pytest arguments, and
+                   extra_args: Sequence[str] = (), also_copy: Sequence[str] | None = None,
+                   selection: Sequence[str] | None = None) -> str:
+    """``text`` with ``[tool.mutmut]``'s ``only_mutate`` replaced, its test
+    selection replaced by ``selection`` when given, ``extra_tests`` added to
+    the selection and ``extra_args`` to its pytest arguments, and
     ``also_copy`` replaced when given; everything else unchanged."""
     data = tomllib.loads(text)
     cfg = data.get("tool", {}).get("mutmut")
@@ -708,9 +749,9 @@ def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequen
     new["only_mutate"] = list(only_mutate)
     if also_copy is not None:
         new["also_copy"] = list(also_copy)
-    selection = list(cfg.get("pytest_add_cli_args_test_selection", []))
-    selection += [t for t in extra_tests if t not in selection]
-    new["pytest_add_cli_args_test_selection"] = selection
+    tests = list(cfg.get("pytest_add_cli_args_test_selection", []) if selection is None else selection)
+    tests += [t for t in extra_tests if t not in tests]
+    new["pytest_add_cli_args_test_selection"] = tests
     if extra_args:
         new["pytest_add_cli_args"] = list(cfg.get("pytest_add_cli_args", [])) + list(extra_args)
     section = "[tool.mutmut]\n" + "".join(
@@ -809,6 +850,152 @@ def oracle_tests(changed: Iterable[str], tree: Path) -> tuple[list[str], list[st
         source = (tree / path).read_text(encoding="utf-8")
         (joined if reaches_compiler(source, helpers) else left).append(path)
     return joined, left
+
+
+# ---------------------------------------------------------------------------
+# The declared oracle
+# ---------------------------------------------------------------------------
+
+
+#: The rule a module's declared oracle is read by, as records and the
+#: sweep's state name it: a change to the rule starts a new cycle.
+ORACLE_RULE = "marker+name+family/1"
+
+#: The variable naming the oracle map (:func:`oracle_map`) to
+#: ``tests/mutation_oracle.py``, which takes each test out of mutmut's
+#: record for every function whose module's oracle does not hold its file.
+ORACLE_MAP_ENV = "MUTATION_ORACLE_MAP"
+
+#: The families of a module's declared oracle, beyond the class instruments
+#: whose ``matrix`` marker names it and the test files named after it: a
+#: module glob, and the test files (globs) every module it matches holds.
+#: MUTATION.md § Oracle renders this table (:func:`family_table`); a module
+#: entry of one file names the admitted test files that import that module,
+#: where no instrument names it and no file is named after it.
+ORACLE_FAMILIES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("vera/verifier.py", "vera/smt.py"), ("tests/test_verifier_*.py", "tests/test_obligations.py")),
+    (("vera/checker/*",), ("tests/test_checker_*.py",)),
+    (("vera/obligations/*",), ("tests/test_obligations.py", "tests/test_lsp.py")),
+    (("vera/codegen/*", "vera/wasm/*"), ("tests/test_codegen*.py", "tests/test_wasm*.py")),
+    (("vera/lsp/*",), ("tests/test_lsp*.py",)),
+    (("vera/browser/emit.py",), ("tests/test_family_naming.py", "tests/test_per_owner_adt_identity_1317.py")),
+    (("vera/markdown_grammar.py",), ("tests/test_markdown.py",)),
+    (("vera/carriers.py",), ("tests/test_binder_position_generator.py",
+                             "tests/test_boundary_guard_correctness_1466.py",
+                             "tests/test_element_facts_statable_1430.py")),
+    (("vera/envflags.py", "vera/runtime/text.py"), ("tests/test_runtime_traps.py",)),
+    (("vera/module_view.py",), ("tests/test_module_environment_1493.py",
+                                "tests/test_adt_membership_scope_1253.py",
+                                "tests/test_warning_severity_1513.py")),
+    (("vera/regularity.py",), ("tests/test_nonregular_data_rejected_1429.py",)),
+    (("vera/runtime/__init__.py",), ("tests/test_secret_redaction_1854.py",)),
+    (("vera/runtime/server.py",), ("tests/test_serve.py", "tests/test_handler_signature_1442.py",
+                                   "tests/test_named_traps_1479.py")),
+    (("vera/skip.py",), ("tests/test_codegen*.py", "tests/test_closure_boundary_widths_1255_1256_1269.py",
+                         "tests/test_declared_widths_1525.py", "tests/test_emitted_checks_1479.py",
+                         "tests/test_duplicate_names_1433.py", "tests/test_gc_mark_width_1510.py",
+                         "tests/test_obligation_table_1695.py")),
+    (("vera/slots.py",), ("tests/test_evaluated_position_obligations_1480.py",
+                          "tests/test_naming_env_provenance_1208.py",
+                          "tests/test_slot_naming_blast_radius.py")),
+)
+
+#: The modules with a function mutmut mutates and no declared oracle, each
+#: with why.  The sweep decides their mutants ``undeclared`` and runs none;
+#: the diff lane names a changed function of one in its row and headline and
+#: runs none of its mutants.  A self-test holds every entry still undeclared
+#: and every undeclared module listed.
+UNDECLARED: dict[str, str] = {
+    "vera/__init__.py": ("its one function reads the installed version while the package is "
+                         "imported, so no mutant of it runs after mutmut's fork"),
+}
+
+
+def matrix_decides(source: str) -> list[str] | None:
+    """The modules a test file's ``pytestmark`` ``matrix`` marker names in
+    ``decides=``, read from its syntax tree, a marker over several lines
+    included; None for a file with no such marker."""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
+            continue
+        for part in ast.walk(value):
+            if (isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute)
+                    and part.func.attr == "matrix"):
+                for keyword in part.keywords:
+                    if keyword.arg == "decides":
+                        value = ast.literal_eval(keyword.value)
+                        return [value] if isinstance(value, str) else [str(v) for v in value]
+                return []
+    return None
+
+
+def named_tests(module: str, tests: Iterable[str]) -> list[str]:
+    """The test files named after ``module``: ``tests/test_<stem>.py`` and
+    ``tests/test_<stem>_*.py``, and in a package also
+    ``tests/test_<package>_<stem>[_*].py``; a package's ``__init__.py`` is
+    named by ``tests/test_<package>.py``."""
+    parts = module.removeprefix("vera/").removesuffix(".py").split("/")
+    stem, package = parts[-1], parts[-2] if len(parts) > 1 else None
+    found: list[str] = []
+    for test in tests:
+        body = test.removeprefix("tests/test_").removesuffix(".py")
+        if stem == "__init__":
+            if package is not None and body == package:
+                found.append(test)
+            continue
+        names = [stem] + ([f"{package}_{stem}"] if package is not None else [])
+        if any(body == name or body.startswith(name + "_") for name in names):
+            found.append(test)
+    return sorted(found)
+
+
+def family_tests(module: str, tests: Iterable[str]) -> list[str]:
+    """The test files :data:`ORACLE_FAMILIES` gives ``module``."""
+    globs = [g for modules, files in ORACLE_FAMILIES
+             if any(fnmatch.fnmatch(module, m) for m in modules) for g in files]
+    return sorted(t for t in tests if any(fnmatch.fnmatch(t, g) for g in globs))
+
+
+def oracle_map(tree: Path) -> dict[str, Any]:
+    """Each module's declared oracle under ``tree``: the admitted test files
+    (:func:`oracle_tests`) whose ``matrix`` marker names it, the ones named
+    after it, and its families (:data:`ORACLE_FAMILIES`).  ``{"rule":
+    ORACLE_RULE, "modules": {path: [test file, ...]}}``, every ``vera/``
+    module a key, an undeclared one's list empty."""
+    tests = sorted(p.relative_to(tree).as_posix() for p in (tree / "tests").glob("test_*.py"))
+    admitted, _ = oracle_tests(tests, tree)
+    decides = {t: matrix_decides((tree / t).read_text(encoding="utf-8")) or [] for t in admitted}
+    modules: dict[str, list[str]] = {}
+    for path in sorted(p.relative_to(tree).as_posix() for p in (tree / "vera").rglob("*.py")):
+        files = {t for t, named in decides.items() if path in named}
+        files |= set(named_tests(path, admitted)) | set(family_tests(path, admitted))
+        modules[path] = sorted(files)
+    return {"rule": ORACLE_RULE, "modules": modules}
+
+
+def oracle_of(oracle: Mapping[str, Any], modules: Iterable[str]) -> list[str]:
+    """The union of ``modules``' declared oracles in the map ``oracle``."""
+    return sorted({t for m in modules for t in oracle["modules"].get(m, [])})
+
+
+def has_units(source: str) -> bool:
+    """Whether a module holds a function mutmut mutates."""
+    return any(u.excluded is None for u in scan_units(source).values())
+
+
+def family_table() -> str:
+    """MUTATION.md § Oracle's family table, rendered from
+    :data:`ORACLE_FAMILIES`."""
+    rows = ["| Modules | Test files |", "|---|---|"]
+    for modules, files in ORACLE_FAMILIES:
+        rows.append(f"| {', '.join(f'`{m}`' for m in modules)} | {', '.join(f'`{f}`' for f in files)} |")
+    return "\n".join(rows) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1209,53 @@ def show_mutants(request: str) -> str:
     return json.dumps(shown)
 
 
+def list_window(request: str) -> str:
+    """The engine's ``list-window`` command: for each file of ``request``
+    (JSON, ``{"sources": {path: source}, "lines": {path: [line, ...]}}``),
+    the mutants ``mutmut run`` generates in that window (the lines named and
+    the first line of each node of :data:`ENCLOSING_KINDS` that spans one,
+    as :func:`install_window` widens it), by mutmut's own visitor and no
+    test: ``{path: {key: [{"n": n, "line": l, "original": text, "mutated":
+    text}, ...]}}``, ``n`` the number the window's run gives the mutant, from
+    one in the order the visitor makes a unit's mutants."""
+    import libcst as cst
+    from libcst.metadata import MetadataWrapper, PositionProvider
+    from mutmut.mutation.file_mutation import MutationVisitor
+    from mutmut.mutation.mutators import mutation_operators
+    from mutmut.mutation.pragma_handling import get_ignored_lines
+
+    data = json.loads(request)
+    listed: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for path, named in data["lines"].items():
+        source = data["sources"][path]
+        lines = set(named) | first_lines(enclosing_spans(source), named)
+        wrapper = MetadataWrapper(cst.parse_module(source))
+        visitor = MutationVisitor(mutation_operators, get_ignored_lines(path, source, wrapper, None), lines)
+        wrapper.visit(visitor)
+        positions = wrapper.resolve(PositionProvider)
+        keys: dict[Any, str] = {}
+        for stmt in wrapper.module.body:
+            if isinstance(stmt, cst.FunctionDef):
+                keys[stmt] = _key(stmt.name.value, None)
+            elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+                keys.update({m: _key(m.name.value, stmt.name.value) for m in stmt.body.body
+                             if isinstance(m, cst.FunctionDef)})
+
+        def text(node: Any) -> str:
+            return wrapper.module.code_for_node(node) if isinstance(node, cst.CSTNode) else ""
+
+        units: dict[str, list[dict[str, Any]]] = {}
+        for mutation in visitor.mutations:
+            key = keys.get(mutation.contained_by_top_level_function)
+            if key is None:
+                continue
+            made = units.setdefault(key, [])
+            made.append({"n": len(made) + 1, "line": positions[mutation.original_node].start.line,
+                         "original": text(mutation.original_node), "mutated": text(mutation.mutated_node)})
+        listed[path] = units
+    return json.dumps(listed)
+
+
 def engine_main(args: Sequence[str]) -> int:
     """mutmut's command line, its ``run`` generating only the window's
     mutants when :data:`WINDOW_ENV` names the lane's window file: the lane's
@@ -1033,6 +1267,13 @@ def engine_main(args: Sequence[str]) -> int:
             sys.stdout.write(count_units(sys.stdin.read()))
         except (ImportError, KeyError, TypeError, ValueError) as exc:
             print(f"mutate_diff: the units cannot be counted: {exc}", file=sys.stderr)
+            return NO_COUNT_EXIT
+        return 0
+    if args[:1] == [LIST_ARG]:
+        try:
+            sys.stdout.write(list_window(sys.stdin.read()))
+        except (ImportError, KeyError, TypeError, ValueError) as exc:
+            print(f"mutate_diff: the window's mutants cannot be listed: {exc}", file=sys.stderr)
             return NO_COUNT_EXIT
         return 0
     if args[:1] == [SHOW_ARG]:
@@ -1074,6 +1315,80 @@ class EngineRun:
     #: The exception the engine's own code raised that stopped its stats pass
     #: or its clean run (:func:`engine_failure`), or None.
     error: str | None = None
+
+
+#: mutmut's progress line: mutants decided (bar the not checked) of all.
+_PROGRESS = re.compile(r"^(\d+)/(\d+)\s")
+
+
+def engine_rows(text: str) -> list[str]:
+    """The rows of an engine log, its spinner frames stripped."""
+    rows = [r.strip() for r in re.split(r"[\r\n]+", text) if r.strip()]
+    return [re.sub(r"^[⠀-⣿]\s*", "", r) for r in rows]
+
+
+class PhaseWatch(threading.Thread):
+    """When each of the engine's phases started in a pass, and when its
+    first mutant was decided, seconds from ``started_at``: read off the
+    newest of the pass's logs (``<log_name>-<attempt>.log``) every
+    ``poll_s`` seconds, as the nightly sweep's heartbeat reads its slice's."""
+
+    def __init__(self, workdir: Path, log_name: str, started_at: float, poll_s: float = 10.0) -> None:
+        super().__init__(name=f"phases-{log_name}", daemon=True)
+        self.workdir, self.log_name, self.started_at, self.poll_s = workdir, log_name, started_at, poll_s
+        self.phases: dict[str, float | None] = {key: None for _, key in PHASE_TITLES}
+        self.phases["first_mutant_s"] = None
+        self._stopping = threading.Event()
+
+    def observe(self, at: float, status: str | None) -> None:
+        """Note the engine's status ``status``, seen ``at`` seconds in."""
+        if not status:
+            return
+        at = round(at, 1)
+        for title, key in PHASE_TITLES:
+            if status.startswith(title) and self.phases[key] is None:
+                self.phases[key] = at
+        progress = _PROGRESS.match(status)
+        if progress is not None:
+            if self.phases["mutants_s"] is None:
+                self.phases["mutants_s"] = at
+            if int(progress.group(1)) > 0 and self.phases["first_mutant_s"] is None:
+                self.phases["first_mutant_s"] = at
+
+    def rows(self) -> list[str]:
+        """The newest log's last rows (its last 8 KiB): every status since
+        the last look, unless the engine wrote more than that between two."""
+        def attempt(path: Path) -> int:
+            tail = path.stem.rpartition("-")[2]
+            return int(tail) if tail.isdigit() else 0
+
+        logs = sorted(self.workdir.glob(f"{self.log_name}-*.log"), key=attempt)
+        if not logs:
+            return []
+        try:
+            with logs[-1].open("rb") as fh:
+                fh.seek(0, io.SEEK_END)
+                fh.seek(max(0, fh.tell() - 8192))
+                return engine_rows(fh.read().decode("utf-8", errors="replace"))
+        except OSError:
+            return []
+
+    def look(self) -> None:
+        at = time.monotonic() - self.started_at
+        for row in self.rows():
+            self.observe(at, row)
+
+    def run(self) -> None:
+        while not self._stopping.wait(self.poll_s):
+            self.look()
+
+    def stop(self) -> dict[str, float | None]:
+        """Stop watching, take a last look, and return the phases."""
+        self._stopping.set()
+        if self.is_alive():
+            self.join(timeout=self.poll_s + 5)
+        self.look()
+        return dict(self.phases)
 
 
 def _signal_group(pid: int, sig: int) -> bool:
@@ -1171,6 +1486,7 @@ def _stop_engine(proc: subprocess.Popen[Any], posix: bool, grace_s: tuple[float,
 def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
                  config_for: Callable[[Sequence[str]], str], budget_s: float, workdir: Path,
                  env: Mapping[str, str], before_stop: Callable[[], None] | None = None,
+                 log_name: str = "mutmut-run", dropped: Sequence[str] = (),
                  ) -> tuple[EngineRun, Path, list[str]]:
     """Run the engine in ``tree`` within ``budget_s``; when a test stops its
     stats pass or its clean run (it fails inside mutmut's copy with no mutant
@@ -1180,10 +1496,12 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
     stops there, drops no further test, and the returned run's ``error``
     names the exception and the engine's frame.  ``config_for(dropped)`` is the
     ``pyproject.toml`` text for a run without the tests dropped so far.
-    Returns the last run, its log and the tests dropped.  ``before_stop``
-    goes to :func:`run_engine`."""
+    Returns the last run, its log and the tests dropped, ``dropped`` (the
+    tests an earlier pass dropped, which every attempt starts without)
+    first.  ``before_stop`` goes to :func:`run_engine`; each attempt's log
+    is ``<log_name>-<attempt>.log`` in ``workdir``."""
     stop_hook: dict[str, Any] = {} if before_stop is None else {"before_stop": before_stop}
-    dropped: list[str] = []
+    dropped = list(dropped)
     remaining = budget_s
     attempt = 0
     failures = Path(env[FAILURES_ENV]) if env.get(FAILURES_ENV) else None
@@ -1192,7 +1510,7 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
         pyproject.write_text(config_for(dropped), encoding="utf-8")
         if failures is not None:
             failures.unlink(missing_ok=True)  # each attempt's failures are its own
-        log = workdir / f"mutmut-run-{attempt}.log"
+        log = workdir / f"{log_name}-{attempt}.log"
         run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env, **stop_hook)
         remaining -= run.elapsed_s
         if run.stopped is not None or run.returncode != 1:
@@ -1425,15 +1743,36 @@ def failed(stopped: str | None, failure: str) -> str:
     return failure if stopped in (None, "budget") else stopped
 
 
+#: The lane's exit status when the diff was not measured: some changed
+#: function with mutants in its window had none decided.
+NOT_MEASURED = 3
+
+
+def decided(row: UnitResult) -> int:
+    """How many of a row's mutants the run decided."""
+    return sum(n for status, n in row.counts.items() if STATUSES[status] != "undecided")
+
+
+def not_measured(rows: Sequence[UnitResult]) -> list[UnitResult]:
+    """The changed functions with mutants in their window and none decided:
+    the run says nothing of them, whether it stopped before them or never
+    reached them."""
+    return [r for r in rows if (r.window or r.mutants) and not decided(r)]
+
+
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
     """1: a survivor, whatever stopped the run; 2: the run itself failed (the
-    engine, or a mutant the lane did not map); 0 otherwise, an incomplete run
-    (the budget ran out, a mutant left undecided) included."""
+    engine, or a mutant the lane did not map); 3 (:data:`NOT_MEASURED`): a
+    changed function with mutants in its window had none decided; 0
+    otherwise, a run that decided some of every function's mutants and not
+    all of them included."""
     statuses = {status for row in rows for status, n in row.counts.items() if n}
     if "survived" in statuses:
         return 1
     if stopped in ("engine", "unmapped"):
         return 2
+    if not_measured(rows):
+        return NOT_MEASURED
     return 0
 
 
@@ -1492,6 +1831,23 @@ def render(record: Mapping[str, Any]) -> str:
     if record.get("window"):
         out.append(selection_line(record["window"]))
         out.append("")
+    if record.get("oracle"):
+        out.append(f"Oracle: {record['oracle']['tests']} test file(s) the changed modules declare "
+                   f"({record['oracle']['rule']}), every matrix at its sample bar the ones the "
+                   f"change decides, seed `{record.get('matrix_seed')}`.")
+        out.append("")
+    if record.get("passes"):
+        out.append("| Pass | Named | Stats | Listing | Clean | Forced | Mutants | First mutant | Ended | Decided |")
+        out.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for p in record["passes"]:
+            ph = p.get("phases") or {}
+            cell = [("" if ph.get(k) is None else f"{ph[k]:.0f} s")
+                    for k in ("stats_s", "listing_s", "clean_s", "forced_s", "mutants_s", "first_mutant_s")]
+            out.append(f"| {p['pass']} | {p['named']} | " + " | ".join(cell)
+                       + f" | {p['elapsed_s']:.0f} s run | {p['decided']} |")
+        out.append("")
+        out.append("Each phase's start is in seconds from the lane's start; a pass's run time is its own.")
+        out.append("")
     functions = record["functions"]
     if functions:
         out.append("| Function | Mutants | Killed | Timeout | Survived | Other |")
@@ -1504,8 +1860,12 @@ def render(record: Mapping[str, Any]) -> str:
             counts = row["counts"]
             other = ", ".join(f"{s} {n}" for s, n in sorted(counts.items())
                               if s not in _COLUMNS)
+            settled = sum(n for s, n in counts.items() if STATUSES.get(s) != "undecided")
             if row["mutants"] and not row["observable"]:
                 other = "not observable in process (no in-process test reaches it)"
+            elif (row["mutants"] or row.get("window")) and not settled:
+                other = ("not decided: the run stopped first" if not row["mutants"]
+                         else f"not decided; {other}" if other else "not decided")
             elif not row["mutants"]:
                 other = ("no result: the run stopped first" if record["stopped"]
                          else "mutmut generated no mutant for it")
@@ -1519,7 +1879,7 @@ def render(record: Mapping[str, Any]) -> str:
     if survivors:
         out.append("### Survivors")
         out.append("")
-        shown = [s for s in survivors if s["diff"]]
+        shown = [s for s in survivors if s["diff"]][:MAX_SHOWN_SURVIVORS]
         for survivor in shown:
             out.append(f"`{survivor['name']}`")
             out.append("")
@@ -1528,8 +1888,9 @@ def render(record: Mapping[str, Any]) -> str:
             out.append("```")
             out.append("")
         if len(survivors) > len(shown):
-            out.append(f"{len(survivors) - len(shown)} more survivors are in the JSON record, "
-                       "by name, without their diffs.")
+            out.append(f"{len(survivors) - len(shown)} more survivors are in the JSON record "
+                       "(the `mutation-diff` artifact), each with its diff unless the show "
+                       "budget ran out first.")
             out.append("")
     if record.get("dropped_tests"):
         out.append("### Dropped from the oracle")
@@ -1605,12 +1966,28 @@ def render(record: Mapping[str, Any]) -> str:
     return "\n".join(out)
 
 
-def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
+def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None, *,
+            undeclared: int = 0) -> str:
+    """The headline: what the run decided, and how many changed functions
+    are in a module with no declared oracle (``undeclared``), whose mutants
+    the lane does not run."""
+    head = _outcome(code, rows, stopped)
+    if undeclared:
+        head = (f"{head.removesuffix('.')}; {undeclared} changed function(s) in a module with "
+                "no declared oracle, not mutated.")
+    return head
+
+
+def _outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
     """The headline: what the run decided.  An exit 0 claims every mutant
     killed or timed out only when every changed function had mutants and an
     in-process test reached them and the run decided every mutant; otherwise
     it says what was not tested, or that the run is incomplete."""
     unfinished = _incomplete(rows, stopped)
+    if code == NOT_MEASURED:
+        n = len(not_measured(rows))
+        return (f"Not measured: {n} function(s) had no mutant decided"
+                + (f"; {unfinished}." if unfinished else "."))
     if code == 0 and unfinished is not None:
         return f"Incomplete: {unfinished}."
     if code == 0:
@@ -1712,6 +2089,98 @@ def _context(value: str) -> int:
     return lines
 
 
+def _list(args: argparse.Namespace, engine: Sequence[str], tree: Path, files: Sequence[str],
+          kept: Mapping[str, Sequence[int]], record: dict[str, Any], env: Mapping[str, str]) -> int:
+    """``--list``: the window's mutants, each with its code before and
+    after, from mutmut's visitor over the narrowed files (the engine's
+    :data:`LIST_ARG` command); no test runs and no worker starts.  Exit 0
+    with the list, 2 when the engine cannot make it."""
+    request = json.dumps({"sources": {p: (tree / p).read_text(encoding="utf-8") for p in files},
+                          "lines": {p: list(kept[p]) for p in files}})
+    listed = _engine_call(engine, [LIST_ARG], cwd=tree, env=env, stdin=request)
+    if listed is None or listed.returncode != 0:
+        error = ("the engine did not finish listing" if listed is None
+                 else (listed.stderr.strip() or f"the engine exited {listed.returncode}"))
+        record.update(list=None, list_error=error)
+        print(f"mutate_diff --list: {error}", file=sys.stderr)
+        code = 2
+    else:
+        mutants = json.loads(listed.stdout)
+        record.update(list=mutants, list_error=None)
+        for path, units in mutants.items():
+            for key, made in units.items():
+                print(f"{path} {key}: {len(made)} mutant(s) in the window")
+                for m in made:
+                    print(f"  {m['n']:>4} L{m['line']}: {m['original']!r} -> {m['mutated']!r}")
+        code = 0
+    if args.json:
+        Path(args.json).write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
+                                   encoding="utf-8")
+    return code
+
+
+@dataclass
+class PassResult:
+    """One engine pass of the lane: its last run, log and the tests dropped
+    so far, ``mutmut results`` after it, how it stopped, the engine's phases
+    in it (seconds from the lane's start), and a tail to report when the
+    listing failed."""
+
+    number: int
+    run: EngineRun
+    log: Path
+    dropped: list[str]
+    results: dict[str, str]
+    stopped: str | None
+    no_tests: bool
+    phases: dict[str, float | None]
+    tail: list[str] = field(default_factory=list)
+
+    def record(self, named: int) -> dict[str, Any]:
+        """The pass as the JSON record lists it."""
+        return {"pass": self.number, "named": named, "elapsed_s": round(self.run.elapsed_s, 1),
+                "stopped": self.stopped, "engine_exit": self.run.returncode,
+                "decided": sum(1 for s in self.results.values() if STATUSES[s] != "undecided"),
+                "phases": self.phases}
+
+
+def _pass(number: int, names: Sequence[str], engine: Sequence[str], args: argparse.Namespace,
+          tree: Path, pyproject: Path, workdir: Path, env: Mapping[str, str],
+          config_for: Callable[[Sequence[str]], str], budget_s: float, dropped: Sequence[str],
+          started: float) -> PassResult:
+    """Run the engine over the mutants ``names`` within ``budget_s``, then
+    list what it decided (``mutmut results --all true``)."""
+    log_name = f"mutmut-pass{number}"
+    watch = PhaseWatch(workdir, log_name, started)
+    watch.start()
+    try:
+        run, log, dropped_now = run_dropping(
+            [*engine, "run", "--max-children", str(args.max_children), *names],
+            tree=tree, pyproject=pyproject, budget_s=budget_s, workdir=workdir, env=env,
+            config_for=config_for, log_name=log_name, dropped=dropped)
+    finally:
+        phases = watch.stop()
+    no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
+        encoding="utf-8", errors="replace")
+    stopped = run.stopped or (None if run.returncode == 0 or no_tests else "engine")
+    listed = _engine_call(engine, ["results", "--all", "true"], cwd=tree,
+                          env={k: v for k, v in env.items() if k != WINDOW_ENV})
+    results: dict[str, str] = {}
+    tail: list[str] = []
+    if listed is None:
+        stopped = failed(stopped, "engine")
+        tail = [f"mutmut results did not finish in {ENGINE_CALL_TIMEOUT_S} s"]
+    elif listed.returncode != 0:
+        stopped = failed(stopped, "engine")
+    else:
+        try:
+            results = parse_results(listed.stdout)
+        except ResultsError as exc:
+            stopped = failed(stopped, "engine")
+            tail = [str(exc)]
+    return PassResult(number, run, log, dropped_now, results, stopped, no_tests, phases, tail)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the lane; return its exit code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1732,6 +2201,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--summary", help="append the Markdown summary here")
     parser.add_argument("--engine", nargs="+", help="the mutmut command (default: this "
                         f"script run with {ENGINE_ARG} under this interpreter)")
+    parser.add_argument("--list", action="store_true",
+                        help="list the window's mutants with their code, from mutmut's "
+                        "visitor alone, and run no test")
     args = parser.parse_args(argv)
 
     repo = Path(args.repo).resolve()
@@ -1793,9 +2265,28 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         verdicts.append(classify(change, base_src, head_src))
         change_of[verdicts[-1].path] = change
     units = [u for v in verdicts for u in v.changed]
-    mutable = [u for u in units if u.excluded is None]
     changed_tests = _git(repo, "diff", "--name-only", "--diff-filter=d", merge_base, head,
                          "--", "tests/").split()
+    # The files the pull request changes that a matrix can be decided by:
+    # its instruments that name a changed module, or are changed, run in
+    # full, as the pull request's test jobs run them.
+    matrix_changed = _git(repo, "-c", "core.quotePath=false", "diff", "--name-only", merge_base,
+                          head, "--", "vera/", "tests/").split()
+    tree = workdir / "tree"
+    oracle: dict[str, Any] = {"rule": ORACLE_RULE, "modules": {}}
+    if any(u.excluded is None for u in units):
+        tree.mkdir()
+        _extract(repo, head, tree)
+        # Today's plugin, so a replay of an older head confines its oracle
+        # as this lane does.
+        if (ROOT / "tests" / "mutation_oracle.py").is_file() and (tree / "tests").is_dir():
+            shutil.copyfile(ROOT / "tests" / "mutation_oracle.py", tree / "tests" / "mutation_oracle.py")
+        oracle = oracle_map(tree)
+        units = [u if u.excluded is not None or oracle["modules"].get(u.path)
+                 else replace(u, excluded="no declared oracle: " + UNDECLARED.get(
+                     u.path, "no test file declares the module"))
+                 for u in units]
+    mutable = [u for u in units if u.excluded is None]
 
     # The engine runs the selected tests, and a test that spawns git must
     # not inherit a hook's GIT_DIR.  The copy caches bytecode: a mutated
@@ -1826,17 +2317,29 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                    "unchanged_code": v.unchanged_code} for v in verdicts],
         "stopped": None, "engine_exit": None, "engine_error": None, "outside_diff": [],
         "outside_window": [], "engine_tail": [], "dropped_tests": [], "subprocess_tests": [],
-        "source_tests": [], "window": None,
+        "source_tests": [], "window": None, "oracle": None, "matrix_seed": None, "passes": [],
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
     if mutable:
-        tree = workdir / "tree"
-        tree.mkdir()
-        _extract(repo, head, tree)
         extra_tests, left_out = oracle_tests(changed_tests, tree)
         record["extra_tests"], record["tests_left_out"] = extra_tests, left_out
         files = sorted({u.path for u in mutable})
+        # The declared oracle: the changed modules' declared test files, and
+        # the pull request's own changed test files, which join each changed
+        # module's oracle for this run.  The plugin confines each function's
+        # tests to its module's (MUTATION_ORACLE_MAP).
+        for path in files:
+            oracle["modules"][path] = sorted(set(oracle["modules"][path]) | set(extra_tests))
+        tests = oracle_of(oracle, files)
+        map_file = workdir / "oracle-map.json"
+        map_file.write_text(json.dumps(oracle, indent=1) + "\n", encoding="utf-8")
+        env[ORACLE_MAP_ENV] = str(map_file)
+        env[MATRIX_CHANGED_ENV] = "\n".join(matrix_changed)
+        seed = f"diff-{head[:12]}"
+        record["matrix_seed"] = seed
+        record["oracle"] = {"rule": oracle["rule"], "tests": len(tests),
+                            "modules": {path: oracle["modules"][path] for path in files}}
         for path in files:
             keep = {u.key for u in mutable if u.path == path}
             source = (tree / path).read_text(encoding="utf-8")
@@ -1853,36 +2356,46 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         window_file.write_text(json.dumps({"context": args.context, "record": str(counts_file),
                                            "lines": kept}, indent=1) + "\n", encoding="utf-8")
         record["window"] = {"context": args.context, "rule": rule(args.context), "lines": kept}
+        if args.list:
+            return _list(args, engine, tree, files, kept, record, env)
         record["engine_version"] = _engine_version(engine, env)
-        globs = [target for u in mutable for target in mutant_targets(u.path, u.key)]
-        run, log, dropped = run_dropping(
-            [*engine, "run", "--max-children", str(args.max_children), *globs],
-            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir,
-            env={**env, WINDOW_ENV: str(window_file)},
-            config_for=lambda dropped: rewrite_config(
-                config, only_mutate=files, extra_tests=extra_tests,
-                extra_args=[f"--deselect={test}" for test in dropped]))
+
+        def config_for(dropped: Sequence[str]) -> str:
+            return rewrite_config(config, only_mutate=files, selection=tests, extra_tests=(),
+                                  extra_args=[f"--matrix-seed={seed}",
+                                              *(f"--deselect={test}" for test in dropped)])
+
+        # Two passes: mutmut runs a run's mutants cheapest first across every
+        # function, so one run over all of them leaves a widely covered
+        # function undecided whenever the budget runs out.  The first pass
+        # names one window mutant of each changed function; the second the
+        # mutants the first left undecided, in what is left of the budget.
+        lane_start = time.monotonic()
+        run_env = {**env, WINDOW_ENV: str(window_file)}
+        first = [first_mutant(u.path, u.key) for u in mutable]
+        done = _pass(1, first, engine, args, tree, pyproject, workdir, run_env, config_for,
+                     args.budget, (), started)
+        owned = {(module_name(u.path), u.key) for u in mutable}
+        rest = sorted(n for n, s in done.results.items()
+                      if STATUSES[s] == "undecided" and unit_of_mutant(n) in owned)
+        remaining = args.budget - (time.monotonic() - lane_start)
+        record["passes"].append(done.record(len(first)))
+        if done.stopped is None and rest and not done.no_tests:
+            if remaining > 0:
+                done = _pass(2, rest, engine, args, tree, pyproject, workdir, run_env, config_for,
+                             remaining, done.dropped, started)
+                record["passes"].append(done.record(len(rest)))
+            else:
+                done.stopped = "budget"
+        run, log, dropped, results, stopped, no_tests = (
+            done.run, done.log, done.dropped, done.results, done.stopped, done.no_tests)
+        if done.tail:
+            record["engine_tail"] = done.tail
         record["dropped_tests"] = dropped
         record["engine_error"] = run.error
         record["subprocess_tests"] = skipped_tests(skips)
         record["source_tests"] = skipped_tests(source_skips)
         record["engine_exit"] = run.returncode
-        no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
-            encoding="utf-8", errors="replace")
-        stopped = run.stopped or (None if run.returncode == 0 or no_tests else "engine")
-        listed = _engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
-        results: dict[str, str] = {}
-        if listed is None:
-            stopped = failed(stopped, "engine")
-            record["engine_tail"] = [f"mutmut results did not finish in {ENGINE_CALL_TIMEOUT_S} s"]
-        elif listed.returncode != 0:
-            stopped = failed(stopped, "engine")
-        else:
-            try:
-                results = parse_results(listed.stdout)
-            except ResultsError as exc:
-                stopped = failed(stopped, "engine")
-                record["engine_tail"] = [str(exc)]
         if no_tests:
             results = {name: "no tests" for name in results}
         rows = tally(mutable, results)
@@ -1902,15 +2415,28 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             record["outside_window"] = place_in_window(rows, counts)
             if record["outside_window"]:
                 stopped = failed(stopped, "unmapped")
-        to_show = [(row, name) for row in rows for name in row.survivors][:MAX_SHOWN_SURVIVORS]
-        for row, name in to_show:
-            shown = _engine_call(engine, ["show", name], cwd=tree, env=env)
+        show_until = time.monotonic() + SHOW_BUDGET_S
+        for row, name in [(row, name) for row in rows for name in row.survivors]:
+            left = show_until - time.monotonic()
+            if left <= 0:
+                row.diffs[name] = SHOW_BUDGET_NOTE
+                continue
+            shown = _engine_call(engine, ["show", name], cwd=tree, env=env,
+                                 timeout_s=min(ENGINE_CALL_TIMEOUT_S, left))
             if shown is None:
-                row.diffs[name] = f"(mutmut show did not finish in {ENGINE_CALL_TIMEOUT_S} s)"
+                row.diffs[name] = f"(mutmut show did not finish in {min(ENGINE_CALL_TIMEOUT_S, left):.0f} s)"
             else:
                 row.diffs[name] = shown.stdout if shown.returncode == 0 else shown.stderr
         if stopped is not None and not record["engine_tail"]:
             record["engine_tail"] = _tail(log)
+    if args.list:
+        # No function to mutate: an empty list.
+        record.update(list={}, list_error=None)
+        print("mutate_diff --list: the diff changes no function mutmut mutates")
+        if args.json:
+            Path(args.json).write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
+                                       encoding="utf-8")
+        return 0
     excluded_rows = [UnitResult(path=u.path, key=u.key, qualname=u.qualname,
                                 excluded=u.excluded, mutants=0, counts={}, survivors=[],
                                 observable=True) for u in units if u.excluded is not None]
@@ -1919,7 +2445,8 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         record["window"]["selection"] = selection(rows)
     record["stopped"] = stopped
     record["exit_code"] = code
-    record["outcome"] = outcome(code, rows, stopped)
+    record["outcome"] = outcome(code, rows, stopped, undeclared=sum(
+        1 for u in units if (u.excluded or "").startswith("no declared oracle")))
     record["elapsed_s"] = round(time.monotonic() - started, 1)
     record["functions"] = [
         {**{k: v for k, v in asdict(row).items() if k != "diffs"},

@@ -3,13 +3,16 @@ name: Mutation (diff)
 # The diff-scoped mutation lane (MUTATION.md § CI): mutmut over the
 # functions a pull request changes, in a scratch tree, with a table of
 # what became of each function's mutants and the survivors' diffs in the
-# job summary, and the JSON record kept as an artifact.  It is red for a
-# defect and green for an unfinished run: it fails on a survivor (exit 1)
-# and on a run the engine or the lane itself stops (exit 2), and a run its
-# budget stops with no survivor passes, its summary's headline and a
-# warning annotation saying the run is incomplete.  No other step reads the
-# script's exit status.  It is not a required check: branch protection's
-# required list is the maintainer's, synced by hand.
+# job summary, and the JSON record kept as an artifact.  Each function's
+# mutants run against its module's declared oracle (MUTATION.md § Oracle).
+# It fails on a survivor (exit 1), on a run the engine or the lane itself
+# stops (exit 2), and on a diff not measured: a changed function with
+# mutants in its window and none decided (exit 3).  A run its budget stops
+# after deciding some of every function's mutants, with no survivor, passes,
+# its summary's headline and a warning annotation saying the run is
+# incomplete.  No other step reads the script's exit status.  It is not a
+# required check: branch protection's required list is the maintainer's,
+# synced by hand.
 #
 # It also runs on a pull request that moves uv.lock, which names the engine
 # both mutation lanes install, or either lane's own workflow, script or
@@ -35,13 +38,28 @@ on:
       - "tests/test_mutate_sweep.py"
       - ".github/workflows/mutation-diff.yml"
       - ".github/workflows/mutation-nightly.yml"
+  # A replay: the lane at the dispatched ref over a recorded diff, its base
+  # and head commits named in full (a merged pull request's squash's parent
+  # and the squash), so a change to the lane is measured against a run it
+  # already made.
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "The base commit, 40 hex digits"
+        required: true
+        type: string
+      head:
+        description: "The head commit, 40 hex digits"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# A newer push to the same pull request replaces the run in progress.
+# A newer push to the same pull request replaces the run in progress; a
+# dispatched replay is a group of its own.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -54,12 +72,33 @@ jobs:
     # lanes' self-tests and the scratch tree.
     timeout-minutes: 55
     steps:
-      # The pull request's head, with the history that holds its merge base.
+      # The pull request's head (a replay's dispatched ref), with the
+      # history that holds its merge base.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      # The commits the lane reads: a pull request's, or a replay's inputs,
+      # each held to a full commit id before any step uses it.
+      - name: Name the base and the head
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          IN_BASE: ${{ inputs.base }}
+          IN_HEAD: ${{ inputs.head }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then base="$IN_BASE"; head="$IN_HEAD"; else base="$PR_BASE"; head="$PR_HEAD"; fi
+          for sha in "$base" "$head"; do
+            if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::not a full commit id: $sha"; exit 1
+            fi
+            git cat-file -e "$sha^{commit}"
+          done
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$head" >> "$GITHUB_ENV"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -76,6 +115,25 @@ jobs:
           uv sync --locked --extra mutation --python 3.12
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
+      # The window's mutants with their code, from mutmut's visitor alone (no
+      # test runs), kept before anything else runs: a pull request's first
+      # push can be answered from it while the lane is still running.
+      - name: List the window's mutants
+        # The list informs; the lane's verdict is the mutate step's.
+        continue-on-error: true
+        run: >-
+          python scripts/mutate_diff.py --list
+          --base "$BASE_SHA" --head "$HEAD_SHA"
+          --workdir "$RUNNER_TEMP/mutate-diff-list"
+          --json "$RUNNER_TEMP/mutation-diff-list.json"
+
+      - name: Upload the list
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-diff-list
+          path: ${{ runner.temp }}/mutation-diff-list.json
+          retention-days: 30
+
       # The tests that need mutmut itself (its status table, its generator
       # honouring the narrowing pragma, a night end to end) skip in the
       # shards, which install [dev] alone; here the engine is installed, so
@@ -84,9 +142,6 @@ jobs:
         run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q
 
       - name: Mutate the functions this pull request changes
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
           python scripts/mutate_diff.py
           --base "$BASE_SHA" --head "$HEAD_SHA"

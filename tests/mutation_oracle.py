@@ -64,6 +64,18 @@ its own accord it appends an end line, ``<mutant>\\t<pid>\\t<end>\\tend``, to
 the same file, so a mutant's duration is its own run's, end less start; a
 run the cap or a kill ended writes none, and has no measured duration.
 
+A module's oracle is declared (MUTATION.md § Oracle): with
+``MUTATION_ORACLE_MAP`` naming the lanes' oracle map
+(``scripts/mutate_diff.py`` ``oracle_map``: each ``vera/`` module's test
+files), the stats pass takes each test, as it ends, out of mutmut's record
+for every function whose module's oracle does not hold the test's file, so
+a mutant runs only its module's declared tests, and so does the clean run.
+A module the map does not name is left as mutmut recorded it.  A map that is
+named and cannot be read stops the stats pass.  With ``MUTATION_ORACLE_KILLERS``
+set, a mutant's run appends ``<mutant>\\t<node id>`` for the first test that
+fails under it, which names the test that killed it; mutmut reads the run's
+exit status alone, so the line changes no verdict.
+
 The skipped test is out of the oracle entirely.  mutmut's stats pass records,
 at each test's teardown and whatever its outcome, the functions the test
 reached, and runs a mutant against the tests recorded for its function; a
@@ -80,6 +92,7 @@ from __future__ import annotations
 import builtins
 import inspect
 import io
+import json
 import os
 import subprocess
 import sys
@@ -110,6 +123,17 @@ SLOW_ENV = "MUTATION_ORACLE_SLOW"
 #: The variable naming the file each mutant's run is named in as it starts,
 #: with its process and its start (:func:`mark_in_flight`).
 INFLIGHT_ENV = "MUTATION_ORACLE_INFLIGHT"
+
+#: The variable naming the oracle map: ``{"rule": ..., "modules": {path:
+#: [test file, ...]}}`` (``scripts/mutate_diff.py`` ``oracle_map``).
+ORACLE_MAP_ENV = "MUTATION_ORACLE_MAP"
+
+#: The variable naming the file a mutant's run appends its first failing
+#: test to, ``<mutant>\t<node id>``: the test that killed it.
+KILLERS_ENV = "MUTATION_ORACLE_KILLERS"
+
+#: mutmut's separator between a class and its method in a mangled name.
+_SEP = "ǁ"
 
 #: The exit status of a mutant's run the cap ends: mutmut's "check was
 #: interrupted by user", which leaves the mutant undecided to any reader that
@@ -336,6 +360,65 @@ def _forget(nodeid: str) -> None:
         tests.difference_update(names)
 
 
+#: The oracle map as read: dotted module -> its test files; None until read.
+_oracle: dict[str, frozenset[str]] | None = None
+
+
+def _dotted(path: str) -> str:
+    """``vera/smt.py`` -> ``vera.smt``; a package's ``__init__.py`` is the package."""
+    parts = path.removesuffix(".py").split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def module_of(function: str) -> str:
+    """The module of a function by mutmut's mangled name
+    (``vera.checker.calls.xǁCallsMixinǁ_check_call`` -> ``vera.checker.calls``)."""
+    parts = function.split(".")
+    for at, part in enumerate(parts):
+        if part.startswith(("x_", f"x{_SEP}")):
+            return ".".join(parts[:at])
+    return ""
+
+
+def read_oracle(path: str) -> dict[str, frozenset[str]]:
+    """The oracle map the file ``path`` holds, by dotted module.  A file
+    that does not read as a map stops the stats pass: a mutant run against
+    tests its module did not declare is a verdict on the wrong oracle."""
+    try:
+        modules = json.loads(Path(path).read_text(encoding="utf-8"))["modules"]
+        return {_dotted(str(module)): frozenset(str(f) for f in files)
+                for module, files in modules.items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        pytest.exit(f"tests/mutation_oracle.py: the oracle map {path} cannot be read ({exc}), so "
+                    "no mutant's tests can be confined to its module's declared oracle", returncode=3)
+
+
+def _confine(nodeid: str) -> None:
+    """In the stats pass with an oracle map named: take the test out of
+    mutmut's record for every function whose module's declared oracle does
+    not hold the test's file."""
+    global _oracle
+    path = os.environ.get(ORACLE_MAP_ENV)
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or not path:
+        return
+    if _oracle is None:
+        _oracle = read_oracle(path)
+    try:
+        from mutmut.state import state
+    except ImportError:
+        pytest.exit("tests/mutation_oracle.py: mutmut.state is not there (mutmut 3.8 holds the "
+                    "record of the tests that reach each function in it), so a test cannot be "
+                    "confined to its modules' declared oracles", returncode=3)
+    names = {nodeid, nodeid.removeprefix("mutants/")}
+    file = nodeid.split("::", 1)[0].removeprefix("mutants/")
+    for function, tests in state().tests_by_mangled_function_name.items():
+        allowed = _oracle.get(module_of(function))
+        if allowed is not None and file not in allowed:
+            tests.difference_update(names)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     global _original_init, _original_open, _original_getsource, _original_getsourcelines, _source_roots
     if _original_init is None:
@@ -374,6 +457,25 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if path and report.failed and os.environ.get("MUTANT_UNDER_TEST", "") in _CLEAN_PASSES:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(report.nodeid + "\n")
+    name_killer(report)
+
+
+#: Whether this mutant's run has named its killer.
+_killer_named = False
+
+
+def name_killer(report: pytest.TestReport, environ: Any = os.environ) -> bool:
+    """In a mutant's run with ``MUTATION_ORACLE_KILLERS`` set: append
+    ``<mutant>\\t<node id>`` for the first test that fails, the one that
+    killed the mutant.  Whether it wrote."""
+    global _killer_named
+    mutant = environ.get("MUTANT_UNDER_TEST", "")
+    path = environ.get(KILLERS_ENV)
+    if _killer_named or not report.failed or "__mutmut_" not in mutant or not path:
+        return False
+    _killer_named = True
+    _append(path, f"{mutant}\t{report.nodeid.removeprefix('mutants/')}\n")
+    return True
 
 
 @pytest.hookimpl(wrapper=True)
@@ -404,3 +506,4 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
         if reason is not None:
             _record(item.nodeid, reason)
             _forget(item.nodeid)
+        _confine(item.nodeid)

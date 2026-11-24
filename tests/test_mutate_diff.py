@@ -1957,19 +1957,15 @@ class TestMutantNames:
             "vera.smt.x_translate_call": {"tests/test_smt.py::test_twin"},
             f"vera.smt.x{SEP}SmtContext{SEP}reset": {"tests/test_smt.py::test_b"},
             "vera.smt.x_other": {"tests/test_smt.py::test_c"}})
-        targets = [target for key in ("x_translate", f"x{SEP}SmtContext{SEP}reset")
-                   for target in md.mutant_targets("vera/smt.py", key)]
+        targets = [md.first_mutant("vera/smt.py", key) for key in ("x_translate", f"x{SEP}SmtContext{SEP}reset")]
         assert engine.tests_for_mutant_names(targets) == {"tests/test_smt.py::test_a", "tests/test_smt.py::test_b"}
         globs = [md.mutant_glob("vera/smt.py", key) for key in ("x_translate", f"x{SEP}SmtContext{SEP}reset")]
         assert engine.tests_for_mutant_names(globs) == set()  # the run before #1838: the whole selection
 
-    def test_the_targets_select_the_units_mutants_and_no_twins(self) -> None:
-        import fnmatch
-
-        targets = md.mutant_targets("vera/smt.py", "x_translate")
-        keys = ["vera.smt.x_translate__mutmut_1", "vera.smt.x_translate__mutmut_12",
-                "vera.smt.x_translate_call__mutmut_1"]
-        assert [k for k in keys if k in targets or any(fnmatch.fnmatch(k, t) for t in targets)] == keys[:2]
+    def test_the_first_mutant_names_the_units_first_and_no_twins(self) -> None:
+        assert md.first_mutant("vera/smt.py", "x_translate") == "vera.smt.x_translate__mutmut_1"
+        assert md.unit_of_mutant(md.first_mutant("vera/smt.py", f"x{SEP}SmtContext{SEP}reset")) == (
+            "vera.smt", f"x{SEP}SmtContext{SEP}reset")
 
     def test_method_glob(self) -> None:
         glob = md.mutant_glob("vera/smt.py", f"x{SEP}SmtContext{SEP}reset")
@@ -2342,14 +2338,18 @@ DECISIONS = [
     ("not observable in process", ["no tests", "no tests"], None, 0),
     ("skipped by the engine", ["skipped", "killed"], None, 0),
     ("a mutant never run", ["killed", "not checked"], None, 0),
-    ("an interrupted mutant", ["check was interrupted by user"], None, 0),
-    ("a suspicious exit", ["suspicious"], None, 0),
-    ("a killed process", ["segfault"], None, 0),
+    # A function with mutants and none decided: not measured (#1838).
+    ("an interrupted mutant", ["check was interrupted by user"], None, 3),
+    ("a suspicious exit", ["suspicious"], None, 3),
+    ("a killed process", ["segfault"], None, 3),
+    ("no mutant run", ["not checked", "not checked"], None, 3),
+    ("the budget stopped it before any mutant", ["not checked"], "budget", 3),
     ("a survivor in a run cut short", ["survived", "not checked"], None, 1),
     ("the budget stopped it", ["killed"], "budget", 0),
     ("the budget stopped it with every decided mutant caught",
      ["killed", "timeout", "not checked"], "budget", 0),
     ("a survivor before the budget stopped it", ["survived", "not checked"], "budget", 1),
+    ("the engine stopped it before any mutant", ["not checked"], "engine", 2),
     ("the engine stopped it", [], "engine", 2),
     ("a survivor before the engine stopped", ["survived"], "engine", 1),
     ("a mutant the lane did not map", ["killed"], "unmapped", 2),
@@ -2364,6 +2364,28 @@ class TestExitCode:
         results = {f"{F}{i}": s for i, s in enumerate(statuses, start=1)}
         rows = md.tally([_unit("x_free")], results) if statuses else []
         assert md.exit_code(rows, stopped=stopped) == code
+
+    def test_repro_one_function_undecided_beside_one_decided_is_not_measured(self) -> None:
+        """#1838 (#1907's run 45363060848: green, 138 of 286 decided, three
+        functions with none): a changed function with window mutants and
+        none decided makes the run not measured, exit 3, whatever the
+        others decided, and its row says so."""
+        results = {f"{F}1": "killed", "vera.smt.x_far__mutmut_1": "not checked"}
+        rows = md.tally([_unit("x_free"), _unit("x_far")], results)
+        assert md.exit_code(rows, stopped="budget") == md.NOT_MEASURED == 3
+        assert md.outcome(3, rows, "budget") == (
+            "Not measured: 1 function(s) had no mutant decided; the budget ran out before every "
+            "mutant was decided.")
+
+    def test_a_function_the_run_never_listed_is_not_measured_by_its_window(self) -> None:
+        """The run stopped before the engine generated a function's file:
+        nothing is listed for it, and its window says it had mutants."""
+        rows = md.tally([_unit("x_free"), _unit("x_far")], {f"{F}1": "killed"})
+        md.place_in_window(rows, {("vera/smt.py", "x_free"): (3, 1), ("vera/smt.py", "x_far"): (9, 4)})
+        assert [r.key for r in md.not_measured(rows)] == ["x_far"]
+        assert md.exit_code(rows, stopped="budget") == 3
+        rows[1].window = 0  # a function with no window mutant is no gap
+        assert md.exit_code(rows, stopped="budget") == 0
 
 
 class TestOutcome:
@@ -2850,6 +2872,68 @@ class TestOraclePlugin:
         assert set(source_skips.read_text(encoding="utf-8").splitlines()) == {
             "tests/test_m.py::test_calls_then_reads_the_source"}
 
+    @starts_the_engine(900)
+    def test_repro_the_engine_runs_each_mutant_against_its_modules_declared_oracle(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1838, under mutmut's own fork server: with the oracle map named,
+        `pkg.b`'s mutants run against `pkg/b.py`'s declared file alone, which
+        reaches them and kills none, so they survive where the covered
+        selection (no map) has `tests/test_a.py` kill them; `pkg.a`'s are
+        killed by its own file either way.  With MUTATION_ORACLE_KILLERS set,
+        each killed mutant's run names its killer, and the verdicts are the
+        engine's own (mutmut reads the exit status alone)."""
+        pytest.importorskip("mutmut")
+        engine = Path(sys.executable).with_name("mutmut")
+
+        def run(name: str, oracle: dict[str, list[str]] | None) -> tuple[dict[str, set[str]], str]:
+            project = tmp_path / name
+            (project / "pkg").mkdir(parents=True)
+            (project / "tests").mkdir()
+            (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+            (project / "pkg" / "a.py").write_text("def double(x):\n    return x * 2\n", encoding="utf-8")
+            (project / "pkg" / "b.py").write_text("def triple(x):\n    return x * 3\n", encoding="utf-8")
+            (project / "tests" / "__init__.py").write_text("", encoding="utf-8")
+            (project / "tests" / "mutation_oracle.py").write_text(
+                (ROOT / "tests" / "mutation_oracle.py").read_text(encoding="utf-8"), encoding="utf-8")
+            (project / "tests" / "test_a.py").write_text(
+                "from pkg.a import double\nfrom pkg.b import triple\n\n\n"
+                "def test_both():\n    assert double(2) == 4\n    assert triple(2) == 6\n", encoding="utf-8")
+            (project / "tests" / "test_b.py").write_text(
+                "from pkg.b import triple\n\n\ndef test_reaches():\n    triple(2)\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                '[tool.mutmut]\nsource_paths = ["pkg/"]\nuse_setproctitle = false\n'
+                'process_isolation = "forkserver"\n'
+                'pytest_add_cli_args = ["-p", "tests.mutation_oracle", "-p", "no:cacheprovider"]\n'
+                'pytest_add_cli_args_test_selection = ["tests/"]\n', encoding="utf-8")
+            killers = tmp_path / f"{name}-killers.tsv"
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS",
+                                "MUTANT_UNDER_TEST", "MUTATION_ORACLE_MAP")}
+            env["MUTATION_ORACLE_KILLERS"] = str(killers)
+            if oracle is not None:
+                path = tmp_path / f"{name}-map.json"
+                path.write_text(json.dumps({"rule": md.ORACLE_RULE, "modules": oracle}), encoding="utf-8")
+                env["MUTATION_ORACLE_MAP"] = str(path)
+            done = subprocess.run([str(engine), "run", "--max-children", "2"], cwd=project, env=env,
+                                  capture_output=True, text=True, encoding="utf-8", check=False, timeout=600)
+            listed = subprocess.run([str(engine), "results", "--all", "true"], cwd=project, env=env,
+                                    capture_output=True, text=True, encoding="utf-8", check=False,
+                                    timeout=300)
+            by_function: dict[str, set[str]] = {}
+            for mutant, status in md.parse_results(listed.stdout).items():
+                by_function.setdefault(md.unit_of_mutant(mutant)[0], set()).add(status)
+            named = killers.read_text(encoding="utf-8") if killers.exists() else ""
+            return by_function, named + done.stdout + done.stderr
+
+        covered, log = run("covered", None)
+        assert covered == {"pkg.a": {"killed"}, "pkg.b": {"killed"}}, log
+        declared, log = run("declared", {"pkg/a.py": ["tests/test_a.py"], "pkg/b.py": ["tests/test_b.py"]})
+        assert declared == {"pkg.a": {"killed"}, "pkg.b": {"survived"}}, log
+        lines = [line.split("\t") for line in log.splitlines() if "\t" in line and "__mutmut_" in line]
+        assert lines and all(test == "tests/test_a.py::test_both" and m.startswith("pkg.a.")
+                             for m, test in lines), log
+
 
 # ---------------------------------------------------------------------------
 # End to end, against a stand-in engine
@@ -2867,7 +2951,15 @@ window = json.loads(Path(window_file).read_text(encoding="utf-8")) if window_fil
 with log.open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "window": window,
                          "git_dir": os.environ.get("GIT_DIR"),
-                         "columns": os.environ.get("COLUMNS")}) + "\\n")
+                         "columns": os.environ.get("COLUMNS"),
+                         "matrix_changed": os.environ.get("VERA_MATRIX_CHANGED"),
+                         "oracle_map": os.environ.get("MUTATION_ORACLE_MAP")}) + "\\n")
+if args[0] == "list-window":
+    request = json.loads(sys.stdin.read())
+    print(json.dumps({path: {"x_kept": [{"n": 1, "line": lines[0], "original": "x + 2",
+                                         "mutated": "x - 2"}]}
+                      for path, lines in request["lines"].items()}))
+    sys.exit(0)
 if args[0] == "run" and window is not None and not os.environ.get("FAKE_NO_WINDOW"):
     # As the engine launcher does: each unit's mutants on every line and in
     # the window, here the mutants results.txt lists for it unless the test
@@ -2966,6 +3058,8 @@ def repo(tmp_path: Path) -> Path:
             return x * 2
     """), encoding="utf-8")
     (root / "tests" / "test_old.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    # vera/m.py's declared oracle: the test file named after it.
+    (root / "tests" / "test_m.py").write_text("import vera.m\n\ndef test_m():\n    pass\n", encoding="utf-8")
     _git(root, "init", "-q", "-b", "main")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "base")
@@ -3059,14 +3153,25 @@ class TestEndToEnd:
     ) -> None:
         code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
         assert code == 0
-        run = next(c for c in calls if c["args"][0] == "run")
-        assert run["args"][-2:] == ["vera.m.x_kept__mutmut_*", "vera.m.x_kept__mutmut_1"]
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        # The first pass names each changed function's first window mutant;
+        # with every mutant decided there is no second.
+        assert run["args"][-1:] == ["vera.m.x_kept__mutmut_1"]
         tree = Path(run["cwd"]).resolve()
         assert tree.is_relative_to((tmp_path / "work").resolve())
         cfg = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
         assert cfg["only_mutate"] == ["vera/m.py"]
+        # The selection is the changed module's declared oracle (its named
+        # file) and the pull request's own admitted test files, not the
+        # repository's selection (tests/test_old.py).
         assert cfg["pytest_add_cli_args_test_selection"] == [
-            "tests/test_old.py", "tests/test_new.py", "tests/test_via_helper.py"]
+            "tests/test_m.py", "tests/test_new.py", "tests/test_via_helper.py"]
+        assert f"--matrix-seed=diff-{record['head'][:12]}" in cfg["pytest_add_cli_args"]
+        assert record["oracle"]["modules"] == {
+            "vera/m.py": ["tests/test_m.py", "tests/test_new.py", "tests/test_via_helper.py"]}
+        oracle = json.loads((tmp_path / "work" / "oracle-map.json").read_text(encoding="utf-8"))
+        assert oracle["rule"] == md.ORACLE_RULE
+        assert oracle["modules"]["vera/m.py"] == record["oracle"]["modules"]["vera/m.py"]
         assert record["extra_tests"] == ["tests/test_new.py", "tests/test_via_helper.py"]
         assert record["tests_left_out"] == ["tests/test_cli_new.py", "tests/test_tooling.py"]
         narrowed = (tree / "vera" / "m.py").read_text(encoding="utf-8")
@@ -3112,6 +3217,8 @@ class TestEndToEnd:
         function's other lines."""
         root = tmp_path / "long"
         (root / "vera").mkdir(parents=True)
+        (root / "tests").mkdir()
+        (root / "tests" / "test_m.py").write_text("import vera.m\n", encoding="utf-8")
         (root / "pyproject.toml").write_text(
             '[tool.mutmut]\nsource_paths = ["vera/"]\n', encoding="utf-8")
         body = [f"    v{i} = x + {i}" for i in range(1, 20)]
@@ -3174,12 +3281,17 @@ class TestEndToEnd:
     ) -> None:
         """The nearest accepted neighbour: a run the budget stopped before it
         generated a unit lists none of its mutants, which says nothing about
-        the window; the run is incomplete, and green."""
+        the window, so it is no engine failure (exit 2); the window says the
+        unit has mutants and none was decided, so the diff is not measured
+        (exit 3), and its row says so."""
         monkeypatch.setenv("FAKE_WINDOW_COUNTS",
                            json.dumps({"vera/m.py": {"x_kept": {"held": 5, "window": 2}}}))
         monkeypatch.setenv("FAKE_RUN_SLEEP", "5")
         code, record, _ = _main(repo, tmp_path, "", budget=1)
-        assert (code, record["stopped"], record["outside_window"]) == (0, "budget", [])
+        assert (code, record["stopped"], record["outside_window"]) == (3, "budget", [])
+        assert record["outcome"].startswith("Not measured: 1 function(s) had no mutant decided")
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert "not decided: the run stopped first" in summary
 
     def test_the_summary_names_the_rule_and_what_it_measured(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -3381,18 +3493,111 @@ class TestEndToEnd:
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A step summary over 1 MiB is dropped whole, so the summary shows at
-        most MAX_SHOWN_SURVIVORS diffs; the record lists every survivor."""
+        most MAX_SHOWN_SURVIVORS diffs; the record holds every survivor with
+        its diff (#1838: the 61st survivor's diff was nowhere)."""
         monkeypatch.setattr(md, "MAX_SHOWN_SURVIVORS", 3)
         results = "".join(f"    vera.m.x_kept__mutmut_{i}: survived\n" for i in range(1, 6))
         code, record, calls = _main(repo, tmp_path, results)
         assert code == 1
         (unit,) = record["functions"]
         assert [s["name"] for s in unit["survivors"]] == [f"vera.m.x_kept__mutmut_{i}" for i in range(1, 6)]
-        assert [bool(s["diff"]) for s in unit["survivors"]] == [True, True, True, False, False]
-        assert len([c for c in calls if c["args"][0] == "show"]) == 3
+        assert all("-    return x + 1" in s["diff"] for s in unit["survivors"])
+        assert len([c for c in calls if c["args"][0] == "show"]) == 5
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert summary.count("```diff") == 3
         assert "2 more survivors" in summary
+
+    def test_repro_the_second_pass_names_the_mutants_the_first_left_undecided(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """#1838 (#1917's runs: `_Builder.walk` 160 of 160 not checked): the
+        first pass names one window mutant of each changed function, the
+        second the undecided ones, so a widely covered function is decided
+        first.  The record lists both passes with their phases."""
+        results = ("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: not checked\n"
+                   "    vera.m.x_kept__mutmut_3: not checked\n")
+        code, record, calls = _main(repo, tmp_path, results)
+        runs = [c for c in calls if c["args"][0] == "run"]
+        assert [r["args"][3:] for r in runs] == [
+            ["vera.m.x_kept__mutmut_1"], ["vera.m.x_kept__mutmut_2", "vera.m.x_kept__mutmut_3"]]
+        assert [p["pass"] for p in record["passes"]] == [1, 2]
+        assert [p["named"] for p in record["passes"]] == [1, 2]
+        assert set(record["passes"][0]["phases"]) >= {"stats_s", "clean_s", "forced_s", "first_mutant_s"}
+        # One decided of three: incomplete, green, not "not measured".
+        assert code == 0 and record["outcome"].startswith("Incomplete:")
+        assert runs[0]["cwd"] == runs[1]["cwd"]
+
+    def test_the_engine_runs_under_the_changed_files_and_the_oracle_map(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """The matrices the change decides run in full in the copy, as in the
+        pull request's test jobs (#1838: 19 of 54 survivors on #1859 were
+        cells the sample left out), and the plugin is handed the map, from
+        the lane's own plugin copied into the scratch tree."""
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert sorted(run["matrix_changed"].splitlines()) == [
+            "tests/drive.py", "tests/test_cli_new.py", "tests/test_new.py",
+            "tests/test_tooling.py", "tests/test_via_helper.py", "vera/m.py"]
+        assert run["oracle_map"] == str((tmp_path / "work" / "oracle-map.json").resolve())
+        plugin = Path(run["cwd"]) / "tests" / "mutation_oracle.py"
+        assert plugin.read_bytes() == (ROOT / "tests" / "mutation_oracle.py").read_bytes()
+
+    def test_a_module_with_no_declared_oracle_is_named_and_not_mutated(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """A changed function of a module no test file declares runs no
+        mutant: its row and the headline name it."""
+        (repo / "tests" / "test_m.py").rename(repo / "tests" / "test_elsewhere.py")
+        (repo / "tests" / "test_new.py").write_text("def test_y():\n    pass\n", encoding="utf-8")
+        (repo / "tests" / "drive.py").write_text("\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "--amend", "-m", "head")
+        code, record, calls = _main(repo, tmp_path, "")
+        assert not [c for c in calls if c["args"][0] == "run"]
+        (row,) = record["functions"]
+        assert row["excluded"] == "no declared oracle: no test file declares the module"
+        assert code == 0
+        assert record["outcome"] == ("Pass: nothing to mutate; 1 changed function(s) in a module "
+                                     "with no declared oracle, not mutated.")
+
+    def test_list_names_the_windows_mutants_and_runs_no_test(
+        self, repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`--list` asks the engine's visitor for the window's mutants and
+        starts no run: the list is the artifact a first push is answered from."""
+        state = tmp_path / "state"
+        state.mkdir()
+        engine = tmp_path / "fake_mutmut.py"
+        engine.write_text(FAKE_ENGINE, encoding="utf-8")
+        out = tmp_path / "list.json"
+        os.environ["FAKE_STATE"] = str(state)
+        try:
+            code = md.main(["--repo", str(repo), "--base", "HEAD~1", "--head", "HEAD", "--list",
+                            "--workdir", str(tmp_path / "work"), "--json", str(out),
+                            "--engine", sys.executable, str(engine)])
+        finally:
+            del os.environ["FAKE_STATE"]
+        calls = [json.loads(line)["args"][0]
+                 for line in (state / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert code == 0 and calls == ["list-window"]
+        record = json.loads(out.read_text(encoding="utf-8"))
+        assert record["list"] == {"vera/m.py": {"x_kept": [
+            {"n": 1, "line": 1, "original": "x + 2", "mutated": "x - 2"}]}}
+        assert "vera/m.py x_kept: 1 mutant(s) in the window" in capsys.readouterr().out
+
+    def test_survivors_past_the_show_budget_are_named_with_the_note(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The show budget bounds the lane's time on diffs: a survivor past
+        it keeps its name and says why it has no diff."""
+        monkeypatch.setattr(md, "SHOW_BUDGET_S", 0)
+        results = "".join(f"    vera.m.x_kept__mutmut_{i}: survived\n" for i in range(1, 3))
+        code, record, calls = _main(repo, tmp_path, results)
+        assert code == 1
+        (unit,) = record["functions"]
+        assert [s["diff"] for s in unit["survivors"]] == [md.SHOW_BUDGET_NOTE] * 2
+        assert not [c for c in calls if c["args"][0] == "show"]
 
     def test_a_run_the_budget_stops_with_no_survivor_passes_with_a_warning(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -3555,7 +3760,7 @@ class TestWorkflow:
         workflow, script and self-tests: a lock bump that breaks the engine
         is red on its own pull request, before any night runs on it."""
         on = self._wf()[True]  # YAML 1.1 reads the bare key `on` as True
-        assert set(on) == {"pull_request"}
+        assert set(on) == {"pull_request", "workflow_dispatch"}
         assert on["pull_request"]["paths"] == [
             "vera/**/*.py", "uv.lock",
             "scripts/mutate_diff.py", "scripts/mutate_sweep.py", "scripts/mutation_report.py",
@@ -3590,7 +3795,21 @@ class TestWorkflow:
                        if str(s.get("uses", "")).startswith("actions/checkout@")]
         assert checkout["with"]["persist-credentials"] is False
         assert checkout["with"]["fetch-depth"] == 0
-        assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+        assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+
+    def test_a_replay_names_full_commits_through_env_and_checks_them(self) -> None:
+        """A dispatched replay's base and head are inputs: each reaches the
+        shell through `env` and is held to 40 hex digits and to a commit the
+        checkout holds before any step reads it."""
+        inputs = self._wf()[True]["workflow_dispatch"]["inputs"]
+        assert set(inputs) == {"base", "head"} and all(i["required"] for i in inputs.values())
+        (name,) = [s for s in self._job()["steps"] if s.get("name") == "Name the base and the head"]
+        assert "${{" not in name["run"]
+        assert name["env"]["IN_BASE"] == "${{ inputs.base }}" and name["env"]["IN_HEAD"] == "${{ inputs.head }}"
+        assert name["env"]["PR_BASE"] == "${{ github.event.pull_request.base.sha }}"
+        assert name["env"]["PR_HEAD"] == "${{ github.event.pull_request.head.sha }}"
+        assert "^[0-9a-f]{40}$" in name["run"] and 'git cat-file -e "$sha^{commit}"' in name["run"]
+        assert 'echo "BASE_SHA=$base" >> "$GITHUB_ENV"' in name["run"]
 
     def test_every_action_is_pinned_as_the_other_workflows_pin_it(self) -> None:
         pins: dict[str, set[str]] = {}
@@ -3621,10 +3840,9 @@ class TestWorkflow:
 
     def test_the_script_runs_against_the_merge_base_inside_its_budget(self) -> None:
         job = self._job()
-        (step,) = [s for s in job["steps"] if "scripts/mutate_diff.py" in s.get("run", "")]
+        (step,) = [s for s in job["steps"] if s.get("name") == "Mutate the functions this pull request changes"]
         assert "${{" not in step["run"], "context values reach the shell through env only"
-        assert step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
-        assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+        assert '--base "$BASE_SHA" --head "$HEAD_SHA"' in step["run"]
         budget = int(re.search(r"--budget (\d+)", step["run"]).group(1))  # type: ignore[union-attr]
         assert job["timeout-minutes"] * 60 >= budget + 10 * 60
         assert "continue-on-error" not in job and "continue-on-error" not in step
@@ -3636,18 +3854,33 @@ class TestWorkflow:
         steps = self._job()["steps"]
         conditions = [str(s["if"]) for s in steps if "if" in s]
         assert conditions == ["always()"]
-        assert not [s for s in steps if "continue-on-error" in s]
+        # The list informs and decides nothing: its step alone may fail
+        # without failing the job.
+        assert [s["name"] for s in steps if "continue-on-error" in s] == ["List the window's mutants"]
+
+    def test_the_list_is_kept_before_any_test_runs(self) -> None:
+        """`--list` runs no test and starts no worker; its artifact is
+        uploaded before the self-tests and the lane."""
+        steps = self._job()["steps"]
+        names = [s.get("name") for s in steps]
+        (listing,) = [s for s in steps if s.get("name") == "List the window's mutants"]
+        assert "scripts/mutate_diff.py --list" in listing["run"] and "${{" not in listing["run"]
+        (upload,) = [s for s in steps if s.get("name") == "Upload the list"]
+        assert upload["with"]["name"] == "mutation-diff-list"
+        assert names.index("List the window's mutants") < names.index("Upload the list") < names.index(
+            "Test the lane against the engine it installs")
 
     def test_the_record_is_kept_and_summarised_whatever_the_outcome(self) -> None:
         steps = self._job()["steps"]
-        (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-        assert upload["if"] == "always()"
-        (step,) = [s for s in steps if "scripts/mutate_diff.py" in s.get("run", "")]
+        (upload,) = [s for s in steps if s.get("name") == "Upload the record"]
+        assert upload["if"] == "always()" and upload["with"]["name"] == "mutation-diff"
+        (step,) = [s for s in steps if s.get("name") == "Mutate the functions this pull request changes"]
         assert "--summary \"$GITHUB_STEP_SUMMARY\"" in step["run"]
 
     def test_a_newer_push_cancels_the_run_for_the_same_pull_request(self) -> None:
         concurrency = self._wf()["concurrency"]
-        assert "github.event.pull_request.number" in concurrency["group"]
+        assert concurrency["group"] == (
+            "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}")
         assert concurrency["cancel-in-progress"] is True
 
 
@@ -3671,3 +3904,268 @@ def test_tail_keeps_the_head_of_a_fault_dump(tmp_path: Path) -> None:
     plain = tmp_path / "plain.log"
     plain.write_text("\n".join(rows[40:]) + "\n", encoding="utf-8")
     assert md._tail(plain) == rows[60:]
+
+
+# ---------------------------------------------------------------------------
+# The declared oracle (#1838): one source, held to the tree
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tree_oracle() -> dict[str, Any]:
+    return md.oracle_map(ROOT)
+
+
+class TestDeclaredOracle:
+    def test_every_module_with_a_mutated_function_is_declared_or_listed(
+        self, tree_oracle: dict[str, Any],
+    ) -> None:
+        """A module whose functions mutmut mutates has a declared oracle,
+        or an UNDECLARED entry saying why not: never a silent empty one."""
+        silent = [path for path, files in tree_oracle["modules"].items()
+                  if not files and path not in md.UNDECLARED
+                  and md.has_units((ROOT / path).read_text(encoding="utf-8"))]
+        assert silent == []
+
+    def test_every_undeclared_entry_is_still_undeclared(self, tree_oracle: dict[str, Any]) -> None:
+        """A stale entry (the module gained an oracle, or is gone, or holds
+        no mutated function) fails, so the list says what is true."""
+        stale = [path for path in md.UNDECLARED
+                 if tree_oracle["modules"].get(path, None) != []
+                 or not md.has_units((ROOT / path).read_text(encoding="utf-8"))]
+        assert stale == []
+
+    def test_every_family_glob_matches_a_module_and_an_admitted_test(
+        self, tree_oracle: dict[str, Any],
+    ) -> None:
+        import fnmatch
+
+        admitted = {t for files in tree_oracle["modules"].values() for t in files}
+        unmatched = [g for modules, files in md.ORACLE_FAMILIES for g in modules
+                     if not any(fnmatch.fnmatch(m, g) for m in tree_oracle["modules"])]
+        unmatched += [g for modules, files in md.ORACLE_FAMILIES for g in files
+                      if not any(fnmatch.fnmatch(t, g) for t in admitted)]
+        assert unmatched == []
+
+    def test_mutation_md_holds_the_rendered_family_table(self) -> None:
+        """The family table has one source, ORACLE_FAMILIES: MUTATION.md's
+        copy between its markers is the rendered one."""
+        text = (ROOT / "MUTATION.md").read_text(encoding="utf-8")
+        begin, end = "<!-- oracle-families:begin -->\n", "<!-- oracle-families:end -->"
+        assert text.count(begin) == 1 and text.count(end) == 1
+        assert text.split(begin, 1)[1].split(end, 1)[0] == md.family_table()
+
+    def test_repro_the_tester_distrust_file_is_in_the_testers_oracle(
+        self, tree_oracle: dict[str, Any],
+    ) -> None:
+        """#1838's line of 18 Nov: `tests/test_tester_distrust.py` was out of
+        the diff lane's selection, so `vera/tester.py`'s `_TrapIndex`
+        survivors were false.  It is named after the module."""
+        assert "tests/test_tester_distrust.py" in tree_oracle["modules"]["vera/tester.py"]
+
+    def test_a_marked_instrument_joins_the_oracle_of_each_module_it_names(
+        self, tree_oracle: dict[str, Any],
+    ) -> None:
+        marked: dict[str, list[str]] = {}
+        for path in sorted((ROOT / "tests").glob("test_*.py")):
+            named = md.matrix_decides(path.read_text(encoding="utf-8"))
+            if named:
+                marked[path.relative_to(ROOT).as_posix()] = named
+        admitted = {t for files in tree_oracle["modules"].values() for t in files}
+        missing = [(t, m) for t, mods in marked.items() if t in admitted for m in mods
+                   if m in tree_oracle["modules"] and t not in tree_oracle["modules"][m]]
+        assert marked and missing == []
+
+
+class TestOracleRules:
+    def test_a_marker_over_several_lines_and_its_forms_are_read(self) -> None:
+        assert md.matrix_decides(_src('''
+            import pytest
+            pytestmark = [
+                pytest.mark.slow,
+                pytest.mark.matrix(
+                    decides=[
+                        "vera/a.py",
+                        "vera/b/c.py",
+                    ],
+                ),
+            ]
+        ''')) == ["vera/a.py", "vera/b/c.py"]
+        assert md.matrix_decides('import pytest\npytestmark = pytest.mark.matrix(decides="vera/a.py")\n') == [
+            "vera/a.py"]
+        assert md.matrix_decides("import pytest\npytestmark: object = pytest.mark.matrix()\n") == []
+        assert md.matrix_decides("import pytest\npytestmark = pytest.mark.slow\n") is None
+        assert md.matrix_decides("x = 1\n") is None
+
+    @pytest.mark.parametrize(("module", "tests", "named"), [
+        ("vera/tester.py", ["tests/test_tester.py", "tests/test_tester_distrust.py", "tests/test_testers.py"],
+         ["tests/test_tester.py", "tests/test_tester_distrust.py"]),
+        ("vera/checker/calls.py", ["tests/test_calls.py", "tests/test_checker_calls.py",
+                                   "tests/test_checker_calls_x.py", "tests/test_checker.py"],
+         ["tests/test_calls.py", "tests/test_checker_calls.py", "tests/test_checker_calls_x.py"]),
+        ("vera/checker/__init__.py", ["tests/test_checker.py", "tests/test___init__.py", "tests/test_checker_x.py"],
+         ["tests/test_checker.py"]),
+        ("vera/__init__.py", ["tests/test_vera.py", "tests/test___init__.py"], []),
+    ], ids=["module", "package-module", "package-init", "top-init"])
+    def test_the_files_named_after_a_module(self, module: str, tests: list[str], named: list[str]) -> None:
+        assert md.named_tests(module, tests) == named
+
+    def test_the_map_reads_markers_names_and_families_from_admitted_files_alone(
+        self, tmp_path: Path,
+    ) -> None:
+        """A marked file outside the admitted set (it does not reach the
+        compiler in process, or is of a family left out) adds nothing."""
+        (tmp_path / "vera" / "checker").mkdir(parents=True)
+        (tmp_path / "tests").mkdir()
+        for path in ("vera/__init__.py", "vera/a.py", "vera/b.py", "vera/checker/x.py"):
+            (tmp_path / path).write_text("def f():\n    return 1\n", encoding="utf-8")
+        marker = 'import pytest\npytestmark = pytest.mark.matrix(decides=["vera/b.py"])\n'
+        files = {
+            "tests/test_a.py": "import vera.a\n",
+            "tests/test_instrument.py": "import vera\n" + marker,
+            "tests/test_unreached.py": marker,
+            "tests/test_cli_marked.py": "import vera\n" + marker,
+            "tests/test_checker_types.py": "import vera\n",
+        }
+        for path, text in files.items():
+            (tmp_path / path).write_text(text, encoding="utf-8")
+        oracle = md.oracle_map(tmp_path)
+        assert oracle["rule"] == md.ORACLE_RULE
+        assert oracle["modules"] == {
+            "vera/__init__.py": [],
+            "vera/a.py": ["tests/test_a.py"],
+            "vera/b.py": ["tests/test_instrument.py"],
+            "vera/checker/x.py": ["tests/test_checker_types.py"],
+        }
+        assert md.oracle_of(oracle, ["vera/a.py", "vera/b.py"]) == ["tests/test_a.py", "tests/test_instrument.py"]
+
+    def test_the_family_table_renders_every_family(self) -> None:
+        table = md.family_table().splitlines()
+        assert table[:2] == ["| Modules | Test files |", "|---|---|"]
+        assert len(table) == 2 + len(md.ORACLE_FAMILIES)
+        assert table[3] == "| `vera/checker/*` | `tests/test_checker_*.py` |"
+
+
+# ---------------------------------------------------------------------------
+# The plugin confines each function's tests to its module's oracle
+# ---------------------------------------------------------------------------
+
+
+class _FakeState:
+    def __init__(self, record: dict[str, set[str]]) -> None:
+        self.tests_by_mangled_function_name = record
+
+
+@pytest.fixture
+def fake_mutmut_state(monkeypatch: pytest.MonkeyPatch) -> dict[str, set[str]]:
+    """A `mutmut.state` whose record the test owns: the plugin's filter is
+    tested without the engine, as `_forget`'s neighbours are."""
+    from tests import mutation_oracle
+
+    record: dict[str, set[str]] = {}
+    fake = types.ModuleType("mutmut.state")
+    holder = _FakeState(record)
+    fake.state = lambda: holder  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mutmut", types.ModuleType("mutmut"))
+    monkeypatch.setitem(sys.modules, "mutmut.state", fake)
+    monkeypatch.setattr(mutation_oracle, "_oracle", None)
+    return record
+
+
+class TestOracleFilter:
+    def _oracle_file(self, tmp_path: Path, modules: dict[str, list[str]]) -> Path:
+        path = tmp_path / "oracle-map.json"
+        path.write_text(json.dumps({"rule": md.ORACLE_RULE, "modules": modules}), encoding="utf-8")
+        return path
+
+    def test_repro_a_test_outside_the_modules_oracle_leaves_its_functions_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_mutmut_state: dict[str, set[str]],
+    ) -> None:
+        """In the stats pass, each test leaves the record of every function
+        whose module's declared oracle does not hold its file; a module the
+        map does not name keeps mutmut's record (#1838)."""
+        from tests import mutation_oracle
+
+        fake_mutmut_state.update({
+            "vera.checker.calls.x_f": {"tests/test_parser.py::t", "tests/test_checker_calls.py::t"},
+            f"vera.checker.calls.x{SEP}C{SEP}m": {"tests/test_parser.py::t"},
+            "vera.smt.x_g": {"tests/test_parser.py::t"},
+            "other.x_h": {"tests/test_parser.py::t"},
+        })
+        monkeypatch.setenv("MUTATION_ORACLE_MAP", str(self._oracle_file(tmp_path, {
+            "vera/checker/calls.py": ["tests/test_checker_calls.py"],
+            "vera/smt.py": ["tests/test_parser.py"]})))
+        monkeypatch.setenv("MUTANT_UNDER_TEST", "stats")
+        mutation_oracle._confine("mutants/tests/test_parser.py::t")
+        assert fake_mutmut_state == {
+            "vera.checker.calls.x_f": {"tests/test_checker_calls.py::t"},
+            f"vera.checker.calls.x{SEP}C{SEP}m": set(),
+            "vera.smt.x_g": {"tests/test_parser.py::t"},
+            "other.x_h": {"tests/test_parser.py::t"},
+        }
+
+    @pytest.mark.parametrize("marker", ["", "fail", "list_all_tests", "vera.smt.x_g__mutmut_1"])
+    def test_outside_the_stats_pass_the_record_is_left_alone(
+        self, marker: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        fake_mutmut_state: dict[str, set[str]],
+    ) -> None:
+        from tests import mutation_oracle
+
+        fake_mutmut_state["vera.smt.x_g"] = {"tests/test_parser.py::t"}
+        monkeypatch.setenv("MUTATION_ORACLE_MAP", str(self._oracle_file(tmp_path, {"vera/smt.py": []})))
+        monkeypatch.setenv("MUTANT_UNDER_TEST", marker)
+        mutation_oracle._confine("tests/test_parser.py::t")
+        assert fake_mutmut_state == {"vera.smt.x_g": {"tests/test_parser.py::t"}}
+
+    def test_without_a_map_the_record_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch, fake_mutmut_state: dict[str, set[str]],
+    ) -> None:
+        from tests import mutation_oracle
+
+        fake_mutmut_state["vera.smt.x_g"] = {"tests/test_parser.py::t"}
+        monkeypatch.delenv("MUTATION_ORACLE_MAP", raising=False)
+        monkeypatch.setenv("MUTANT_UNDER_TEST", "stats")
+        mutation_oracle._confine("tests/test_parser.py::t")
+        assert fake_mutmut_state == {"vera.smt.x_g": {"tests/test_parser.py::t"}}
+
+    @pytest.mark.parametrize("text", ["", "{", '{"rule": "x"}', '{"modules": 3}'])
+    def test_a_map_that_does_not_read_stops_the_stats_pass(
+        self, text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        fake_mutmut_state: dict[str, set[str]],
+    ) -> None:
+        from tests import mutation_oracle
+
+        path = tmp_path / "oracle-map.json"
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("MUTATION_ORACLE_MAP", str(path))
+        monkeypatch.setenv("MUTANT_UNDER_TEST", "stats")
+        with pytest.raises(pytest.exit.Exception):
+            mutation_oracle._confine("tests/test_parser.py::t")
+
+    def test_the_module_of_a_mangled_name(self) -> None:
+        from tests import mutation_oracle
+
+        assert mutation_oracle.module_of(f"vera.checker.calls.x{SEP}C{SEP}m") == "vera.checker.calls"
+        assert mutation_oracle.module_of("vera.x_f") == "vera"
+        assert mutation_oracle.module_of("vera.smt") == ""
+
+    def test_the_killer_is_the_first_test_that_fails_in_a_mutants_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The targeted run that names each flip's killer: one line per
+        mutant's run, the first failing test; a passing test, a clean pass
+        and a second failure write nothing."""
+        from tests import mutation_oracle
+
+        out = tmp_path / "killers.tsv"
+        env = {"MUTANT_UNDER_TEST": "vera.smt.x_g__mutmut_3", "MUTATION_ORACLE_KILLERS": str(out)}
+        monkeypatch.setattr(mutation_oracle, "_killer_named", False)
+
+        def report(nodeid: str, failed: bool) -> Any:
+            return types.SimpleNamespace(nodeid=nodeid, failed=failed)
+
+        assert not mutation_oracle.name_killer(report("tests/test_a.py::ok", False), env)
+        assert not mutation_oracle.name_killer(report("tests/test_a.py::bad", True), {**env, "MUTANT_UNDER_TEST": "stats"})
+        assert mutation_oracle.name_killer(report("mutants/tests/test_a.py::bad", True), env)
+        assert not mutation_oracle.name_killer(report("tests/test_a.py::worse", True), env)
+        assert out.read_text(encoding="utf-8") == "vera.smt.x_g__mutmut_3\ttests/test_a.py::bad\n"
