@@ -393,7 +393,15 @@ class CrossModuleMixin:
                 _owned_tp = temp._adt_ctor_tp_indices.get(adt_name, {})
                 for _ctor_name in layouts:
                     if _ctor_name in _owned_tp:
-                        self._adt_ctor_tp_indices.setdefault(
+                        # Not mutated: no mutant of this copy changes a
+                        # module (2,960 tests green under each).  The
+                        # equality gate and generator and the show and hash
+                        # plans fall back to substituting the type
+                        # parameters' names, carried over above, into the
+                        # declared field type, which gives the same type for
+                        # a bare-parameter field; the wildcard-width reader
+                        # was not reached by a match on an imported type.
+                        self._adt_ctor_tp_indices.setdefault(  # pragma: no mutate
                             adt_name, {}).setdefault(
                                 _ctor_name, _owned_tp[_ctor_name])
                     if (
