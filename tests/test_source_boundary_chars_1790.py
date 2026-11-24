@@ -526,13 +526,14 @@ def test_fmt_names_the_file_when_it_is_not_utf8(tmp_path: Path) -> None:
 
 def _node(line: int | None) -> Any:
     return SimpleNamespace(
-        span=None if line is None else SimpleNamespace(line=line))
+        span=None if line is None else SimpleNamespace(line=line, column=1))
 
 
 def test_resolver_quotes_the_importing_files_line(tmp_path: Path) -> None:
     path = tmp_path / "m.vera"
     path.write_bytes(BOM + b"one\r\ntwo\nthree")
-    quote = ModuleResolver._source_line
+    def quote(at: Path, node: Any) -> str:
+        return ModuleResolver._placed(at, node)["source_line"]
     assert quote(path, _node(1)) == "one"
     assert quote(path, _node(2)) == "two"
     assert quote(path, _node(3)) == "three"

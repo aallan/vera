@@ -18,9 +18,9 @@ from vera.errors import (
     Diagnostic,
     ParseError,
     SourceEncodingError,
-    SourceLocation,
+    Placed,
     TransformError,
-    source_lines,
+    locate_at,
 )
 from vera.parser import parse, read_source
 from vera.transform import transform
@@ -263,8 +263,7 @@ class ModuleResolver:
                         f"Cannot resolve import "
                         f"'{'.'.join(mod_path)}': no file found."
                     ),
-                    location=self._location_from_node(imp, importing_file),
-                    source_line=self._source_line(importing_file, imp),
+                    **self._placed(importing_file, imp),
                     rationale=(
                         f"Looked for "
                         f"'{'/'.join(mod_path)}.vera' relative to "
@@ -303,8 +302,7 @@ class ModuleResolver:
                         f"'{'.'.join(mod_path)}' is already being "
                         f"resolved."
                     ),
-                    location=self._location_from_node(imp, importing_file),
-                    source_line=self._source_line(importing_file, imp),
+                    **self._placed(importing_file, imp),
                     rationale=(
                         "Circular imports are not allowed. The module "
                         "dependency graph must be acyclic."
@@ -409,8 +407,7 @@ class ModuleResolver:
                 f"Error parsing imported module "
                 f"'{'.'.join(mod_path)}': {exc}"
             ),
-            location=self._location_from_node(imp, importing_file),
-            source_line=self._source_line(importing_file, imp),
+            **self._placed(importing_file, imp),
             rationale=(
                 "An imported module must itself parse and "
                 "transform successfully before its declarations "
@@ -458,8 +455,7 @@ class ModuleResolver:
                 f"'{here}', and '{self._shown(bound.importer)}' imports it "
                 f"as '{there}'."
             ),
-            location=self._location_from_node(imp, importing_file),
-            source_line=self._source_line(importing_file, imp),
+            **self._placed(importing_file, imp),
             rationale=(
                 "A module path names one module in a program. Every stage "
                 "links a module by its path, so two files under one path "
@@ -553,8 +549,7 @@ class ModuleResolver:
                 )
         return Diagnostic(
             description=description,
-            location=self._location_from_node(imp, importing_file),
-            source_line=self._source_line(importing_file, imp),
+            **self._placed(importing_file, imp),
             rationale=rationale,
             fix=fix,
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
@@ -584,44 +579,21 @@ class ModuleResolver:
         return None
 
     @staticmethod
-    def _location_from_node(
-        node: ast.Node, importing_file: Path | None = None,
-    ) -> SourceLocation:
-        """Extract a SourceLocation from an AST node's span.
+    def _placed(importing_file: Path, node: ast.Node) -> Placed:
+        """Where a resolver diagnostic about *node* is, in *importing_file*,
+        the file that holds it, with the line it quotes
+        (:func:`vera.errors.locate_at`).
 
-        ``importing_file`` names the file that contains ``node`` (the
-        importing program); threading it through populates
-        ``location.file`` so resolver diagnostics match the file-qualified
-        location every checker diagnostic carries.
+        The line is read best-effort: a missing or unreadable file quotes
+        nothing rather than raising, since the line is context, not the
+        finding.  It is the text the parser saw: a leading byte-order mark is
+        no part of line 1, as the node's column counts it (#1790).
         """
-        file = str(importing_file) if importing_file is not None else None
-        if node.span:
-            return SourceLocation(
-                file=file,
-                line=node.span.line,
-                column=node.span.column,
-            )
-        return SourceLocation(file=file)
-
-    @staticmethod
-    def _source_line(importing_file: Path, node: ast.Node) -> str:
-        """Read the offending import line from the importing file.
-
-        Best-effort: a missing or unreadable file yields ``""`` rather
-        than raising, since the source line is contextual, not essential.
-        Mirrors the checker's ``_source_line`` so ``vera check --json``
-        carries the offending line for resolver errors too.
-        """
-        if not node.span:
-            return ""
         try:
-            # The text the parser saw: a leading byte-order mark is no
-            # part of line 1, as the node's column counts it (#1790).
-            lines = source_lines(read_source(importing_file))
+            source = read_source(importing_file) if node.span else ""  # pragma: no mutate — a node with no span has no position, so nothing is quoted
         except (OSError, SourceEncodingError):
-            return ""
-        idx = node.span.line - 1
-        return lines[idx] if 0 <= idx < len(lines) else ""
+            source = ""  # pragma: no mutate — the importing file was read moments before; a read that now fails is no program's
+        return locate_at(str(importing_file), source, node.span)
 
 
 def accepted_imports(

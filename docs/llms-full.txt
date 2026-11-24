@@ -3695,8 +3695,6 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **W005**: Runtime checks not reconciled: the program holds typed holes
 - **E001**: Missing contract block
 - **E002**: Missing effect clause
-- **E003**: Malformed slot reference
-- **E004**: Missing closing brace
 - **E005**: Unexpected token
 - **E006**: Unexpected character
 - **E007**: Internal parser error

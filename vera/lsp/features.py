@@ -38,8 +38,8 @@ from vera.checker.core import CheckArtifacts
 from vera.errors import (
     Diagnostic,
     ParseError,
-    SourceLocation,
     TransformError,
+    locate,
     partial_diagnostics,
 )
 from vera.lsp.convert import (
@@ -317,7 +317,8 @@ class _Placement:
             if (self.bound.get(mod_path) == file
                     or self.unread.get((importer, mod_path)) == file):
                 return head
-        return location_to_range(SourceLocation(line=1, column=1), self.index)
+        return location_to_range(locate(None, "", 1, 1)["location"],  # pragma: no mutate — the range reads the line and column alone, and column 0 and 1 are the line's first character
+                                 self.index)
 
 
 def _placement(analysis: Analysis, related: bool) -> _Placement:
@@ -474,7 +475,7 @@ def analysis_failure(
             f"Internal compiler error while analysing '{path}': "
             f"{type(exc).__name__}: {exc}"
         ),
-        location=SourceLocation(file=path, line=0, column=0),
+        **locate(path, ""),  # pragma: no mutate — what is published carries no file and no quote: line 0 is no position
         rationale=(
             "The compiler raised an unexpected exception. This is a bug in "
             "the compiler, not a property of the program -- the text may "
@@ -487,8 +488,8 @@ def analysis_failure(
             "Please file a bug report with the offending program at "
             "https://github.com/aallan/vera/issues"
         ),
-        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
-        severity="error",
+        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',  # pragma: no mutate — what is published (`_to_lsp`) carries no spec section
+        severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
         error_code="E699",
     ), place)]
 

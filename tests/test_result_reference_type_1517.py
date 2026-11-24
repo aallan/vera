@@ -846,22 +846,23 @@ def test_a_return_type_written_across_lines_is_quoted_on_one_line() -> None:
     diag = _refused_at_the_reference(_ACROSS_LINES, "@Option<Nat>.result")
     assert diag.description == (
         "@Option<Nat>.result does not refer to the result of 'f', which "
-        "returns Option< Int>: its result is @Option< Int>.result.")
+        "returns Option<Int>: its result is @Option<Int>.result.")
     repaired = _ACROSS_LINES.replace("@Option<Nat>.result",
                                      _fixed_reference(diag))
     assert pipeline.check(repaired).diagnostics == ()
 
 
-def test_a_check_without_source_text_names_the_keys() -> None:
-    # `typecheck` takes the source text as an option.  Without it there is
-    # no spelling to quote, so the message names what the rule compares.
+def test_a_check_without_source_text_writes_the_types_from_the_nodes() -> None:
+    # `typecheck` takes the source text as an option.  The message writes
+    # each type from its node as `vera fmt` does (#1573, #1636), so it needs
+    # none: the return type is named by the alias the program writes.
     source = _PRE + _ISSUE.format(ref="@Int.result").replace(
         "-> @Int)", "-> @Cnt)")
     (diag,) = typecheck(pipeline.parse(source).program)
     assert diag.error_code == "E163"
     assert diag.description == (
         "@Int.result does not refer to the result of 'f', which returns "
-        "Int: its result is @Cnt.result.")
+        "Cnt: its result is @Cnt.result.")
     assert diag.fix == "Write @Cnt.result."
 
 
