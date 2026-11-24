@@ -684,6 +684,29 @@ BINDING_SHAPES: dict[str, tuple[dict[str, str], bool]] = {
         {**_EMIT, "b.py": "from a import emit\n\n"
                           "def dead():\n    report = emit\n    return report()\n"},
         False),
+    "report = emit inside a live function": (
+        {**_EMIT, "b.py": "from a import emit\n\n"
+                          "def go():\n    report = emit\n    return report()\n"
+                          "\nX = go()\n"}, True),
+    # A binding belongs to the scope that makes it: an import in a function
+    # binds its name only while that function runs.
+    "a renamed import in a dead function, the name live at module scope": (
+        {**_EMIT, "b.py": "report = 0\n\n"
+                          "def dead():\n    from a import emit as report\n"
+                          "    return report()\n"}, False),
+    "a renamed import in a live function, the name live at module scope": (
+        {**_EMIT, "b.py": "report = 0\n\n"
+                          "def go():\n    from a import emit as report\n"
+                          "    return report()\n\nX = go()\n"}, True),
+    "a renamed import in a dead function, the name bound nowhere else": (
+        {**_EMIT, "b.py": "def dead():\n    from a import emit as report\n"
+                          "    return report()\n"}, False),
+    # KNOWN LIMIT, the one way the scan errs toward accepting: it matches a
+    # function by its name across vera/, so a live use of the same name
+    # (another function, an attribute, a variable) keeps a dead function
+    # live.  The row pins what the scan does, not what Python does.
+    "KNOWN LIMIT: a live use of the same name elsewhere keeps it": (
+        {**_EMIT, "b.py": "class C:\n    emit = 1\n\nX = C().emit\n"}, True),
 }
 
 

@@ -1095,20 +1095,34 @@ def placement_violations(paths: Iterable[Path]) -> list[Violation]:
 # defaults, its annotations unless the module defers them) is module-level
 # code, whether or not the function is ever called.
 #
-# A name is resolved to the definitions it is bound to before what names it
-# is walked.  The scan matches by name across vera/, so a function is
-# reached through each binding the language gives that holds one: an import
-# with or without `as` (`from m import f as g` binds g to f), a module's
-# attribute (`n.f` after `import m as n`), an assignment, plain, annotated or
-# `:=`, and a `for` target, each of which names the function in an
-# expression.  Rows of each are in tests/test_diagnostic_placement_1636.py
-# (BINDING_SHAPES, RAISE_SHAPES).
+# The scan is a static approximation of Python's name binding and call
+# graph, not a proof; it keeps the registry from listing a code the compiler
+# cannot say, and the instrument's cells raise each code with a real program
+# wherever one can.  Its contract, every line pinned by a row in
+# tests/test_diagnostic_placement_1636.py (RAISE_SHAPES, BINDING_SHAPES):
 #
-# What it cannot see: a function reached only through a name no code writes
-# (`getattr` with a computed name, a string, a dispatch table built at run
-# time).  Such a function is dead to the scan, its code IS reported, and the
-# report says to name the function from module-level code or a method; one
-# row pins it (test_the_raise_rule_reports_a_name_it_cannot_see).
+# Decided as Python decides it:
+#   - reachability from module-level code and methods, through calls, cycles
+#     (two functions that only name each other are dead) and what a `def`
+#     evaluates at definition (decorators, defaults, annotations unless the
+#     module defers them);
+#   - a name followed to the definition it is bound to: an import with or
+#     without `as` (`from m import f as g` binds g to f), a module's
+#     attribute (`n.f` after `import m as n`), `from m import *`, an
+#     assignment plain, annotated or `:=`, a `for` target;
+#   - a binding belongs to the scope that makes it: an import or an
+#     assignment in a function binds only once that function is live.
+#
+# Conservative, and which way it errs:
+#   - it may REPORT a code that is raised, where the function is reached
+#     only through a name no code writes (`getattr` with a computed name, a
+#     string, a dispatch table built at run time); the report says to name
+#     the function from module-level code or a method
+#     (test_the_raise_rule_reports_a_name_it_cannot_see);
+#   - it may ACCEPT a dead code in one way: it matches a function by its
+#     name across vera/, so a live use of the same name (another function,
+#     an attribute, a variable) keeps every function of that name live (the
+#     row marked KNOWN LIMIT).
 
 def _rel(p: Path) -> str:
     """*p* relative to the repository, or as given when outside it."""
@@ -1177,10 +1191,13 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
     """The module-level functions under *paths* no live code reaches."""
     defs: set[tuple[str, str]] = set()
     users: dict[str, set[tuple[str, str | None]]] = {}
-    # `from m import f as g` binds g to f: a use of g is a use of f.  Every
-    # other binding names its function in an expression (`g = f`, `n.f`
-    # after `import m as n`), which the walk below records as a use.
-    bound_to: dict[str, set[str]] = {}
+    # `from m import f as g` binds g to f: a use of g is a use of f.  The
+    # binding belongs to the scope that makes it (the module, or the
+    # module-level function it stands in), so its edge is live only once
+    # that owner is.  Every other binding names its function in an
+    # expression (`g = f`, `n.f` after `import m as n`), which the walk
+    # below records as a use by its owner.
+    bound_to: dict[tuple[str, str | None], dict[str, set[str]]] = {}
     for p in paths:
         rel = _rel(p)
         tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
@@ -1198,6 +1215,7 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
                         for alias in node.names:
                             if alias.asname and alias.asname != alias.name:
                                 bound_to.setdefault(
+                                    (rel, owner), {}).setdefault(
                                     alias.asname, set()).add(alias.name)
     # Reachability from the live roots: module-level code (a table, a class
     # and its methods, which are dispatched by name) names functions, and a
@@ -1205,8 +1223,8 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
     # let two functions that only name each other keep each other alive.
     names_used: dict[tuple[str, str | None], set[str]] = {}
     for name, owners in users.items():
-        for owner in owners:
-            names_used.setdefault(owner, set()).add(name)
+        for user in owners:
+            names_used.setdefault(user, set()).add(name)
     by_name: dict[str, set[tuple[str, str]]] = {}
     for d in defs:
         by_name.setdefault(d[1], set()).add(d)
@@ -1214,14 +1232,28 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
     frontier = [name for (_, owner), names in names_used.items()
                 if owner is None for name in names]
     seen: set[str] = set()
+    # The renamed imports of the live scopes: the module scopes' from the
+    # start, a function's once it is live.
+    active: dict[str, set[str]] = {}
+
+    def activate(scope: tuple[str, str | None]) -> None:
+        for alias, targets in bound_to.get(scope, {}).items():
+            active.setdefault(alias, set()).update(targets)
+            if alias in seen:
+                frontier.extend(targets)
+
+    for scope in bound_to:
+        if scope[1] is None:
+            activate(scope)
     while frontier:
         name = frontier.pop()
         if name in seen:
             continue
         seen.add(name)
-        frontier.extend(bound_to.get(name, set()))
+        frontier.extend(active.get(name, set()))
         for d in by_name.get(name, set()) - live:
             live.add(d)
+            activate(d)
             frontier.extend(names_used.get(d, set()))
     return defs - live
 
