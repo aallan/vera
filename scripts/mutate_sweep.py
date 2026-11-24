@@ -2626,6 +2626,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     map_file.write_text(json.dumps(oracle, indent=1) + "\n", encoding="utf-8")
     env[md.ORACLE_MAP_ENV] = str(map_file)
     seed = f"cycle-{state['cycle']}"
+    env[md.MATRIX_SEED_ENV] = seed
     record["selection"] = len(selection)
     record["oracle"] = {"rule": oracle["rule"], "matrix_seed": seed,
                         "undeclared": sorted(f for f in files if not oracle["modules"].get(f))}
@@ -2767,8 +2768,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
             tree=tree, pyproject=pyproject, budget_s=engine_budget, workdir=workdir, env=env,
             config_for=lambda dropped: md.rewrite_config(
                 config, only_mutate=files, selection=selection, extra_tests=(), also_copy=also_copy,
-                extra_args=[f"--matrix-seed={seed}",
-                            *(f"--deselect={test}" for test in [*deselected, *dropped])]),
+                extra_args=[f"--deselect={test}" for test in [*deselected, *dropped]]),
             before_stop=before_stop)
     finally:
         if beat is not None:
@@ -2839,7 +2839,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
                         sorted(p.relative_to(tree).as_posix() for p in (tree / "tests").glob("test_*.py")),
                         tree)[0],
                     [*tomllib.loads(config)["tool"]["mutmut"].get("pytest_add_cli_args", []),
-                     f"--matrix-seed={seed}", *(f"--deselect={test}" for test in [*deselected, *dropped])],
+                     *(f"--deselect={test}" for test in [*deselected, *dropped])],
                     env, max(float(args.budget) - (time.monotonic() - started), 0.0),
                     workdir / "oracle-killers.txt")
             except Exception as exc:  # noqa: BLE001 -- the slice's decisions stand; each flip says why

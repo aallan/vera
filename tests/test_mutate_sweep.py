@@ -2223,7 +2223,8 @@ state = Path(os.environ["FAKE_STATE"])
 args = sys.argv[1:]
 with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS"),
-                         "bytecode_off": os.environ.get("PYTHONDONTWRITEBYTECODE")}) + "\\n")
+                         "bytecode_off": os.environ.get("PYTHONDONTWRITEBYTECODE"),
+                         "matrix_seed": os.environ.get("VERA_MATRIX_SEED")}) + "\\n")
 if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
@@ -2577,12 +2578,28 @@ class TestEndToEnd:
                                                       encoding="utf-8")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "-m", "an admitted file of no module")
-        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: killed\n")
+        code, record, calls = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: killed\n")
         import tomllib
 
-        cfg = tomllib.loads((tmp_path / "work1" / "tree" / "pyproject.toml").read_text(encoding="utf-8"))
+        tree = tmp_path / "work1" / "tree"
+        cfg = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))
         assert cfg["tool"]["mutmut"]["pytest_add_cli_args_test_selection"] == ["tests/test_m.py"]
-        assert "--matrix-seed=cycle-1" in cfg["tool"]["mutmut"]["pytest_add_cli_args"]
+        # The seed reaches the engine, and so every run it starts, as the
+        # sample's variable, never as an argument (matrix_sample.SEED_ENV).
+        runs = [c for c in calls if c["args"][:1] == ["run"]]
+        assert runs and all(c["matrix_seed"] == "cycle-1" for c in runs), calls
+        assert record["oracle"]["matrix_seed"] == "cycle-1"
+        # Every argument mutmut is handed is one a pytest run in a project
+        # whose plugins define no matrix option parses: both replays' stats
+        # passes refused `--matrix-seed=cycle-1` (runs 45419776604, 45419781665).
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTEST_ADDOPTS", "MUTATION_ORACLE_MAP", "VERA_MATRIX_CHANGED")}
+        env["PYTHONPATH"] = str(tree)
+        parsed = subprocess.run(
+            [sys.executable, "-m", "pytest", "--rootdir=.", "--collect-only", "-q",
+             *cfg["tool"]["mutmut"]["pytest_add_cli_args"], *cfg["tool"]["mutmut"]["pytest_add_cli_args_test_selection"]],
+            cwd=tree, env=env, capture_output=True, text=True, encoding="utf-8", check=False, timeout=120)
+        assert parsed.returncode == 0, parsed.stdout + parsed.stderr
         oracle = json.loads((tmp_path / "work1" / "oracle-map.json").read_text(encoding="utf-8"))
         assert oracle["modules"]["vera/m.py"] == ["tests/test_m.py"]
         plugin = tmp_path / "work1" / "tree" / "tests" / "mutation_oracle.py"

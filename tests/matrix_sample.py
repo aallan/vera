@@ -45,7 +45,10 @@ Within those rules a cell is chosen by a hash of the seed and its node id,
 so the sample is the same in every process, on every platform and every
 Python version, and the seed is the ISO week: it rotates weekly and is
 stable within a week.  ``--matrix-seed`` names another (a past week's, to
-reproduce its sample).  ``--matrix=full`` runs every cell of every marked
+reproduce its sample), and so does the variable ``VERA_MATRIX_SEED`` when
+the option is not given: the mutation lanes name their seed so, since
+mutmut hands its arguments to every pytest run it starts, in projects where
+no plugin defines the option.  ``--matrix=full`` runs every cell of every marked
 file and ``--matrix=sample`` samples every one, whatever the variable says;
 the coverage job, the release merge's push, the nightly run and the
 pre-commit hook's run of a staged test file pass ``--matrix=full``.  A test
@@ -96,6 +99,11 @@ FUNCTION_KEEP_TOKENS = frozenset({"repro"})
 #: changes that a matrix can be decided by, one repository-relative path per
 #: line (the plan job in .github/workflows/ci.yml).
 CHANGED_ENV = "VERA_MATRIX_CHANGED"
+
+#: The sample's seed, when ``--matrix-seed`` is not given (the mutation
+#: lanes, scripts/mutate_diff.py's MATRIX_SEED_ENV): a variable no pytest
+#: run can refuse as an argument it does not know.
+SEED_ENV = "VERA_MATRIX_SEED"
 
 _SEED_KEY = "vera_matrix_seed"
 _SAMPLED_KEY = "vera_matrix_sampled_out"
@@ -233,6 +241,7 @@ def _seed(config: pytest.Config) -> str:
         seed = (
             config.getoption("matrix_seed")
             or workerinput.get(_SEED_KEY)
+            or os.environ.get(SEED_ENV)
             or iso_week()
         )
         config._vera_matrix_seed = seed  # type: ignore[attr-defined]

@@ -1458,8 +1458,9 @@ and the shards and the test matrix hand that list to the suite as `VERA_MATRIX_C
 the file (`tests/matrix_sample.py`), pinned for a week: a cell is chosen by a
 hash of the ISO week and its node id, so every worker and every cell of the
 CI matrix draws the same sample, which the shards divide between them, and the next week draws another.
-`--matrix-seed` names a past week to reproduce its sample, and
-`--matrix=sample` samples every marked file whatever changed.
+`--matrix-seed` names a past week to reproduce its sample (the variable
+`VERA_MATRIX_SEED` does too when the option is not given, as the mutation
+lanes name theirs), and `--matrix=sample` samples every marked file whatever changed.
 
 The marker has a second reading: the files whose marker names a module are
 part of that module's mutation oracle, the only tests the mutation lanes run

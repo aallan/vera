@@ -190,6 +190,13 @@ CONTEXT_LINES = 2
 #: one, runs every cell.
 MATRIX_CHANGED_ENV = "VERA_MATRIX_CHANGED"
 
+#: The variable the matrix sample reads its seed from (``tests/matrix_sample.py``
+#: ``SEED_ENV``).  The lanes name their seed here, never as ``--matrix-seed``:
+#: mutmut hands ``pytest_add_cli_args`` to every pytest run it starts, and a
+#: run whose plugins do not define that option refuses it (the stats pass of a
+#: project with no such plugin, runs 45419776604 and 45419781665).
+MATRIX_SEED_ENV = "VERA_MATRIX_SEED"
+
 #: The variable that names the window file for the engine's ``run``.
 WINDOW_ENV = "MUTATE_DIFF_WINDOW"
 
@@ -2603,6 +2610,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         record["matrix_changed"] = matrix_changed
         seed = f"diff-{head[:12]}"
         record["matrix_seed"] = seed
+        env[MATRIX_SEED_ENV] = seed
         record["oracle"] = {"rule": oracle["rule"], "tests": len(tests),
                             "modules": {path: oracle["modules"][path] for path in files}}
         for path in files:
@@ -2633,8 +2641,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
 
         def config_for(dropped: Sequence[str]) -> str:
             return rewrite_config(config, only_mutate=files, selection=tests, extra_tests=(),
-                                  extra_args=[f"--matrix-seed={seed}",
-                                              *(f"--deselect={test}" for test in dropped)])
+                                  extra_args=[f"--deselect={test}" for test in dropped])
 
         # Two passes: mutmut runs a run's mutants cheapest first across every
         # function, so one run over all of them leaves a widely covered

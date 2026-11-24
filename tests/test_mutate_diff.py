@@ -48,6 +48,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tests import matrix_sample as ms
 from tests.mutation_engine import starts_the_engine
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -2958,6 +2959,7 @@ with log.open("a", encoding="utf-8") as fh:
                          "git_dir": os.environ.get("GIT_DIR"),
                          "columns": os.environ.get("COLUMNS"),
                          "matrix_changed": os.environ.get("VERA_MATRIX_CHANGED"),
+                         "matrix_seed": os.environ.get("VERA_MATRIX_SEED"),
                          "oracle_map": os.environ.get("MUTATION_ORACLE_MAP")}) + "\\n")
 if args[0] == "list-window":
     request = json.loads(sys.stdin.read())
@@ -3171,7 +3173,11 @@ class TestEndToEnd:
         # repository's selection (tests/test_old.py).
         assert cfg["pytest_add_cli_args_test_selection"] == [
             "tests/test_m.py", "tests/test_new.py", "tests/test_via_helper.py"]
-        assert f"--matrix-seed=diff-{record['head'][:12]}" in cfg["pytest_add_cli_args"]
+        # The run's seed reaches the engine as the sample's variable, never
+        # as an argument a project with no matrix plugin refuses (#1838).
+        assert run["matrix_seed"] == f"diff-{record['head'][:12]}" == record["matrix_seed"]
+        assert md.MATRIX_SEED_ENV == ms.SEED_ENV
+        assert not any(a.startswith("--matrix-seed") for a in cfg.get("pytest_add_cli_args", []))
         assert record["oracle"]["modules"] == {
             "vera/m.py": ["tests/test_m.py", "tests/test_new.py", "tests/test_via_helper.py"]}
         oracle = json.loads((tmp_path / "work" / "oracle-map.json").read_text(encoding="utf-8"))

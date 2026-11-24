@@ -328,6 +328,7 @@ _FULL = 1 + 300 + 12 + 50 + 200 + 300
 
 def _pytest(
     tmp_path: Path, *args: str, changed: str | None = None, files: dict[str, str] | None = None,
+    seed: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """pytest over the synthetic files, with `VERA_MATRIX_CHANGED` set to
     `changed` or, by default, absent: CI sets it for the suite itself, and a
@@ -343,8 +344,11 @@ def _pytest(
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     env.pop("PYTEST_ADDOPTS", None)
     env.pop(CHANGED, None)
+    env.pop(ms.SEED_ENV, None)
     if changed is not None:
         env[CHANGED] = changed
+    if seed is not None:
+        env[ms.SEED_ENV] = seed
     return subprocess.run(
         [
             sys.executable, "-m", "pytest", "-p", "tests.matrix_sample",
@@ -432,6 +436,23 @@ class TestThePlugin:
         other = _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W42"))
         assert one == again
         assert one != other
+
+    def test_repro_the_variable_names_the_seed_and_the_option_outranks_it(self, tmp_path: Path) -> None:
+        """#1838: the mutation lanes name the seed by `VERA_MATRIX_SEED`,
+        since mutmut hands its pytest arguments to every run it starts and a
+        project whose plugins do not define `--matrix-seed` refuses that
+        option (both replays' self-tests, runs 45419776604 and 45419781665).
+        The variable alone draws the option's sample; given both, the
+        option's seed is drawn."""
+        week41 = _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W41"))
+        week42 = _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W42"))
+        assert week41 != week42
+        assert _collected(_pytest(tmp_path, "--collect-only", "-q", seed="2026-W42")) == week42
+        assert _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W41",
+                                  seed="2026-W42")) == week41
+        result = _pytest(tmp_path, "-q", seed="2026-W42")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert re.search(r"\d+ matrix cells sampled out \(seed 2026-W42\)", result.stdout), result.stdout
 
     def test_xdist_workers_collect_one_sample(self, tmp_path: Path) -> None:
         """Two workers that sampled differently would stop the run with
