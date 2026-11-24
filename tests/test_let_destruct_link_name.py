@@ -104,3 +104,50 @@ def test_repro_a_destructure_of_a_user_data_type_is_proved() -> None:
             if o.fn_name == "f" and o.kind == "ensures"] == [("ensures", "verified")]
     ran = pipeline.run(_REPRO, "f", [0], file=FILE)
     assert ran.ok and ran.value == 5, ran.trap
+
+
+_LINKED = """\
+private data Box {{ MkBox(Int) }}
+
+type Alias = Box;
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{{
+  let {shape}<@Int> = MkBox(5);
+  @Int.0
+}}
+"""
+
+
+@pytest.mark.parametrize("shape, linked", [
+    ("MkBox", "Box$MkBox"), ("Box", "Box"), ("Alias", "Alias")])
+def test_the_linker_names_a_destructures_constructor(shape: str, linked: str) -> None:
+    """The root of #1924, at the linker: a destructure that names its shape
+    by a constructor carries the constructor's link name, as every other
+    constructor spelling does; one that names it by the type or an alias
+    keeps the type's name.  `MkBox` stayed `MkBox` at 252ddf61."""
+    from vera import ast as vast
+    from vera.binding import bind_program, link
+    from vera.prelude import prelude_declarations
+
+    checked = pipeline.check(_LINKED.format(shape=shape), file=FILE)
+    assert checked.ok, [d.error_code for d in checked.errors]
+    modules = checked.resolved or []
+    prelude, _source = prelude_declarations(
+        checked.program, {m.path: m.program for m in modules})
+    program, _linked_modules = link(
+        checked.program, modules, bind_program(checked.program, modules, prelude))
+    found: list[str] = []
+    stack: list[object] = [program]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, vast.LetDestruct):
+            found.append(node.constructor)
+        if isinstance(node, vast.Node):
+            stack.extend(getattr(node, name) for name in node.__dataclass_fields__)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    assert found == [linked], found

@@ -573,6 +573,126 @@ def test_repro_an_element_predicate_with_a_helper_is_not_shared() -> None:
     assert not ran.ok, ran
 
 
+_SHARED_HELPER_INT_ELEMENTS = """\
+private fn ident(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+type R = { @Int | ident(@Int.0) == @Int.0 };
+
+public fn f(@Array<R> -> @Bool)
+  requires(array_length(@Array<R>.0) == 2)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  @Array<R>.0[0] == @Array<R>.0[1]
+}
+
+public fn go(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f([1, 2])
+}
+"""
+
+
+def test_repro_an_int_element_predicate_with_a_helper_is_not_shared() -> None:
+    """The same rule over an `Int` element refinement, which `_element_facts`
+    stated under the index quantifier before #1814: at 252ddf61 `vera
+    verify` proved `a[0] == a[1]` (every fact Tier 1), and `go` fails `f`'s
+    postcondition at run time."""
+    verified = pipeline.verify(_SHARED_HELPER_INT_ELEMENTS, file=FILE)
+    statuses = [(o.kind, o.status) for o in verified.obligations
+                if o.fn_name == "f" and o.kind == "ensures"]
+    assert statuses and all(s != "verified" for _, s in statuses), statuses
+    ran = pipeline.run(pipeline.compile(_SHARED_HELPER_INT_ELEMENTS, file=FILE),
+                       "go", [0])
+    assert not ran.ok, ran
+
+
+_SHARED_HELPER_NESTED = """\
+private fn ident(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+type RI = { @Int | ident(@Int.0) == @Int.0 };
+
+public fn f(@Array<Option<RI>> -> @Bool)
+  requires(array_length(@Array<Option<RI>>.0) == 2)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  match @Array<Option<RI>>.0[0] {
+    Some(@Int) -> match @Array<Option<RI>>.0[1] {
+      Some(@Int) -> @Int.0 == @Int.1,
+      None -> true
+    },
+    None -> true
+  }
+}
+"""
+
+
+def test_repro_a_nested_element_predicate_with_a_helper_is_not_shared() -> None:
+    """The rule one level down: an element's payload refinement that calls
+    a helper is not stated under the quantifier, or every payload would be
+    equal and the postcondition proved."""
+    verified = pipeline.verify(_SHARED_HELPER_NESTED, file=FILE)
+    assert "E500" in [d.error_code for d in verified.errors], [
+        (o.kind, o.status) for o in verified.obligations]
+
+
+_WITHHELD_NESTED_GOAL = """\
+private fn pos(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+type RP = { @Int | pos(@Int.0) > 0 };
+
+type RS = { @Option<RP> | true };
+
+private fn take(@Array<RS> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn g(@Array<Option<Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take(@Array<Option<Int>>.0)
+}
+"""
+
+
+def test_a_withheld_element_fact_leaves_the_goal_unproved() -> None:
+    """A goal whose element fact is withheld (a payload predicate calling a
+    helper) is incomplete, so the narrowing of an arbitrary array into
+    `Array<RS>` is not proved by the `true` that is left."""
+    verified = pipeline.verify(_WITHHELD_NESTED_GOAL, file=FILE)
+    rows = [o.status for o in verified.obligations
+            if o.fn_name == "g" and o.kind == "refine_bind"]
+    assert rows and "verified" not in rows, rows
+
+
 _NO_BINDER = """\
 private data Box { MkBox(Int) }
 

@@ -3849,8 +3849,6 @@ class SmtContext:
         for stated in (self._base_facts(const, ty) if binder
                        else self._type_facts(const, ty)):
             self.assume(stated)
-        for stated in self._invariant_facts(const, ty):
-            self.assume(stated)
         return const
 
     def bound_stand_in(self, ty: Type) -> z3.ExprRef | None:
@@ -4242,11 +4240,17 @@ class SmtContext:
                         idx = self._find_ctor_index(
                             val.sort(), stmt.constructor)
                         if (idx is None
+                                and (stmt.constructor
+                                     in self._alias_env.data_types
+                                     or stmt.constructor
+                                     in self._alias_env.aliases)
                                 and isinstance(val.sort(), z3.DatatypeSortRef)
                                 and val.sort().num_constructors() == 1):
-                            # The shape named by its TYPE (`let Box<…>`),
-                            # which the checker accepted for the value's
-                            # one constructor (#1924).
+                            # The shape named by its TYPE (`let Box<…>`, an
+                            # alias of it), which the checker accepted for
+                            # the value's one constructor.  A shape named by
+                            # its constructor is found above under the link
+                            # name the linker gave it (#1924).
                             idx = 0
                         if (idx is not None
                                 and val.sort().constructor(idx).arity()

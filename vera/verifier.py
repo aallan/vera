@@ -11221,13 +11221,9 @@ class ContractVerifier:
         if isinstance(element_ty, RefinedType):
             pred = self._translate_refined_predicate(
                 smt, element_ty, element_term)
-            chain = self._refined_chain(element_ty)
-            if (pred is not None and chain is not None
-                    and isinstance(chain[0], AdtType)
-                    and not self._per_element(pred, element_term)):
-                # #1814: a data type's predicate is decided now, and one
-                # that calls a helper would share the helper's one result
-                # across every element (`_per_element`).
+            if pred is not None and not self._per_element(pred, element_term):
+                # A predicate that calls a helper would share the helper's
+                # one result across every element (`_per_element`).
                 pred = None
             if pred is None:
                 complete = False
@@ -11238,8 +11234,9 @@ class ContractVerifier:
         # quantifier covers every depth rather than one per level.
         sub_facts, sub_complete = self._nested_refinement_facts(
             smt, element_ty, element_term, _seen)
-        body.extend(sub_facts)
-        complete = complete and sub_complete
+        own = [f for f in sub_facts if self._per_element(f, element_term)]
+        body.extend(own)
+        complete = complete and sub_complete and len(own) == len(sub_facts)
         if not body:
             return [], complete
         inner = z3.And(*body) if len(body) > 1 else body[0]
@@ -11309,9 +11306,9 @@ class ContractVerifier:
         arm's binder reads the levels below from its own declared type).
 
         Assumed only of a constant whose value the program checked before any
-        reader sees it: a parameter, a predicate's binder, a stand-in, a
-        binder stand-in (each caller says which check).  A fact of the head and of a nested refinement over a
-        primitive base is stated where it was before (`declare_nat`,
+        reader sees it: a parameter, a predicate's binder, a node's stand-in
+        (each caller says which check).  A fact of the head and of a nested
+        refinement over a primitive base is stated where it was before (`declare_nat`,
         `_type_facts`, `_nested_refinement_facts`); this walk states the rest,
         so a fact is never missing at a position, and a duplicate is
         harmless."""
@@ -15134,12 +15131,9 @@ class ContractVerifier:
                 predicate, smt._alias_env)
             if binder_key is not None and binder_key != base_name:
                 inner_env = inner_env.push(binder_key, value_term)
-            elif base_name is None and any(
-                    isinstance(n, ast.SlotRef) for n in fold.walk(predicate)):
-                # A data type's predicate reads its value under a binder
-                # this did not find; one that reads no slot (`{ @Box |
-                # false }`) is decided as written.
-                return None
+            # A key of None is a predicate that holds no slot reference
+            # (`naming.predicate_binder_key`): over a data type (`{ @Box |
+            # false }`) it is decided as written, with no binder bound.
             translated = smt.translate_expr(predicate, inner_env)
             if translated is None or translated.sort() != z3.BoolSort():
                 # One untranslatable level makes the whole membership
