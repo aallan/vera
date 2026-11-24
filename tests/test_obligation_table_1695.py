@@ -2013,11 +2013,9 @@ public fn f(@Int -> @Int)
 # ---------------------------------------------------------------------
 # The fourth join: a value produced inside a `handle` body (#1695).  The
 # table hands the requirement there as it does through a block, an `if` and
-# a `match`, and lists the rows the hand-down alone produces unguarded: code
-# generation hands no requirement into a handle (its coercion walk stops at
-# it), so no store check is emitted there, at base or head (the follow-up
-# closes it).  The verdicts are base's: a disclosure where the solver cannot
-# decide, a refutation where it can.
+# a `match`, and its rows are checks as theirs are: code generation checks a
+# construction by its own row (#1834), inside a handle as outside (#1542).
+# A runtime check where the solver cannot decide, a refutation where it can.
 # ---------------------------------------------------------------------
 
 _HANDLE_VALUE = """\
@@ -2050,25 +2048,34 @@ def _handle_program(form: str, value: str) -> str:
 
 
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))
-def test_a_value_inside_a_handle_is_disclosed_as_at_base(
+def test_a_value_inside_a_handle_is_a_checked_row(
     form: str, tmp_path: Path,
 ) -> None:
-    """Undecided: `tier3_unguarded`/E506 with the row's reason and the fix
-    the user applies today; the module holds no check, as at base, and the
-    run lets the payload through (the follow-up's subject)."""
+    """Undecided: the payload's `refine_bind` row at a handle's value is
+    guardable as at any other join, a check in the module is its runtime
+    half (by the row), the record is `tier3` with no disclosure, and the
+    run refuses a violating payload there (#1542)."""
     from vera.obligations import table as obligation_table
 
     src = _handle_program(form, "float_to_int(@Float64.0)")
     v = _verified(src)
     binds = [(o.status, o.error_code) for o in v.result.obligations
              if o.kind == "refine_bind"]
-    assert binds == [("tier3_unguarded", "E506")], binds
-    e506 = [d for d in v.result.diagnostics if d.error_code == "E506"]
-    assert len(e506) == 1, e506
-    assert obligation_table.REASON_HANDLE_VALUE in e506[0].rationale
-    assert "outside" in e506[0].fix
-    module = pipeline.compile(src).result
-    assert pipeline.checks(module, obligation="refine_bind", function="f") == ()
+    assert binds == [("tier3", "E506")], binds
+    assert not [d for d in v.result.diagnostics
+                if d.error_code == "E506" and "no runtime check" in d.description]
+    compiled = pipeline.compile(src)
+    table = obligation_table.build(compiled.checked.typed)
+    rows = [r for r in table.rows if r.kind == "refine_bind" and r.fn == "f"]
+    assert rows and all(r.guard.check for r in rows), rows
+    answered = {c.row for c in pipeline.checks(
+        compiled.result, obligation="refine_bind", function="f")}
+    assert {r.id for r in rows if r.answered_by is None} <= answered, (
+        rows, answered)
+    out = _run(tmp_path, src, "f", "-5.0")
+    assert "Refinement violation in Some(" in out.stdout + out.stderr, (
+        out.stdout + out.stderr)
+    assert _run(tmp_path, src, "f", "3.0").returncode == 0
 
 
 # A `@Nat` return's value leaves, each discharged in its own branch's
@@ -2325,12 +2332,12 @@ def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
     """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
     clause's value is one the requirement reaches by the table's hand-down
     alone, with no refined target at the position, so there the row is
-    left to its check, which it has none of: base's disclosure, at the row
-    (#1836)."""
+    left to its check, which the construction's store makes (#1836,
+    #1542)."""
     v = _verified(_handle_program(form, "0 - 5"))
     viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
             if o.kind == "refine_bind"]
-    want = ("violated", "E505") if form == "body" else ("tier3_unguarded", "E506")
+    want = ("violated", "E505") if form == "body" else ("tier3", "E506")
     assert [x[:2] for x in viol] == [want], viol
     assert _envelope_inconsistencies(v) == []
 
@@ -2813,9 +2820,9 @@ def test_repro_lane_a_destructure_binder_reads_an_opaque_sources_field_type() ->
     ]
 
 def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
-    """The fix text applied: the payload bound outside the handle and the
-    value constructed from it is a checked store (`tier3`, no disclosure),
-    and the run is refused there."""
+    """The payload bound outside the handle and the value constructed from
+    it is a checked store (`tier3`, no disclosure), as the same construction
+    inside the handle is, and the run is refused there."""
     src = _HANDLE_VALUE.format(eff="pure", handle=(
         "let @Int = handle[State<Int>](@Int = 1) {\n"
         "    get(@Unit) -> { resume(@Int.0) },\n"
@@ -2887,3 +2894,45 @@ def test_no_record_is_made_at_a_site_with_no_row() -> None:
     assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
     assert [d for d in v.result.diagnostics
             if (d.location.line, d.location.column) == site] == []
+
+
+_PIPED = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn inc(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0 + 1
+}
+
+private fn half(@Int, @Nat -> @Int)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / nat_to_int(@Nat.0)
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+    |> half(2)
+    |> inc()
+}
+"""
+
+
+def test_a_piped_calls_row_is_keyed_at_its_stage_1641() -> None:
+    """A piped call's row stands at its stage, where it is written (#1641):
+    its content key carries the stage's line and column, not the pipe's."""
+    from vera.obligations import table as obligation_table
+    table = obligation_table.build(pipeline.typed(_PIPED))
+    keyed = sorted((r.kind, r.content_key[3], r.content_key[4])
+                   for r in table.rows if r.fn == "go"
+                   and r.kind in ("call_pre", "refine_bind"))
+    assert keyed == [("call_pre", 25, 8), ("refine_bind", 25, 8)], keyed

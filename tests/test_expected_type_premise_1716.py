@@ -266,16 +266,19 @@ def test_a_payload_every_leaf_establishes_stays_proved(
 
 
 def _neighbour_records(form: Form, position: str, leaf: str) -> list[str]:
-    """The neighbour's coercion records, as at da406983.  A slot or a call
-    of `Option<PosInt>` beside `None` leaves is no row (every leaf carries
-    the refinement already).  `Some(7)` is its field's row, proved; under an
-    `Exn` handler the construction has no record and the value's row is
-    disclosed (#1695's construction-in-a-handler line); as a tuple field
-    through a join it is the field's guarded row."""
+    """The neighbour's coercion records, as at da406983 bar one branch.  A
+    slot or a call of `Option<PosInt>` beside `None` leaves is no row (every
+    leaf carries the refinement already).  `Some(7)` is its field's row,
+    proved; as a tuple field through a join it is the field's guarded row.
+    Under an `Exn` handler the verifier does not read the construction, so
+    it has no record of its own, and the value's row is checked at run time
+    (`tier3`, paired with the construction's store check): a handle's value
+    is held to its type (#1542), where at da406983 the row was disclosed
+    under a stale reason (#1695's construction-in-a-handler line)."""
     if leaf != "construction":
         return []
     if form.id == "exn_arm":
-        return ["tier3_unguarded"]
+        return ["tier3"]
     if position == "field" and form.id in ("if", "match2", "match3", "block"):
         return ["tier3"]
     return ["verified"]
