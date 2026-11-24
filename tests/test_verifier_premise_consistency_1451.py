@@ -2597,7 +2597,9 @@ def test_1451_a_totality_slice_still_certifies_on_stage_two(
 
     The other direction of the same regime: a TOTALITY axiom is instantiated,
     not treated as foreign, so a slice carrying one is INSIDE the fragment and
-    a stage-2 `sat` establishes its premises.  Stage 1 is forced undecided so
+    a stage-2 `sat` establishes its premises.  The `Array<Int>` parameter's
+    element range (#1814) is the slice's other quantifier, an ELEMENT axiom,
+    instantiated the same way.  Stage 1 is forced undecided so
     the verdict has to come from stage 2 — without that the cell would pass on
     a stage-1 `sat` and say nothing about the regime.
 
@@ -2637,7 +2639,8 @@ public fn f(@Array<Int> -> @Int)
         vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
 
     assert outside and not any(outside), (
-        "a slice carrying only a TOTALITY axiom must be INSIDE the fragment")
+        "a slice carrying a TOTALITY axiom and an ELEMENT range must be "
+        "INSIDE the fragment")
     assert not [
         d for d in result.diagnostics  # type: ignore[attr-defined]
         if d.error_code in ("E538", "E539", "E540")
