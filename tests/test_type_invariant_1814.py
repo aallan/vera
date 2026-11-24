@@ -470,9 +470,8 @@ public fn h2(@Tuple<Int, Int> -> @Tuple<Nat, Int>)
 
 
 def test_the_result_constant_proves_no_return_row() -> None:
-    """The function's own result carries its type's facts on the goal side
-    only: the return position's narrowing is asked of the body's value, and
-    stays a runtime check."""
+    """No fact of the return type answers the return position's narrowing:
+    it is asked of the body's value, and stays a runtime check."""
     statuses = _statuses(_NARROWED_RETURN)["h2"]
     narrowings = [status for kind, status, _ in statuses
                   if kind in ("nat_bind", "refine_bind")]
@@ -614,6 +613,31 @@ def test_repro_a_data_types_predicate_that_reads_no_binder_is_decided() -> None:
     rows = sorted((o.status, o.error_code) for o in verified.obligations
                   if o.fn_name == "f" and o.kind == "refine_bind")
     assert rows == [("verified", ""), ("violated", "E505")], rows
+
+
+_EMPTY_ELEMENTS = """\
+private data Color { Red, Green, Blue }
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+public fn f(@Array<NoColor> -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  0
+}
+"""
+
+
+def test_repro_an_elements_fact_holds_only_inside_the_array() -> None:
+    """An element's fact is stated under the index bounds.  `Array<NoColor>`
+    has a value, `[]`, though `NoColor` has none: stated at an index below 0,
+    at the length or past it, the empty predicate would make the parameter's
+    context unsatisfiable and prove the false postcondition."""
+    verified = pipeline.verify(_EMPTY_ELEMENTS, file=FILE)
+    assert "E500" in [d.error_code for d in verified.errors], [
+        (o.kind, o.status) for o in verified.obligations]
 
 
 def test_a_quotient_stand_in_carries_the_range() -> None:

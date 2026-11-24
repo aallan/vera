@@ -4537,13 +4537,6 @@ class ContractVerifier:
         else:
             result_var = smt.declare_int("@result")
         smt.set_result_var(result_var)
-        # #1814: what the return type states of the result, as `declare_nat`
-        # states a `@Nat` result's range.  The goal side only: the return
-        # position's own rows are asked of the body's value, never of this
-        # constant, and their checks run at the return, before the
-        # postcondition reads the result.
-        for fact in self._type_invariant(smt, ret_type, result_var):
-            smt.assume(fact)
 
         # #1451: the index this function's own obligations start at, so the
         # premise-consistency check below can demote exactly them.  A slice
@@ -11317,8 +11310,7 @@ class ContractVerifier:
 
         Assumed only of a constant whose value the program checked before any
         reader sees it: a parameter, a predicate's binder, a stand-in, a
-        binder stand-in, the function's own result (each caller says which
-        check).  A fact of the head and of a nested refinement over a
+        binder stand-in (each caller says which check).  A fact of the head and of a nested refinement over a
         primitive base is stated where it was before (`declare_nat`,
         `_type_facts`, `_nested_refinement_facts`); this walk states the rest,
         so a fact is never missing at a position, and a duplicate is
