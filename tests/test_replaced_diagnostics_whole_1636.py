@@ -4326,7 +4326,7 @@ def test_e503_e505_a_binder_after_a_wildcard(tmp_path: Path) -> None:
                          "in 'f' may violate the refinement predicate `@Int.0 "
                          '> 0`.\n'
                          '  Counterexample:\n'
-                         '      @Option<P>.0 = Some(MkP(2, 3, 0))',
+                         '      @Option<P>.0 = Some(MkP(0, -1, -9223372036854769955))',
           'location': {'line': 13, 'column': 23, 'file': 'main.vera'},
           'source_line': '    Some(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + '
                          '@Pos.0,',
@@ -4553,7 +4553,7 @@ def test_e503_e505_a_binder_after_a_wildcard_e503(tmp_path: Path) -> None:
           'description': '@Int value narrowing into a @Nat ADT sub-pattern '
                          "bind in 'f' may be negative.\n"
                          '  Counterexample:\n'
-                         '      @Option<P>.0 = Some(MkP(2, -1, 3))',
+                         '      @Option<P>.0 = Some(MkP(0, -1, 1))',
           'location': {'line': 13, 'column': 17, 'file': 'main.vera'},
           'source_line': '    Some(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + '
                          '@Pos.0,',
@@ -4661,7 +4661,7 @@ def test_e503_a_narrowing_at_a_tail_call_if_arm(tmp_path: Path) -> None:
           'description': "@Int value narrowing into a @Nat return type in 'f' "
                          'may be negative.\n'
                          '  Counterexample:\n'
-                         '      @Int.0 = 0',
+                         '      @Int.0 = 100',
           'location': {'line': 17, 'column': 5, 'file': 'main.vera'},
           'source_line': '    wrap(@Int.0)',
           'rationale': 'A @Nat slot carries a non-negativity invariant, but '

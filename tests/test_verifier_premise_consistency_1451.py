@@ -2608,16 +2608,13 @@ def test_1451_a_totality_slice_still_certifies_on_stage_two(
     """
     from vera import verifier as vmod
 
-    # An `Array<Bool>`: its elements state nothing, so the length's TOTALITY
-    # axiom is the slice's only quantifier.  An `Array<Int>`'s elements carry
-    # their range under an index quantifier (#1814), which has no regime.
     source = """\
-public fn f(@Array<Bool> -> @Int)
-  requires(array_length(@Array<Bool>.0) > 2)
+public fn f(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 2)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  array_length(@Array<Bool>.0)
+  array_length(@Array<Int>.0)
 }
 """
     path = _write(tmp_path, source)
