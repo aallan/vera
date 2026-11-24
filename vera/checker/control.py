@@ -92,6 +92,28 @@ def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
     return False
 
 
+def _rigid_named(ty: Type, rigid: Collection[str]) -> list[str]:
+    """The enclosing function's own type variables in *ty*, in the order
+    they first stand, each once."""
+    names: list[str] = []
+
+    def walk(t: Type) -> None:
+        t = base_type(t)
+        if isinstance(t, TypeVar):
+            if "$" not in t.name and t.name in rigid and t.name not in names:
+                names.append(t.name)
+        elif isinstance(t, AdtType):
+            for a in t.type_args:
+                walk(a)
+        elif isinstance(t, FunctionType):
+            for p in t.params:
+                walk(p)
+            walk(t.return_type)
+
+    walk(ty)
+    return names
+
+
 def _open_bindings(value: Type, written: Type,
                    found: dict[str, Type]) -> bool:
     """Bind each open variable of *value* to the part of *written* it
@@ -103,12 +125,12 @@ def _open_bindings(value: Type, written: Type,
         found[value.name] = written
         return True
     value, written = base_type(value), base_type(written)
-    if isinstance(value, AdtType) and isinstance(written, AdtType):
+    if isinstance(value, AdtType) and isinstance(written, AdtType):  # pragma: no mutate — equivalent: a pair of two kinds binds nothing, and the fix then holds the instantiated value to the binder (`_holds_at`), which refuses it
         return (value.name == written.name
                 and len(value.type_args) == len(written.type_args)
                 and all(_open_bindings(a, b, found)
                         for a, b in zip(value.type_args, written.type_args)))
-    if isinstance(value, FunctionType) and isinstance(written, FunctionType):
+    if isinstance(value, FunctionType) and isinstance(written, FunctionType):  # pragma: no mutate — equivalent: as for a data type, the fix's `_holds_at` refuses a pair of two kinds
         return (len(value.params) == len(written.params)
                 and all(_open_bindings(a, b, found)
                         for a, b in zip(value.params, written.params))
@@ -1523,7 +1545,10 @@ class ControlFlowMixin:
                  "is instantiated at it, and match the `let`'s slot.")
         held = self._match_scrutinee
         found: dict[str, Type] = {}
-        if held is None or not _open_bindings(seen, bound, found):
+        if (held is None or not _open_bindings(seen, bound, found)
+                or not self._holds_at(substitute(seen, found), bound)):
+            # No one type for each variable gives the binder's type: a
+            # `let` at the instantiated type would leave the binder refused.
             return prose
         scrutinee, whole = held
         fixed = substitute(whole, found)
@@ -1532,9 +1557,14 @@ class ControlFlowMixin:
         if written is None:
             return prose
         taken = set(self.env.type_aliases) | set(self.env.data_types)
-        name = next(n for n in ("Instance", *(f"Instance{i}"
-                                              for i in range(2, 2 + len(taken))))
-                    if n not in taken)
+        name = next(n for n in ("Instance", *(f"Instance{i}" for i in range(
+            2, 2 + len(taken)  # pragma: no mutate — equivalent: len(taken) + 1 names, so one is free before the bound
+        ))) if n not in taken)
+        # An alias names the enclosing function's own variables it holds
+        # as its parameters, which the slot passes on.
+        own = _rigid_named(fixed, self.env.type_params)
+        if own:
+            name += f"<{', '.join(own)}>"
         return ("The scrutinee holds a function whose type variable the "
                 "call leaves open, which no binder can name: fix the "
                 "variable first, so the call is instantiated at the type "

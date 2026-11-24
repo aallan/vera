@@ -856,6 +856,111 @@ def test_arms_beside_a_lost_variable_are_compared_side_by_side(
     assert (refusal in _codes(source)) is _SIBLINGS[(form, first, second)], source
 
 
+#: E314's two fix texts over a function a call left open, whole.
+_PROSE_FIX = (
+    "The scrutinee holds a function whose type variable the call leaves "
+    "open, which no binder can name: fix the variable first, binding the "
+    "scrutinee with a `let` at the type this binder needs, named by a type "
+    "alias, so the call is instantiated at it, and match the `let`'s slot.")
+
+
+def _concrete_fix(name: str, written: str, scrutinee: str) -> str:
+    return ("The scrutinee holds a function whose type variable the call "
+            "leaves open, which no binder can name: fix the variable first, "
+            "so the call is instantiated at the type this binder needs.  "
+            f"Declare `type {name} = {written};`, bind the scrutinee before "
+            f"the `match` with `let @{name} = {scrutinee};`, and match "
+            f"`@{name}.0`.")
+
+
+def _open_fix(body: str, *, before: str = "", generic: bool = False) -> str:
+    fn = _fn("run(@T -> @Int)" if generic else "main(@Unit -> @Int)", body)
+    if generic:
+        fn = fn.replace("private fn", "private forall<T> fn")
+    source = ("type WW = fn(Int -> Int) effects(pure);\n"
+              "type IS = fn(Int -> String) effects(pure);\n" + before
+              + _PRELUDE + _OPEN_PRODUCERS + fn)
+    (error,) = pipeline.check(source).errors
+    assert error.error_code == "E314", source
+    return error.fix
+
+
+def test_the_open_variable_fix_whole_where_one_type_fixes_it() -> None:
+    assert _open_fix(
+        "match Some(mk_par(())) {\n    Some(@WW) -> 0,\n    None -> 1\n  }"
+    ) == _concrete_fix("Instance", "Option<fn(Int -> Int) effects(pure)>",
+                       "Some(mk_par(()))")
+
+
+def test_the_open_variable_fix_whole_under_a_taken_name() -> None:
+    assert _open_fix(
+        "match Some(mk_par(())) {\n    Some(@WW) -> 0,\n    None -> 1\n  }",
+        before="type Instance = Int;\n"
+    ) == _concrete_fix("Instance2", "Option<fn(Int -> Int) effects(pure)>",
+                       "Some(mk_par(()))")
+
+
+def test_the_open_variable_fix_whole_over_the_function_s_own_variable(
+        ) -> None:
+    """A type holding the enclosing function's own `T` is an alias over
+    `T`, which the slot passes on; applied as written, it clears E314."""
+    fix = _open_fix("match Tuple(@T.0, mk_par(())) {\n    Tuple(@T, @WW) -> 0\n  }",
+                    generic=True)
+    assert fix == _concrete_fix(
+        "Instance<T>", "Tuple<T, fn(Int -> Int) effects(pure)>",
+        "Tuple(@T.0, mk_par(()))")
+
+
+_OWN_VARIABLE_FORMS = {
+    # `T` twice: the alias takes it once
+    "twice": ("match Tuple(@T.0, Tuple(@T.0, mk_par(()))) {\n"
+              "    Tuple(@T, Tuple(@T, @WW)) -> 0\n  }",
+              "Tuple<T, Tuple<T, fn(Int -> Int) effects(pure)>>",
+              "Tuple(@T.0, Tuple(@T.0, mk_par(())))"),
+    # `T` only in a function's parameter, and only in its result
+    "in-a-parameter": ("match Some(mk_tp2(@T.0)) {\n    Some(@FT<T>) -> 0,\n"
+                       "    None -> 1\n  }",
+                       "Option<fn(Int, T -> Int) effects(pure)>",
+                       "Some(mk_tp2(@T.0))"),
+    "in-a-result": ("match Some(mk_rt(@T.0)) {\n    Some(@FR<T>) -> 0,\n"
+                    "    None -> 1\n  }",
+                    "Option<fn(Int -> T) effects(pure)>", "Some(mk_rt(@T.0))"),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_OWN_VARIABLE_FORMS))
+def test_the_open_variable_fix_names_each_own_variable_once(form: str) -> None:
+    body, written, scrutinee = _OWN_VARIABLE_FORMS[form]
+    before = ("type FT<T> = fn(Int, T -> Int) effects(pure);\n"
+              "type FR<T> = fn(Int -> T) effects(pure);\n"
+              + _fn("mk_tp2(@Y -> @fn(X, Y -> Int) effects(pure))",
+                    "fn(@X, @Y -> @Int) effects(pure) { 40 }").replace(
+                        "private fn", "private forall<X, Y> fn")
+              + _fn("mk_rt(@Y -> @fn(X -> Y) effects(pure))",
+                    "fn(@X -> @Y) effects(pure) { @Y.0 }").replace(
+                        "private fn", "private forall<X, Y> fn"))
+    fix = _open_fix(body, before=before, generic=True)
+    assert fix == _concrete_fix("Instance<T>", written, scrutinee), fix
+
+
+@pytest.mark.parametrize("body", [
+    # a variable at two types: no one type gives the binder's
+    pytest.param("match Some(mk_both(())) {\n    Some(@IS) -> 0,\n    None -> 1\n  }",
+                 id="two-types"),
+    # another variable left open: the instantiated type has no written form
+    pytest.param("match Tuple(none_of(()), mk_par(())) {\n    Tuple(_, @WW) -> 0\n  }",
+                 id="no-written-form"),
+    # the variable fixed, the binder still refused: its result differs
+    pytest.param("match Some(mk_oi(())) {\n    Some(@WW) -> 0,\n    None -> 1\n  }",
+                 id="a-misfit-beside-it"),
+])
+def test_the_open_variable_fix_whole_in_prose(body: str) -> None:
+    before = _fn("mk_oi(@Unit -> @fn(X -> Option<Int>) effects(pure))",
+                 "fn(@X -> @Option<Int>) effects(pure) { None }").replace(
+                     "private fn", _G)
+    assert _open_fix(body, before=before) == _PROSE_FIX
+
+
 def test_a_narrower_clause_binder_is_guarded_once_1896() -> None:
     """`throw(@Nat)` under `Exn<Int>` binds a `Nat`: the bind is the one
     narrowing, so the clause's `@Nat.0` returned at `-> @Nat` is no second

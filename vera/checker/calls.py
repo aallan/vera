@@ -683,10 +683,10 @@ class CallsMixin:
         flowing to a type, so it keeps the reading it had, each variable a
         wildcard one position at a time (`_compatible_modulo_typevars`),
         with no function value fitting only by a narrowing (#1885)."""
-        if is_subtype(ty, other):
-            return True
-        if not (contains_typevar(ty) or contains_typevar(other)):
-            return False
+        if is_subtype(ty, other):  # pragma: no mutate — unreached as taken: both callers ask where the join failed at a lost variable, which no subtype holds (0 of 28 calls)
+            return True  # pragma: no mutate — unreached, as above
+        if not (contains_typevar(ty) or contains_typevar(other)):  # pragma: no mutate — unreached as taken: a lost variable is a type variable (0 of 28 calls without one)
+            return False  # pragma: no mutate — unreached, as above
         outcome = self._join_parts(ty, other)
         if outcome.joined is not None:
             return unfit_function_value(ty, other) is None  # pragma: no mutate — unreached: both callers ask only where this join failed, and it is asked again of the same pair (0 of 28 calls joined)
