@@ -70,6 +70,7 @@ def _run(tmp_path: Path, files: Mapping[str, str | bytes], *args: str,
     `--json`: the entry's path, the text output and the first diagnostic."""
     for name, text in files.items():
         target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(text, bytes):
             target.write_bytes(text)
         else:
@@ -238,6 +239,18 @@ PRE_CHECKER: dict[str, tuple[str, dict[str, str | bytes]]] = {
     "E013_transform": ("E013", {"main.vera": "import a;\n" + _INT + "  @Int.0\n}\n",
                                 "a.vera": _STR.replace("fn f", "fn g")
                                 + '  "bad \\q"\n}\n'}),
+    # #1904: an import of a path that finds another file than the path is
+    # bound to, and of a file by another path than it is bound to, each
+    # met in the document.
+    "E014": ("E014", {"main.vera": "import a.mid;\nimport lib;\n" + _INT + "  @Int.0\n}\n",
+                      "lib.vera": _INT.replace("fn f", "fn g") + "  @Int.0\n}\n",
+                      "a/lib.vera": _INT.replace("fn f", "fn h") + "  @Int.0\n}\n",
+                      "a/mid.vera": "import lib;\n" + _INT.replace("fn f", "fn k")
+                      + "  @Int.0\n}\n"}),
+    "E015": ("E015", {"main.vera": "import d.mid;\nimport d.lib;\n" + _INT + "  @Int.0\n}\n",
+                      "d/lib.vera": _INT.replace("fn f", "fn g") + "  @Int.0\n}\n",
+                      "d/mid.vera": "import lib;\n" + _INT.replace("fn f", "fn k")
+                      + "  @Int.0\n}\n"}),
     "E020": ("E020", {"main.vera": _INT + "  @Int.0 {- open\n}\n"}),
     "E021": ("E021", {"main.vera": "public fn f(@Int /* open -> @Int)\n" + _H
                       + "  @Int.0\n}\n"}),
