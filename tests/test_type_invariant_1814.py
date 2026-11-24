@@ -504,6 +504,32 @@ def test_an_arithmetic_stand_in_does_not_answer_its_own_row(op: str) -> None:
     assert all(status != "verified" for _, status in rows), rows
 
 
+_EMPTY_PAYLOAD = """\
+private data Color { Red, Green, Blue }
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+public fn f(@Option<NoColor> -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  0
+}
+"""
+
+
+def test_repro_a_payloads_fact_holds_only_under_its_constructor() -> None:
+    """A fact of a constructor's field is stated under that constructor's
+    recognizer.  `Option<NoColor>` has a value, `None`, though `NoColor` has
+    none: stated of the `Some` accessor unconditionally, the empty predicate
+    would make every parameter's context unsatisfiable and prove the false
+    postcondition."""
+    verified = pipeline.verify(_EMPTY_PAYLOAD, file=FILE)
+    assert "E500" in [d.error_code for d in verified.errors], [
+        (o.kind, o.status) for o in verified.obligations]
+
+
 def test_a_quotient_stand_in_carries_the_range() -> None:
     """A quotient's own row asks of its operands (`a == INT_MIN && b == -1`,
     #1598), never of the value the division leaves, so a division's stand-in
