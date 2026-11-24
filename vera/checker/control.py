@@ -68,7 +68,7 @@ def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
     """Whether one of the enclosing function's own type variables
     (*rigid*) stands anywhere in *ty*."""
     if isinstance(ty, TypeVar):
-        return fresh_typevar_origin(ty) is None and ty.name in rigid
+        return fresh_typevar_origin(ty) is None and ty.name in rigid  # pragma: no mutate — equivalent: *rigid* is the enclosing function's declared type parameters, whose names hold no `$` (`UPPER_IDENT`), so a name in it is never a minted one and the first conjunct never decides
     if isinstance(ty, AdtType):
         return any(_holds_variable(a, rigid) for a in ty.type_args)
     if isinstance(ty, FunctionType):
@@ -101,7 +101,7 @@ def _rigid_named(ty: Type, rigid: Collection[str]) -> list[str]:
     def walk(t: Type) -> None:
         t = base_type(t)
         if isinstance(t, TypeVar):
-            if (fresh_typevar_origin(t) is None and t.name in rigid
+            if (fresh_typevar_origin(t) is None and t.name in rigid  # pragma: no mutate — equivalent: as in `_holds_variable`, a name in *rigid* is a declared one, never a minted one, so the first conjunct never decides
                     and t.name not in names):
                 names.append(t.name)
         elif isinstance(t, AdtType):
@@ -608,9 +608,9 @@ class ControlFlowMixin:
                     and node.node_id in self.node_semantic_types):
                 self.node_semantic_types[node.node_id] = substitute(
                     self.node_semantic_types[node.node_id], sigma)
-            key = ast.span_key(node) if node.span is not None else None
+            key = ast.span_key(node)
             if key is None:
-                continue
+                continue  # pragma: no mutate — unreached: every expression the parser builds has a span, so no completed arm holds one without (run 0 times over 33 test files: those that import this module bar the mutation lane's own, and `tests/test_checker*.py` and `tests/test_typed*.py`)
             if (self.expr_semantic_types is not None
                     and key in self.expr_semantic_types):
                 done = substitute(self.expr_semantic_types[key], sigma)
@@ -687,13 +687,14 @@ class ControlFlowMixin:
                 cast(Type,  # pragma: no mutate — equivalent: `cast` returns its argument; the type it names is read by mypy alone
                      self._join(then_ty, else_ty)), branches)
 
-        # Re-synthesis: a branch with an unresolved type variable is
-        # synthesized again with the other branch's type expected, so a
-        # constructor takes from it the type arguments it cannot fix
-        # itself, and the two are joined.  The join also fills what
-        # re-synthesis does not reach (a `None` inside a `Tuple`), and
-        # joins two branches that both leave a position open; branches of
-        # two types no position reconciles are refused.
+        # Each branch was synthesized once, against the `if`'s own
+        # `expected`, never against its sibling's type (#1866).  Where one
+        # branch leaves a position open and the other none, the open one's
+        # type is joined onto the closed one's, which gives each open
+        # position its type (that one order alone is asked, #1918);
+        # otherwise the join is asked in both orders.  `_complete_arms`
+        # then writes what the join gave into each branch's recorded
+        # types; branches of two types no position reconciles are refused.
         joined: Type | None
         if contains_typevar(then_ty) and not contains_typevar(else_ty):
             joined = self._join(then_ty, else_ty)

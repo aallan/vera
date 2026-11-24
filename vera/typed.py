@@ -912,10 +912,12 @@ def _hidden_at(root: Template, at: tuple[str, ...] | None,
                ) -> frozenset[str]:
     """The type names the generic *root* may write in its result that a
     call written in the file *at* cannot name: none where the generic is
-    the call's own file's, else its file's local names."""
+    the call's own file's, else its file's local names.  *local_names*
+    holds the entry's (`None`, the prelude's too) and each linked
+    module's, the files a template comes from (`_programs`)."""
     if root.origin == at:
         return frozenset()
-    return local_names.get(root.origin, frozenset())
+    return local_names[root.origin]
 
 
 def _call_fix(call: ast.Node, source: str, root: Template, needs: str, *,

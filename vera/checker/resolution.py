@@ -1309,9 +1309,9 @@ class ResolutionMixin:
         """Each type variable of a call's *result_type* the type the result
         is expected at gives a type with no open part (#1684): no variable
         a call left open, no literal's hole and no unknown."""
-        if (expected is None or result_type is None
-                or is_unknown_like(expected)
-                or contains_fresh_typevar(expected)):
+        if expected is None or result_type is None:  # pragma: no mutate — equivalent as to `or` and `and`: with one side None the unification binds a variable to None at most, which the one caller (`_infer_type_args_in_context`) reads as no binding
+            return {}
+        if is_unknown_like(expected) or contains_fresh_typevar(expected):  # pragma: no mutate — equivalent: the bindings below keep none at an open or unknown type, and the call's arguments fix the rest alike (the guard decided 41 calls over the instruments, the checker's and typed program's tests and the corpus; 0 verdicts, instances or recorded types move over the conformance programs and examples without it)
             return {}
         taken: dict[str, Type] = {}
         self._unify_for_inference(result_type, expected, taken)

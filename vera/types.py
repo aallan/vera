@@ -1301,7 +1301,7 @@ def read_open_as_unknown(
     no `fn(Int -> Int)` or `Callback<Int>`, and a binder claiming it would
     apply the function at a type it was not compiled for."""
     if isinstance(ty, TypeVar):
-        if fresh_typevar_origin(ty) is None and ty.name in rigid:
+        if fresh_typevar_origin(ty) is None and ty.name in rigid:  # pragma: no mutate — equivalent: *rigid* is the enclosing function's declared type parameters, whose names hold no `$` (`UPPER_IDENT`), so a name in it is never a minted one and the first conjunct never decides
             return ty
         return UnknownType()
     if isinstance(ty, AdtType):

@@ -1143,6 +1143,211 @@ def test_repro_a_join_writes_no_variable_into_an_arm() -> None:
                     & _variables(recorded[call.node_id])), order
 
 
+#: `None` beside `Some(3)`, as a `match` scrutinee, which sets the `if` no
+#: expected type: the join completes the `None`'s variable.
+_COMPLETING = ("public fn pick(@Bool -> @Int)\n  requires(true)\n"
+               "  ensures(true)\n  effects(pure)\n{\n"
+               "  match if @Bool.0 then { None } else { Some(3) } {\n"
+               "    Some(@Int) -> @Int.0,\n    None -> 0\n  }\n}\n")
+
+
+def test_repro_a_completion_under_the_check_that_records_no_span_table(
+        ) -> None:
+    """`vera check`'s own entry point (`typecheck`) records no span table
+    (`expr_semantic_types` is None): the completion writes the node table
+    and skips the span tables, and the program checks clean."""
+    from vera.checker import typecheck
+
+    parsed = pipeline.parse(_COMPLETING)
+    assert [d.error_code for d in typecheck(parsed.program, _COMPLETING)
+            if d.severity == "error"] == []
+
+
+def test_repro_a_completion_in_a_module_s_body_is_recorded_in_its_table(
+        tmp_path: Path) -> None:
+    """A module's body checked for its own span table
+    (`collect_module_artifacts`, #987) is checked with no node table
+    (`node_semantic_types` is None): the completion writes the span table
+    alone, the `None` recorded `Option<Int>` there."""
+    entry = pipeline.write_tree(tmp_path, {
+        "main.vera": ("import ma(pick);\n\npublic fn main(@Unit -> @Int)\n"
+                      "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+                      "{\n  pick(true)\n}\n"),
+        "ma.vera": "module ma;\n\n" + _COMPLETING})
+    checked = pipeline.check(entry, root=tmp_path,
+                             collect_module_artifacts=True)
+    assert checked.ok
+    semantic, _target = checked.artifacts.module_artifacts[("ma",)]
+    none = next(n for tld in pipeline.parse(
+        "module ma;\n\n" + _COMPLETING).program.declarations
+        for n in fold.walk(tld.decl)
+        if isinstance(n, vast.NullaryConstructor))
+    assert pretty_type(semantic[vast.span_key(none)]) == "Option<Int>"
+
+
+def test_repro_variable_names_reads_a_function_type_s_parts() -> None:
+    """`_variable_names` names the variables of a function type's
+    parameters and result, as of a data type's arguments: the variables a
+    call's instantiation holds inside a function type are held."""
+    from vera.types import FunctionType, PureEffectRow
+
+    fn = FunctionType((TypeVar("A$1"),), AdtType("Option", (TypeVar("B$2"),)),
+                      PureEffectRow())
+    assert _variable_names(fn) == {"A$1", "B$2"}
+    assert _variable_names(AdtType("Array", (fn,))) == {"A$1", "B$2"}
+
+
+def test_repro_an_if_beside_a_lost_variable_takes_the_then_branch() -> None:
+    """Both branches lose a built-in's variable (#1688), so the join
+    leaves it alone and the `if` takes the then branch's type, as two
+    open branches always gave: not E301."""
+    source = (
+        "private forall<X> fn first_of(@Array<X> -> @X)\n"
+        "  requires(array_length(@Array<X>.0) > 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Array<X>.0[0]\n}\n\n"
+        "public fn main(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  match if @Int.0 > 0 then { "
+        "Tuple(array_map([1], first_of([]))[0], 1) } else { "
+        "Tuple(map_values(first_of([]))[0], 2) } {\n"
+        "    Tuple(_, @Int) -> @Int.0\n  }\n}\n")
+    checked = pipeline.check(source)
+    assert checked.ok, [d.error_code for d in checked.errors]
+    (if_,) = [n for tld in checked.program.declarations
+              for n in fold.walk(tld.decl) if isinstance(n, vast.IfExpr)]
+    assert pretty_type(checked.artifacts.node_semantic_types[
+        if_.node_id]).endswith(", Int>")
+
+
+def test_repro_a_match_s_throwing_arm_takes_no_part_in_its_join() -> None:
+    """A `match` with an arm that throws (`Never`) beside a `None` and a
+    `Some(3)`, or a `None` alone, as `idg`'s argument: the throwing arm
+    names no type, before the others, between them or after an open one,
+    so the `match` has the others' type, the `None` completed where a
+    sibling closes it, and the program runs."""
+    def program(arms: str) -> str:
+        return (_PRELUDE + "public fn h(@Int -> @Int)\n  requires(true)\n"
+                "  ensures(true)\n  effects(pure)\n{\n"
+                "  handle[Exn<Bool>] {\n    throw(@Bool) -> { 0 }\n  } in {\n"
+                f"    match idg(match @Int.0 {{ {arms} }}) {{\n"
+                "      Some(@Int) -> @Int.0,\n      None -> 7\n    }\n  }\n}\n")
+
+    for arms, inner, values in (
+            ("0 -> throw(true), 1 -> None, _ -> Some(3)", "Option<Int>",
+             ((0, 0), (1, 7), (2, 3))),
+            ("0 -> throw(true), _ -> Some(3)", "Option<Int>",
+             ((0, 0), (2, 3))),
+            ("0 -> None, _ -> throw(true)", None, ((0, 7), (2, 0)))):
+        checked = pipeline.check(program(arms))
+        assert checked.ok, (arms, [d.error_code for d in checked.errors])
+        recorded = checked.artifacts.node_semantic_types
+        (inner_match,) = [
+            n for tld in checked.program.declarations
+            if isinstance(tld.decl, vast.FnDecl) and tld.decl.name == "h"
+            for n in fold.walk(tld.decl.body)
+            if isinstance(n, vast.MatchExpr)
+            and isinstance(n.scrutinee, vast.SlotRef)]
+        got = recorded[inner_match.node_id]
+        if inner is None:
+            # The `None` alone: no sibling closes it, as outside a branch.
+            assert (isinstance(got, AdtType) and got.name == "Option"
+                    and contains_typevar(got)), (arms, pretty_type(got))
+        else:
+            assert pretty_type(got) == inner, arms
+        for arg, value in values:
+            ran = pipeline.run(program(arms), fn="h", raw_args=[str(arg)])
+            assert ran.value == value, (arms, arg, ran.value)
+
+
+#: A whole binder over a value whose type holds the enclosing function's
+#: own `T` beside a function a call left open (#1896): the binder's and
+#: the value's types are data types, read through their arguments.
+_WHOLE_BINDER = (
+    "type WW = fn(Int -> Int) effects(pure);\n\n"
+    "private forall<A, X> fn mk_tup(@A -> @Tuple<A, fn(X -> Int) "
+    "effects(pure)>)\n  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  Tuple(@A.0, fn(@X -> @Int) effects(pure) { 40 })\n}\n\n"
+    "private forall<T> fn run(@T -> @Int)\n  requires(true)\n"
+    "  ensures(true)\n  effects(pure)\n{\n"
+    "  match mk_tup(@T.0) {\n    @Tuple<T, WW> -> 0\n  }\n}\n")
+
+
+def test_repro_a_whole_binder_reads_its_own_variable_inside_a_data_type(
+        ) -> None:
+    """E314 at `@Tuple<T, WW>` over `mk_tup(@T.0)`: the binder's type
+    holds the function's own `T` inside a `Tuple`, so the reason is the
+    type parameter's; the value's holds the open `X` inside it, so the fix
+    is the `let` that fixes it, and applied it clears the refusal."""
+    (error,) = pipeline.check(_WHOLE_BINDER).errors
+    assert error.error_code == "E314"
+    assert error.rationale.startswith(
+        "A type parameter of the enclosing function stands for every type")
+    assert error.fix == (
+        "The scrutinee holds a function whose type variable the call leaves "
+        "open, which no binder can name: fix the variable first, so the "
+        "call is instantiated at the type this binder needs.  Declare "
+        "`type Instance<T> = Tuple<T, fn(Int -> Int) effects(pure)>;`, bind "
+        "the scrutinee before the `match` with `let @Instance<T> = "
+        "mk_tup(@T.0);`, and match `@Instance<T>.0`.")
+    fixed = ("type Instance<T> = Tuple<T, fn(Int -> Int) effects(pure)>;\n"
+             + _WHOLE_BINDER.replace(
+                 "  match mk_tup(@T.0) {",
+                 "  let @Instance<T> = mk_tup(@T.0);\n"
+                 "  match @Instance<T>.0 {"))
+    assert pipeline.check(fixed).ok
+
+
+# ---------------------------------------------------------------------
+# A join of an open arm and a closed one, asked one way (#1918)
+# ---------------------------------------------------------------------
+
+_IO_FN = 'fn(@Int -> @Int) effects(<IO>) { IO.print("x"); 3 }'
+_PURE_FN = "fn(@Int -> @Int) effects(pure) { 2 }"
+_OPEN_IO = f"Tuple(None, {_IO_FN})"
+_CLOSED_PURE = f"Tuple(Some(1), {_PURE_FN})"
+
+
+def _one_way(join: str) -> tuple[str, ...]:
+    return tuple(sorted(d.error_code for d in pipeline.check(
+        "public fn main(@Bool -> @Int)\n  requires(true)\n  ensures(true)\n"
+        f"  effects(<IO>)\n{{\n  match {join} {{\n    _ -> 0\n  }}\n}}\n"
+    ).errors))
+
+
+_ONE_WAY = ("#1918: a join of an open arm and a closed one is asked one way only, "
+            "so an open arm whose function performs IO beside a closed pure "
+            "one is refused")
+
+
+@pytest.mark.xfail(raises=AssertionError, strict=True, reason=_ONE_WAY)
+def test_repro_an_if_s_open_then_branch_performing_io_is_joined() -> None:
+    assert _one_way(f"if @Bool.0 then {{ {_OPEN_IO} }} "
+                    f"else {{ {_CLOSED_PURE} }}") == ()
+
+
+@pytest.mark.xfail(raises=AssertionError, strict=True, reason=_ONE_WAY)
+def test_repro_an_if_s_open_else_branch_performing_io_is_joined() -> None:
+    assert _one_way(f"if @Bool.0 then {{ {_CLOSED_PURE} }} "
+                    f"else {{ {_OPEN_IO} }}") == ()
+
+
+@pytest.mark.xfail(raises=AssertionError, strict=True, reason=_ONE_WAY)
+def test_repro_a_match_s_open_first_arm_performing_io_is_joined() -> None:
+    assert _one_way(f"match @Bool.0 {{\n    true -> {_OPEN_IO},\n"
+                    f"    false -> {_CLOSED_PURE}\n  }}") == ()
+
+
+def test_repro_a_match_s_open_second_arm_performing_io_is_joined() -> None:
+    """The other order of the `match` above, which the one way asked
+    accepts; the two closed twins of each form check in both orders."""
+    assert _one_way(f"match @Bool.0 {{\n    true -> {_CLOSED_PURE},\n"
+                    f"    false -> {_OPEN_IO}\n  }}") == ()
+    closed_io = f"Tuple(Some(2), {_IO_FN})"
+    for a, b in ((closed_io, _CLOSED_PURE), (_CLOSED_PURE, closed_io)):
+        assert _one_way(f"if @Bool.0 then {{ {a} }} else {{ {b} }}") == ()
+        assert _one_way(f"match @Bool.0 {{\n    true -> {a},\n"
+                        f"    false -> {b}\n  }}") == ()
+
+
 def test_fresh_typevar_origin_names_a_minted_variable_alone() -> None:
     """The one reader of a minted variable's name: `T$2`, which
     `_fresh_typevar` mints for `T`, has the origin `T`; a declared variable

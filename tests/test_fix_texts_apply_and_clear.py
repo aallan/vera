@@ -2284,6 +2284,32 @@ def test_repro_e613_binds_its_own_file_s_type_names(decl: str) -> None:
     assert _passed_codes("check", fixed) == set()
 
 
+def test_repro_e613_binds_a_module_s_own_type_names_in_its_own_body(
+        tmp_path: Path) -> None:
+    """A call in an imported module's own body to that module's generic,
+    whose result is the module's private data type (`Hold<T>`): the call's
+    file is the generic's, so every name resolves where the call is and the
+    fix writes the block (`_hidden_at` hides nothing within one file, for
+    a module as for the entry), which, pasted, clears E613."""
+    lib = _E613_DATA_LIB.replace("VISIBILITY ", "private ").replace(
+        "public forall", "private forall") + "\n" + _E613_ONE_MAIN.replace(
+            "public fn main(@Unit -> @Int)", "public fn run(@Unit -> @Int)"
+        ).format(where="")
+    main = ("import elib(run);\n\npublic fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            "  run(())\n}\n")
+    files = {"elib.vera": lib, "main.vera": main}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    assert f"with the block `{block}` in the call's place" in found.fix, (
+        found.fix)
+    pasted = {**files, "elib.vera": lib.replace(
+        "match one_ord(()) {", f"match {block} {{")}
+    after = _tree_codes(tmp_path / "pasted", pasted)
+    assert after.ok, [d.format() for d in after.errors]
+
+
 _E613_LATER_READ = """\
 private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
   requires(true)
