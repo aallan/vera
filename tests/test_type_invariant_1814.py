@@ -502,3 +502,18 @@ def test_an_arithmetic_stand_in_does_not_answer_its_own_row(op: str) -> None:
             if o.kind == "int_overflow"]
     assert rows, "the operation has its row"
     assert all(status != "verified" for _, status in rows), rows
+
+
+def test_a_quotient_stand_in_carries_the_range() -> None:
+    """A quotient's own row asks of its operands (`a == INT_MIN && b == -1`,
+    #1598), never of the value the division leaves, so a division's stand-in
+    carries the range that value always has: the `+ 0` over it is proved.
+    The `div` cell above holds the quotient's own row a runtime check."""
+    source = (
+        "type IntToInt = fn(Int -> Int) effects(pure);\n\n"
+        "public fn make(@Int -> @IntToInt)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n"
+        "  fn(@Int -> @Int) effects(pure) { (@Int.0 / 2) + 0 }\n}\n")
+    rows = [(o.kind, o.status) for o in pipeline.verify(source, file=FILE).obligations
+            if o.kind == "int_overflow"]
+    assert rows == [("int_overflow", "verified")], rows

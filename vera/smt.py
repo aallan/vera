@@ -455,14 +455,16 @@ def strip_refinements(ty: Type) -> Type:
     return ty
 
 
-#: The operators whose result has an `int_overflow` row (#798, #1875).
-_RANGED_OPS = frozenset({
-    ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL, ast.BinOp.DIV})
+#: The operators whose `int_overflow` row asks the operation's own result to
+#: be in range (#798).  Not `/`: a quotient's row asks of its operands
+#: (`a == INT_MIN && b == -1`, #1598), so a division's stand-in carries the
+#: range, which the value a division leaves always has.
+_RANGED_OPS = frozenset({ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL})
 
 
 def _is_arithmetic(node: object) -> bool:
     """Whether *node* is an operation whose exact integer result a row asks
-    to be in range: an arithmetic operator, a negation, `abs` (#1814)."""
+    to be in range: `+ - *`, a negation, `abs` (#1814, #1875)."""
     if isinstance(node, ast.BinaryExpr):
         return node.op in _RANGED_OPS
     if isinstance(node, ast.UnaryExpr):
