@@ -40,6 +40,14 @@ import typing
 import pytest
 
 from tests import pipeline
+from vera import ast, fold
+from vera.types import (
+    AdtType,
+    FunctionType,
+    Type,
+    base_type,
+    fresh_typevar_origin,
+)
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
@@ -1367,7 +1375,8 @@ def test_an_open_function_call_as_an_element_takes_the_element_type(
 
 #: A sibling's type reaching an open call through a constructor's field or
 #: a tuple's component: a part of the sibling's type, which is no expected
-#: type either (`_part_of`; PR 1864 mutation lane).
+#: type either (the origin `_synth_expr` passes on with the part, #1866;
+#: PR 1864 mutation lane).
 _SIBLING_PARTS = {
     "some": ("Some(mkcell(()))", "Some(@Cell<Nat>.0)"),
     "tuple": ("Tuple(mkcell(()), 1)", "Tuple(@Cell<Nat>.0, 1)"),
@@ -1405,20 +1414,45 @@ _REBUILT = {
 @pytest.mark.parametrize("shape", list(_REBUILT))
 def test_repro_a_branch_takes_its_sibling_s_type_for_its_constructors(
         shape: str) -> None:
-    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the `None`
-    branch is synthesized again against its sibling's `Option<Option<Int>>`
-    (`_synth_against`), so no type the check records holds the variable
-    `None` left open.  Synthesized again with nothing expected, the
-    branch's constructors were recorded at `Option<Option<T$n>>`."""
+    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the join
+    completes the variable the `None` branch's constructors left open in
+    that branch's recorded types (`_complete_arms`, #1866), so no type the
+    check records for a node of the join holds an open variable.  Left as
+    synthesized, the branch's constructors were recorded at
+    `Option<Option<T$n>>`."""
     source = _IDG + "\n" + _fn(
         "f", "@Bool", "Int",
         f"match idg({_REBUILT[shape]}) {{\n  Some(Some(@Int)) -> @Int.0,\n"
         "  Some(None) -> 7,\n  None -> 9\n}")
     checked = pipeline.check(source)
     assert checked.ok, [e.format() for e in checked.errors]
-    open_ = sorted({t for t in checked.artifacts.expr_types.values()
-                    if "$" in t})
+    recorded = checked.artifacts.node_semantic_types
+    joins = [n for tld in checked.program.declarations
+             if isinstance(tld.decl, ast.FnDecl)
+             for n in fold.walk(tld.decl.body)
+             if isinstance(n, (ast.IfExpr, ast.MatchExpr))
+             and any(isinstance(c, ast.ConstructorCall)
+                     for c in fold.walk(n))]
+    assert joins
+    open_ = sorted({str(recorded[n.node_id]) for j in joins
+                    for n in fold.walk(j)
+                    if n.node_id in recorded
+                    and _holds_open_variable(recorded[n.node_id])})
     assert open_ == [], open_
+
+
+def _holds_open_variable(ty: Type) -> bool:
+    """Whether *ty* holds, at any depth, a variable the check minted and
+    left open (`fresh_typevar_origin` names its declared variable)."""
+    base = base_type(ty)
+    if fresh_typevar_origin(base) is not None:
+        return True
+    if isinstance(base, AdtType):
+        return any(_holds_open_variable(a) for a in base.type_args)
+    if isinstance(base, FunctionType):
+        return any(_holds_open_variable(p)
+                   for p in (*base.params, base.return_type))
+    return False
 
 
 @pytest.mark.parametrize("order", ["open_first", "open_second"])
@@ -1429,9 +1463,10 @@ def test_repro_a_sibling_with_no_type_arguments_fixes_nothing(
     of the `if`: the branch is synthesized again against its sibling's
     `Int`, a type with no type arguments, which fixes no variable either,
     so `head_plain` keeps the instance c35763d6 gave it (`Bool`, as an
-    operand gives it nothing), in both orders.  Pins the guard's own
-    identity test (`_part_of`): read as a search of the sibling's
-    arguments alone, `Int` was taken as expected and fixed `T`."""
+    operand gives it nothing), in both orders.  Pins the sibling's own
+    type as no expected type (#1866: no join hands an arm its sibling's
+    type): under a guard that searched the sibling's arguments alone,
+    `Int` was taken as expected and fixed `T`."""
     shape, _ = _SIBLING_SITES[site]
     a, b = "head_plain([])", "@Int.0"
     if order == "open_second":
@@ -1608,9 +1643,9 @@ def test_a_tuple_component_meeting_another_type_is_refused_as_before(
 
 
 # ---------------------------------------------------------------------
-# Issue #1866 (not this PR): the sibling guard tells a sibling's type from
-# another expected type by the identity of the type object.  These pin
-# where it stands, so the change that fixes it moves them.
+# Issue #1866: a sibling's type is told from another expected type by the
+# origin each site states, not by the identity of the type object
+# (`tests/test_sibling_provenance_1866.py` holds every site).
 # ---------------------------------------------------------------------
 
 _EMPTY_ORD_MATCH = {
@@ -1620,20 +1655,16 @@ _EMPTY_ORD_MATCH = {
 
 
 @pytest.mark.parametrize("order", list(_EMPTY_ORD_MATCH))
-def test_issue_1866_a_match_s_arm_order_decides_an_indexed_open_call(
+def test_issue_1866_an_indexed_open_call_is_refused_in_either_arm_order(
         order: str) -> None:
     """`idg(match c { false -> @Int.0, true -> empty_ord(())[0] })`: an
-    index wraps the sibling arm's `Int` in a fresh `Array`, which the
-    guard does not recognise as the sibling's, so the later arm's call
-    takes `Int` from its sibling and is accepted; first, the arm is not
-    synthesized again and keeps the default (E613).  #1866 makes the two
-    orders agree; until then this pins both."""
+    index wraps the sibling arm's `Int` in a fresh `Array`, which keeps the
+    sibling's origin, so the call takes no type from it in either order
+    and keeps the default (E613).  Before #1866 the later arm's call took
+    `Int` from its sibling and was accepted."""
     source = _ORD_PRE + _fn(
         "g", "@Bool, @Int", "Int", f"idg({_EMPTY_ORD_MATCH[order]})")
-    if order == "open_second":
-        assert _instances(source, "empty_ord") == {("Int",)}
-    else:
-        assert _codes(source) == ["E613"]
+    assert _codes(source) == ["E613"]
 
 
 _HEAD_ORD = _fn("head_ord", "@Array<T>", "T", "@Array<T>.0[0]",
@@ -1643,11 +1674,11 @@ _TAKE = _fn("take", "@Int", "Int", "@Int.0 + 1")
 
 @pytest.mark.parametrize("inside", [True, False])
 def test_issue_1866_an_open_argument_inside_a_branch(inside: bool) -> None:
-    """`take(head_ord([]))`: outside a branch `take`'s `Int` parameter
-    fixes `head_ord`'s variable (`head_ord$Int`); inside an `if` branch
-    synthesized again against its sibling, that parameter is the very
-    object the sibling's type holds, the guard takes it for the sibling's,
-    and the call keeps the default (E613), as at c35763d6.  #1866."""
+    """`take(head_ord([]))`: `take`'s `Int` parameter fixes `head_ord`'s
+    variable (`head_ord$Int`) outside a branch and inside an `if` branch
+    synthesized again against its sibling: the parameter is `take`'s,
+    though it is the very object the sibling's type holds.  Before #1866
+    it was taken for the sibling's, and the call kept the default (E613)."""
     if inside:
         body = ("match if @Bool.0 then { Tuple(None, take(head_ord([]))) } "
                 "else { @Tuple<Option<Int>, Int>.0 } {\n"
@@ -1656,10 +1687,7 @@ def test_issue_1866_an_open_argument_inside_a_branch(inside: bool) -> None:
         body = "take(head_ord([]))"
     source = (_HEAD_ORD + "\n" + _TAKE + "\n"
               + _fn("g", "@Bool, @Tuple<Option<Int>, Int>", "Int", body))
-    if inside:
-        assert _codes(source) == ["E613"]
-    else:
-        assert _instances(source, "head_ord") == {("Int",)}
+    assert _instances(source, "head_ord") == {("Int",)}
 
 
 # ---------------------------------------------------------------------
@@ -1970,9 +1998,9 @@ def test_an_index_of_a_typed_collection_is_synthesized_once(
 
 
 def test_issue_1866_the_workaround_binds_at_its_type_inside_the_arm() -> None:
-    """KNOWN_ISSUES.md's workaround for #1866: bind the value that leaves
-    the variable open at its type with a `let` inside the arm or branch,
-    which runs only when that arm does.  `empty_ord(())` bound at
+    """The binding E613's fix writes for #1866's refused forms: bind the
+    value that leaves the variable open at its type with a `let` inside
+    the arm or branch, which runs only when that arm does.  `empty_ord(())` bound at
     `Array<Int>` (or its element at `Int`) in either arm order, and the
     empty argument of `head_ord` bound at `Array<Int>` inside either
     branch, each build their call at `Int`."""

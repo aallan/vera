@@ -1299,9 +1299,13 @@ def read_open_as_unknown(
     behaviour was compiled at a type of its own, which no context fixes
     afterwards, so a `fn(X -> Int)` or a `Callback<X>` a call left open is
     no `fn(Int -> Int)` or `Callback<Int>`, and a binder claiming it would
-    apply the function at a type it was not compiled for."""
+    apply the function at a type it was not compiled for.
+
+    A variable is the enclosing function's where its name is in *rigid*: a
+    variable a call minted (`T$3`) never is, since a minted name holds a
+    `$` and a declared one cannot (`UPPER_IDENT`)."""
     if isinstance(ty, TypeVar):
-        if "$" not in ty.name and ty.name in rigid:
+        if ty.name in rigid:
             return ty
         return UnknownType()
     if isinstance(ty, AdtType):
@@ -1326,13 +1330,26 @@ def is_unknown_like(ty: Type | None) -> bool:
     return isinstance(base_type(ty), (UnknownType, UnresolvedAdtType))
 
 
+def fresh_typevar_origin(ty: Type) -> str | None:
+    """The declared name the fresh placeholder *ty* was minted for, `T` for
+    `T$2`; None for any other type.  The writer of the form is
+    `CallsMixin._fresh_typevar` (`vera/checker/calls.py`), which appends
+    `$` and a number to a declared variable's name, and a declared name
+    holds no `$` (`UPPER_IDENT` in `vera/grammar.lark`), so the name is
+    the text before the one `$`."""
+    if not isinstance(ty, TypeVar):
+        return None
+    head, mark, _ = ty.name.partition("$")  # pragma: no mutate — equivalent: `_fresh_typevar` appends one `$` to a declared name, which holds none (`UPPER_IDENT`), so the first `$` is the last
+    return head if mark else None
+
+
 def _is_fresh_typevar(ty: Type) -> bool:
     """A fresh, unresolved inference placeholder (`A$1` from _fresh_typevar).
 
     Distinct from a genuine callee forall var (`T`, no `$`): a fresh var is a
     "don't-know-yet" hole that a more-determined sibling binding should fill.
     """
-    return isinstance(ty, TypeVar) and "$" in ty.name
+    return fresh_typevar_origin(ty) is not None
 
 
 def contains_fresh_typevar(ty: Type) -> bool:

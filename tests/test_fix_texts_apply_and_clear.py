@@ -1934,14 +1934,14 @@ def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
     assert fix == (
         "No argument of 'pair_ord(())' fixes A, B, so the call "
         "instantiates 'pair_ord' at Bool, nothing giving its result a "
-        "type: bind its result at a type that supports 'Ord' (a `let` of "
-        "that type), or give 'pair_ord' a parameter for each of A, B "
+        "type: bind its result at a type that supports 'Ord', with the "
+        "block `{ let @Option<Tuple<Int, Int>> = pair_ord(()); "
+        "@Option<Tuple<Int, Int>>.0 }` in the call's place; or give "
+        "'pair_ord' a parameter for each of A, B "
         "('@A', '@B') and pass each a value at a type that supports "
         "'Ord', Int for example."), fix
-    bound = _E613_TWO_VARIABLES.replace(
-        "  match pair_ord(()) {",
-        "  let @Option<Tuple<Int, Int>> = pair_ord(());\n"
-        "  match @Option<Tuple<Int, Int>>.0 {")
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    bound = _E613_TWO_VARIABLES.replace("pair_ord(()) {", f"{block} {{")
     assert "E613" not in _passed_codes("check", bound)
     carried = (_E613_TWO_VARIABLES
                .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
@@ -1974,3 +1974,391 @@ def test_e613_offers_no_binding_where_the_result_holds_some_variables() -> None:
                .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
                .replace("pair_ord(())", "pair_ord((), 1, 2)"))
     assert "E613" not in _passed_codes("check", carried)
+
+
+#: One variable no argument fixes, the result's type written to hold it:
+#: plainly, and through an alias whose body drops it, so its resolved type
+#: holds none (PR 1907 review).  (The result type, the body.)
+_E613_ONE = {
+    "plain": ("@Option<T>", "None"),
+    "erased_alias": ("@Erased<T>", "0"),
+}
+
+_E613_ONE_FN = """\
+{vis}forall<T where Ord<T>> fn one_ord(@Unit -> {result})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+"""
+
+_E613_ONE_MAIN = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match one_ord(()) {{
+    _ -> 0
+  }}
+}}
+{where}"""
+
+_ERASED = "type Erased<T> = Int;\n\n"
+
+
+def _e613_one(place: str, result: str) -> dict[str, str]:
+    """The program, as its files: the generic in the entry, in an imported
+    module, or a `where` helper of `main`."""
+    ret, body = _E613_ONE[result]
+    if place == "entry":
+        return {"main.vera": _ERASED + _E613_ONE_FN.format(
+            vis="private ", result=ret, body=body)
+            + "\n" + _E613_ONE_MAIN.format(where="")}
+    if place == "module":
+        return {"elib.vera": "module elib;\n\n" + _ERASED + _E613_ONE_FN.format(
+                    vis="public ", result=ret, body=body),
+                "main.vera": "import elib;\n\n" + _ERASED
+                + _E613_ONE_MAIN.format(where="")}
+    helper = "\n".join(f"  {ln}" if ln else ln for ln in _E613_ONE_FN.format(
+        vis="", result=ret, body=body).splitlines())
+    return {"main.vera": _ERASED + _E613_ONE_MAIN.format(
+        where=f"where {{\n{helper}\n}}\n")}
+
+
+def _tree_codes(root: Path, files: dict[str, str]):  # type: ignore[no-untyped-def]
+    return pipeline.check(pipeline.write_tree(root, files))
+
+
+@pytest.mark.parametrize("result", list(_E613_ONE))
+@pytest.mark.parametrize("place", ["entry", "module", "where"])
+def test_e613_offers_a_binding_only_where_it_fixes_the_variable(
+        place: str, result: str, tmp_path: Path) -> None:
+    """The fix offers the binding it writes out only where the type the
+    check gave the call holds the variable the call left open: a plain
+    result, for the entry's generic, a module's and a `where` helper's
+    alike.  Pasted where the call is, it clears E613.  Through
+    `Erased<T>`, which resolves to `Int`, it offers the parameter alone,
+    never a binding read off the written type; applied, that clears E613
+    in every cell."""
+    files = _e613_one(place, result)
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    offered = re.findall(r"`(\{ let @[^`]+ = one_ord\(\(\)\); @[^`]+\.0 \})` "
+                         r"in the call's place", found.fix)
+    assert bool(offered) == (result == "plain"), found.fix
+    for block in offered:
+        bound = {name: text.replace("match one_ord(()) {",
+                                    f"match {block} {{")
+                 for name, text in files.items()}
+        after = _tree_codes(tmp_path / "bound", bound)
+        assert after.ok, [d.format() for d in after.errors]
+    carried = {name: text.replace("fn one_ord(@Unit -> ",
+                                  "fn one_ord(@Unit, @T -> ")
+               .replace("one_ord(())", "one_ord((), 1)")
+               for name, text in files.items()}
+    after = _tree_codes(tmp_path / "carried", carried)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+#: Two generics whose variables' names could mislead a reading by name:
+#: `T` that no argument fixes and the result does not hold beside a `U` an
+#: argument fixes, and a result that holds one of two variables left open.
+_E613_NAMES = {
+    "absent_variable": ("""\
+private forall<T, U where Ord<T>> fn f(@U -> @Tuple<U, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@U.0, 1)
+}
+""", "f(5)"),
+    "one_of_two": ("""\
+private forall<A, B where Ord<A>, Ord<B>> fn g(@Unit -> @Option<A>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+""", "g(())"),
+}
+
+
+@pytest.mark.parametrize("case", list(_E613_NAMES))
+def test_e613_offers_no_binding_where_the_call_s_type_misses_a_variable(
+        case: str) -> None:
+    """`f(5)` builds `Tuple<Int, Int>`, which holds no variable for `T`;
+    `g(())` builds `Option<A$n>`, which holds `A` and not `B`.  Neither fix
+    offers a binding of the result."""
+    decl, call = _E613_NAMES[case]
+    source = decl + f"""
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match {call} {{
+    _ -> 0
+  }}
+}}
+"""
+    fix = _the("E613", "check", source).fix
+    assert "bind its result" not in fix, fix
+
+
+#: A result type whose binding E613 writes out holds a type written by name
+#: beside the variable (`Bool`), and one whose variable stands in a function
+#: type, which the binding cannot write at `Int` (the Mutation (diff) lane
+#: at PR 1907's head).
+_E613_WRITTEN = """\
+private forall<T where Ord<T>> fn RET_NAME(@Unit -> RESULT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match RET_NAME(()) {
+    _ -> 0
+  }
+}
+"""
+
+_E613_PARAM = ("give '{g}' a parameter that carries T ('@T' for example) and "
+               "pass it a value at a type that supports 'Ord', Int for "
+               "example.")
+
+
+def _e613_written(name: str, result: str) -> str:
+    return _E613_WRITTEN.replace("RET_NAME", name).replace("RESULT", result)
+
+
+def test_repro_e613_s_binding_keeps_each_type_written_by_name() -> None:
+    """`tb(())` of `@Option<Tuple<T, Bool>>`: the binding writes `T` at
+    `Int` and keeps `Bool` as written; the block in the call's place clears
+    E613."""
+    source = _e613_written("tb", "@Option<Tuple<T, Bool>>")
+    fix = _the("E613", "check", source).fix
+    assert fix == (
+        "No argument of 'tb(())' fixes T, so the call instantiates 'tb' at "
+        "Bool, nothing giving its result a type: bind its result at a type "
+        "that supports 'Ord', with the block "
+        "`{ let @Option<Tuple<Int, Bool>> = tb(()); "
+        "@Option<Tuple<Int, Bool>>.0 }` in the call's place; or "
+        + _E613_PARAM.format(g="tb")), fix
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    bound = source.replace("match tb(()) {", f"match {block} {{")
+    assert _passed_codes("check", bound) == set()
+
+
+def test_repro_e613_writes_no_binding_through_a_function_type() -> None:
+    """`fo(())` of `@Option<fn(T -> T) effects(pure)>`: `T` stands in a
+    function type, which the binding does not write at `Int`, so the fix
+    names a `let` of that type without writing one; its parameter, given,
+    clears E613."""
+    source = _e613_written("fo", "@Option<fn(T -> T) effects(pure)>")
+    fix = _the("E613", "check", source).fix
+    assert fix == (
+        "No argument of 'fo(())' fixes T, so the call instantiates 'fo' at "
+        "Bool, nothing giving its result a type: bind its result at a type "
+        "that supports 'Ord' (a `let` of that type), or "
+        + _E613_PARAM.format(g="fo")), fix
+    carried = (source.replace("fn fo(@Unit -> ", "fn fo(@Unit, @T -> ")
+               .replace("fo(())", "fo((), 1)"))
+    assert _passed_codes("check", carried) == set()
+
+
+_E613_ALIAS_LIB = """\
+module elib;
+
+type Answer<T> = Option<T>;
+
+public forall<T where Ord<T>> fn one_ord(@Unit -> @Answer<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+"""
+
+
+def test_repro_e613_writes_no_binding_its_call_site_cannot_name(
+        tmp_path: Path) -> None:
+    """An imported generic whose result is its module's alias
+    (`Answer<T>`): the call's file cannot name `Answer`, so the fix writes
+    no block (it would not resolve, E136) and names a `let` of the type
+    and the parameter; the parameter, given, clears E613."""
+    files = {"elib.vera": _E613_ALIAS_LIB,
+             "main.vera": "import elib;\n\n" + _E613_ONE_MAIN.format(where="")}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    assert found.fix == (
+        "No argument of 'one_ord(())' fixes T, so the call instantiates "
+        "'one_ord' at Bool, nothing giving its result a type: bind its "
+        "result at a type that supports 'Ord' (a `let` of that type), or "
+        + _E613_PARAM.format(g="one_ord")), found.fix
+    carried = {name: text.replace("fn one_ord(@Unit -> ",
+                                  "fn one_ord(@Unit, @T -> ")
+               .replace("one_ord(())", "one_ord((), 1)")
+               for name, text in files.items()}
+    after = _tree_codes(tmp_path / "carried", carried)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+_E613_DATA_LIB = """\
+module elib;
+
+VISIBILITY data Hold<T> { Held(Option<T>) }
+
+public forall<T where Ord<T>> fn one_ord(@Unit -> @Hold<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Held(None)
+}
+"""
+
+
+@pytest.mark.parametrize("visibility", ["private", "public"])
+def test_repro_e613_binds_an_imported_data_type_only_where_it_is_public(
+        visibility: str, tmp_path: Path) -> None:
+    """An imported generic whose result is its module's data type
+    (`Hold<T>`): a private one the call's file cannot name, so the fix
+    writes no block (`_local_type_names`' private-data clause) and names a
+    `let` of the type and the parameter; a public one it can, so the fix
+    writes the block, which, pasted in the call's place, clears E613."""
+    lib = _E613_DATA_LIB.replace("VISIBILITY ", (
+        "private " if visibility == "private" else "public "))
+    files = {"elib.vera": lib,
+             "main.vera": "import elib;\n\n" + _E613_ONE_MAIN.format(where="")}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    head = ("No argument of 'one_ord(())' fixes T, so the call instantiates "
+            "'one_ord' at Bool, nothing giving its result a type: bind its "
+            "result at a type that supports 'Ord'")
+    if visibility == "private":
+        assert found.fix == (
+            head + " (a `let` of that type), or "
+            + _E613_PARAM.format(g="one_ord")), found.fix
+        return
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    assert found.fix == (
+        head + f", with the block `{block}` in the call's place; or "
+        + _E613_PARAM.format(g="one_ord")), found.fix
+    pasted = {**files, "main.vera": files["main.vera"].replace(
+        "match one_ord(()) {", f"match {block} {{")}
+    after = _tree_codes(tmp_path / "pasted", pasted)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+@pytest.mark.parametrize("decl", [
+    "private data Hold<T> { Held(Option<T>) }",
+    "type Hold<T> = Option<T>;"])
+def test_repro_e613_binds_its_own_file_s_type_names(decl: str) -> None:
+    """The generic in the call's own file, whose result is that file's
+    private data type or alias (`Hold<T>`): every name resolves where the
+    call is, so the fix writes the block, which, pasted in the call's
+    place, clears E613 (`_hidden_at` hides nothing within one file)."""
+    lib = _E613_DATA_LIB.replace("module elib;\n\n", "").replace(
+        "VISIBILITY data Hold<T> { Held(Option<T>) }", decl).replace(
+        "public forall", "private forall")
+    if decl.startswith("type"):
+        lib = lib.replace("  Held(None)\n", "  None\n")
+    source = lib + "\n" + _E613_ONE_MAIN.format(where="")
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    fix = _the("E613", "check", source).fix
+    assert f"with the block `{block}` in the call's place" in fix, fix
+    fixed = source.replace("match one_ord(()) {", f"match {block} {{")
+    assert _passed_codes("check", fixed) == set()
+
+
+def test_repro_e613_binds_a_module_s_own_type_names_in_its_own_body(
+        tmp_path: Path) -> None:
+    """A call in an imported module's own body to that module's generic,
+    whose result is the module's private data type (`Hold<T>`): the call's
+    file is the generic's, so every name resolves where the call is and the
+    fix writes the block (`_hidden_at` hides nothing within one file, for
+    a module as for the entry), which, pasted, clears E613."""
+    lib = _E613_DATA_LIB.replace("VISIBILITY ", "private ").replace(
+        "public forall", "private forall") + "\n" + _E613_ONE_MAIN.replace(
+            "public fn main(@Unit -> @Int)", "public fn run(@Unit -> @Int)"
+        ).format(where="")
+    main = ("import elib(run);\n\npublic fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            "  run(())\n}\n")
+    files = {"elib.vera": lib, "main.vera": main}
+    checked = _tree_codes(tmp_path / "given", files)
+    (found,) = [d for d in checked.diagnostics if d.error_code == "E613"]
+    block = "{ let @Hold<Int> = one_ord(()); @Hold<Int>.0 }"
+    assert f"with the block `{block}` in the call's place" in found.fix, (
+        found.fix)
+    pasted = {**files, "elib.vera": lib.replace(
+        "match one_ord(()) {", f"match {block} {{")}
+    after = _tree_codes(tmp_path / "pasted", pasted)
+    assert after.ok, [d.format() for d in after.errors]
+
+
+_E613_LATER_READ = """\
+private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn f(@Option<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = match none_ord(()) {
+    _ -> 0
+  };
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 7
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(5))
+}
+"""
+
+
+def test_repro_e613_s_binding_leaves_a_later_read_as_it_was() -> None:
+    """The fix's block binds the call's result up to its brace, so a later
+    read of a slot of that type (`@Option<Int>.0`, the parameter) still
+    reads the parameter: the program, fixed as the fix says, runs to 5.  A
+    `let` statement in the call's place would have shadowed it, and the
+    same read gave the call's `None`, 7."""
+    fix = _the("E613", "check", _E613_LATER_READ).fix
+    (block,) = re.findall(r"`(\{ let [^`]+ \})`", fix)
+    assert block == ("{ let @Option<Int> = none_ord(()); "
+                     "@Option<Int>.0 }"), fix
+    fixed = _E613_LATER_READ.replace("match none_ord(()) {",
+                                     f"match {block} {{")
+    assert _passed_codes("check", fixed) == set()
+    assert pipeline.run(fixed).value == 5
+    shadowed = _E613_LATER_READ.replace(
+        "  let @Int = match none_ord(()) {",
+        "  let @Option<Int> = none_ord(());\n"
+        "  let @Int = match @Option<Int>.0 {")
+    assert pipeline.run(shadowed).value == 7

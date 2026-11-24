@@ -3309,6 +3309,19 @@ class CallsMixin:
         self._fresh_id += 1
         return TypeVar(f"{name}${self._fresh_id}")
 
+    def _constructor_typevar(self, name: str,
+                             mapping: dict[str, Type]) -> Type:
+        """The type the constructor's parameter *name* takes: its binding in
+        *mapping*, or a fresh variable marked as a constructor's
+        (`_constructor_minted`, #1866), which a join completes in an arm's
+        recorded types (`ControlFlowMixin._complete_arms`).  A fresh name is
+        minted either way, so the numbering is the one it was."""
+        fresh = self._fresh_typevar(name)  # pragma: no mutate — equivalent as to the name minted: a constructor's minted variable is read by `_constructor_minted`'s whole name, and its declared name only in a message that prints it (#1920); 0 verdicts, instances or recorded types but the name move over the conformance programs and examples
+        if name in mapping:
+            return mapping[name]
+        self._constructor_minted.add(fresh.name)
+        return fresh
+
     def _ctor_result_type(self, ci: ConstructorInfo,
                           arg_types: list[Type | None], *,
                           expected: Type | None = None,
@@ -3358,7 +3371,7 @@ class CallsMixin:
             # self-referential mappings when different ADTs share a param
             # name (e.g. both Option<T> and List<T> use "T").
             type_args = tuple(
-                mapping.get(tv, self._fresh_typevar(tv))
+                self._constructor_typevar(tv, mapping)
                 for tv in ci.parent_type_params
             )
             return AdtType(ci.parent_type, type_args)
