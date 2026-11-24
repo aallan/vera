@@ -665,15 +665,74 @@ class TestPlan:
         bins = _plan(_state(f=4, m=3, g=5), mutants=7)
         assert _bins(bins) == [[("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))]]
 
-    def test_the_nights_units_are_spread_over_every_job_the_dearest_first(self) -> None:
-        """A unit goes whole into one job; the night's units go the dearest
-        first into the job holding least, so every job has work while the
-        units outnumber them (#1838: on four nights three of seven jobs
-        planned nothing while 362 mutants waited)."""
+    def test_the_nights_modules_are_cut_into_runs_in_the_trees_order(self) -> None:
+        """A module goes whole into one job, and the jobs hold runs of
+        neighbouring modules in the tree's order, so a slice's selection is
+        the union of a few modules' declared oracles (#1838); while the
+        modules outnumber the jobs every job has work, and when they do not
+        the last jobs plan nothing."""
         bins = _plan(_state(f=4, m=3, g=5), jobs=3, mutants=5)
-        assert _bins(bins) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4))], [(f"x{SEP}C{SEP}m", (1, 2, 3))]]
+        assert _bins(bins) == [[("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))], [("x_g", (1, 2, 3, 4, 5))], []]
         two = _plan(_state(f=4, m=3, g=5), jobs=2, mutants=10)
-        assert _bins(two) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))]]
+        assert _bins(two) == [[("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))], [("x_g", (1, 2, 3, 4, 5))]]
+
+    @pytest.mark.parametrize("jobs", [1, 2, 3, 5, 8])
+    @pytest.mark.parametrize("costs", [(5, 1, 1, 1, 1, 1), (1, 1, 1, 1, 1, 9), (3, 3, 3, 3), (1,) * 11,
+                                       (20, 1, 1, 20, 1), (2, 7, 1, 1, 7, 2, 1)])
+    def test_module_bins_never_split_a_module_and_keep_the_trees_order(
+        self, costs: tuple[int, ...], jobs: int,
+    ) -> None:
+        """Every cell: each module in exactly one bin, the bins in the
+        tree's order (each a contiguous run), every bin non-empty while the
+        modules outnumber the jobs, and the dearest bin as cheap as any such
+        cut allows (against every cut, by brute force), so at most a share
+        and one module."""
+        import itertools
+        taken = []
+        for m, cost in enumerate(costs):
+            for k in range(2):  # two units a module, the cost split
+                unit = _u(f"vera/m{m:02d}.py", f"x_u{k}", 1 + 10 * k)
+                taken.append((sw.Pick(unit=unit, lines=(1,), counts=(1,), before=(0,)), cost / 2))
+        bins = sw.module_bins(taken, jobs)
+        assert len(bins) == jobs
+        order = [p.unit.path for b in bins for p in b]
+        assert order == [p.unit.path for p, _ in taken]  # the tree's order, every pick once
+        homes = {path: {i for i, b in enumerate(bins) for p in b if p.unit.path == path} for path in order}
+        assert all(len(h) == 1 for h in homes.values()), homes
+        if len(costs) >= jobs:
+            assert all(bins), [len(b) for b in bins]
+        loads = [sum(costs[int(m[6:8])] for m in {p.unit.path for p in b}) for b in bins]
+        parts = min(jobs, len(costs))
+        least = min(max(sum(costs[a:b]) for a, b in zip((0, *cuts), (*cuts, len(costs))))
+                    for cuts in itertools.combinations(range(1, len(costs)), parts - 1))
+        assert max(loads) == least, (loads, least)
+        assert max(loads) <= sum(costs) / jobs + max(costs)
+
+    def test_repro_an_undeclared_modules_units_are_never_planned_and_the_stitch_decides_them(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1838: a module with no declared oracle (``UNDECLARED``) is never
+        run; the stitch decides its sampled mutants ``undeclared``, a column
+        of their own, so the cycle closes, and the closed cycle's files name
+        them apart, outside the score."""
+        assert "vera/__init__.py" in sw.md.UNDECLARED
+        init = _u("vera/__init__.py", "x__read_version", 1)
+        units = [init, A]
+        state = sw.reconcile(sw.empty_state("2026-10-16"), units, "3.8.0")
+        for unit, n in ((init, 3), (A, 2)):
+            state["units"][unit.ident].update(mutants=n, lines=_lines(n))
+        (bin_,) = sw.plan(state, units, jobs=1, budget_s=1e9)
+        assert [p.unit for p in bin_] == [A]
+        record = _record(0, 1, {A.ident: _res(A, killed=2)})
+        out, night = sw.stitch(state, "none", [record], jobs=1, head=HEAD, units=units, today="2026-10-17")
+        assert night["problems"] == [] and night["closed"]
+        row = out["last_complete"]["modules"]["vera/__init__.py"]
+        assert row[sw.UNDECLARED] == 3 and row["killed"] == row["no_tests"] == 0
+        assert any("decided undeclared" in note for note in night["notes"])
+        sw.check_state(json.loads(json.dumps(out)))
+        sw.write_summary(out, tmp_path)
+        assert "vera,3 sampled,undeclared" in (tmp_path / "mutation-survivors.csv").read_text(encoding="utf-8")
+        assert "vera/__init__.py" not in (tmp_path / "mutation-summary.csv").read_text(encoding="utf-8")
 
     def test_a_function_without_its_lines_stops_the_plan(self) -> None:
         """Every unit is counted before the plan, by mutmut's own visitor
@@ -713,8 +772,8 @@ class TestPlan:
     def test_every_job_of_the_night_computes_the_same_disjoint_bins(self) -> None:
         state = _state(f=4, m=3, g=5)
         first, second = _plan(state, jobs=3, mutants=4), _plan(json.loads(json.dumps(state)), jobs=3, mutants=4)
-        assert _bins(first) == _bins(second) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4))],
-                                                 [(f"x{SEP}C{SEP}m", (1, 2, 3))]]
+        assert _bins(first) == _bins(second) == [[("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))],
+                                                 [("x_g", (1, 2, 3, 4, 5))], []]
         flat = [n for b in first for n in sw.engine_targets(b)]
         assert len(flat) == len(set(flat)) == 12
         assert [sw.engine_targets(b) for b in first] == [sw.engine_targets(b) for b in second]
@@ -775,7 +834,7 @@ class TestPlan:
             "vera.b.x_g": {"tests/test_b.py::test_g"}, "vera.a.x_f_twin": {"tests/test_a.py::test_twin"}})
         bins = _plan(_state(f=4, m=3, g=5), jobs=2, mutants=10)
         assert [engine.tests_for_mutant_names(sw.engine_targets(b)) for b in bins] == [
-            {"tests/test_b.py::test_g"}, {"tests/test_a.py::test_f", "tests/test_a.py::test_m"}]
+            {"tests/test_a.py::test_f", "tests/test_a.py::test_m"}, {"tests/test_b.py::test_g"}]
 
     def test_after_a_partial_night_the_plan_names_only_the_undecided(self) -> None:
         """A window partly decided keeps its decided mutants, and the next
@@ -841,8 +900,14 @@ class TestTheRealTail:
         names = [n for b in bins for n in sw.engine_targets(b)]
         assert len(names) == len(set(names)) == 362
         cost = [sum(len(p.numbers) * sw.rate(p.unit, state["calibration"]) for p in b) for b in bins]
-        dearest = max(len(p.numbers) * sw.rate(p.unit, state["calibration"]) for p in planned)
-        assert max(cost) - min(cost) <= dearest, cost  # balanced: within one unit of each other
+        module_cost: dict[str, float] = {}
+        for p in planned:
+            module_cost[p.unit.path] = module_cost.get(p.unit.path, 0.0) + len(p.numbers) * sw.rate(
+                p.unit, state["calibration"])
+        assert all(len({p.unit.path for p in b} & {p.unit.path for p in c}) == 0
+                   for i, b in enumerate(bins) for c in bins[i + 1:])  # no module in two bins
+        # balanced as a cut by module allows: a share and one module at most
+        assert max(cost) <= sum(cost) / len(bins) + max(module_cost.values()), cost
 
     def test_the_live_schema_two_state_reads_as_schema_three_with_its_totals(self, tmp_path: Path) -> None:
         """The state of 10 November 2026 carries over: no window partly

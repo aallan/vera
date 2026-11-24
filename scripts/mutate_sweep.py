@@ -264,6 +264,12 @@ LOST = "lost"
 #: column, never a state's; the engine ran the mutant and recorded it
 #: survived, and the rule reports it apart (:func:`evaluated_at_import`).
 AT_IMPORT = "at_import"
+#: The status of a sampled mutant of a module with no declared oracle
+#: (``scripts/mutate_diff.py``'s ``UNDECLARED``): the stitch decides it so
+#: and no slice runs it (:func:`decide_undeclared`); counted apart, never
+#: caught and never survived, and named in the comments and the survivors'
+#: file.
+UNDECLARED = "undeclared"
 
 #: The losses that decide a mutant ``lost``.
 LOSS_LIMIT = 2
@@ -319,7 +325,7 @@ STATE_EVENTS = frozenset({"schedule", "workflow_dispatch"})
 
 #: The statuses a state records: every one mutmut prints bar the undecided,
 #: the cap's, the bound's and the loss rule's.
-DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST}
+DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST, UNDECLARED}
 
 
 class StateError(ValueError):
@@ -737,7 +743,7 @@ COLUMNS_2 = ("killed", "survived", "timeout", "no_tests", "other")
 #: The columns a decided window carries only when they count a mutant: a
 #: state with none of them is shaped as the schema 3 states before them,
 #: which an older reader loads; one with them it refuses rather than misread.
-OPTIONAL_COLUMNS = (MEMORY, LOST)
+OPTIONAL_COLUMNS = (MEMORY, LOST, UNDECLARED)
 #: The statuses a window lists its mutants of, with their records.
 LISTED = frozenset({"survived", "timeout", SLOW, MEMORY, LOST})
 #: The most test files a survivor's record names.
@@ -811,7 +817,7 @@ def check_window(window: Any, what: str) -> None:
            f"{what}'s window columns do not sum to its size")
     _check_survivors(rec["survivors"], size, what)
     _check(len(rec["survivors"]) == rec["survived"] + rec["timeout"] + rec["slow"]
-           + sum(rec[c] for c in optional),
+           + sum(rec[c] for c in optional if c in LISTED),
            f"{what}'s survivors are not its survived, timeout, slow, memory and lost mutants")
 
 
@@ -1395,6 +1401,12 @@ def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> int | None:
     return None if todo is None else len(todo)
 
 
+def redraw_units(state: Mapping[str, Any]) -> frozenset[str] | None:
+    """The units a redraw compares (:func:`redraw_state`), by ident; None
+    outside a redraw."""
+    redraw = state.get("redraw")
+    return frozenset(redraw["units"]) if redraw else None
+
 
 
 # ---------------------------------------------------------------------------
@@ -1461,21 +1473,29 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
     The units with sampled mutants undecided are taken in the tree's order
     while their estimated cost (their undecided mutants at ``rate``) fits the
     night, ``jobs`` times a job's budget less ``FIXED_S``; the first is taken
-    whatever it costs.  The night's units are then spread over every job,
-    each unit whole, the dearest first into the bin holding least (the lower
-    bin on a tie), so every job has work while the units outnumber them and
-    the bins' estimated costs are close; each bin keeps the tree's order.
-    One rate per family cannot describe a bin whose undecided mutants are
-    the dearest of their units (mutmut runs a bin's cheapest first), so a
-    bin can still be over-planned; the record of each mutant as it is
-    decided is what makes that harmless, since the next night plans what is
-    left.  Every unit is counted before the plan (:func:`engine_counts`):
-    one that is not cannot be sampled, and stops the plan."""
+    whatever it costs.  The night's modules are then cut, in the tree's
+    order, into ``jobs`` runs of about equal estimated cost, a module never
+    split (:func:`module_bins`): a slice runs the union of its modules'
+    declared oracles (MUTATION.md § Oracle), so a bin of neighbouring
+    modules shares one small union where a bin spread over the tree would
+    run most of the suite.  One rate per family cannot describe a bin whose
+    undecided mutants are the dearest of their units (mutmut runs a bin's
+    cheapest first), so a bin can still be over-planned; the record of each
+    mutant as it is decided is what makes that harmless, since the next
+    night plans what is left.  A unit of a module with no declared oracle
+    (``UNDECLARED``) is never planned: the stitch decides its window
+    ``undeclared`` (:func:`decide_undeclared`).  In a redraw
+    (:func:`redraw_state`) only the units the redraw compares are planned.
+    Every unit is counted before the plan (:func:`engine_counts`): one that
+    is not cannot be sampled, and stops the plan."""
     capacity = max(budget_s - FIXED_S, budget_s / 4)
     calibration = float(state.get("calibration") or 1.0)
     taken: list[tuple[Pick, float]] = []
     total = 0.0
+    only = redraw_units(state)
     for unit in units:
+        if unit.path in md.UNDECLARED or (only is not None and unit.ident not in only):
+            continue
         todo = undecided_numbers(state, unit)
         if todo is None:
             raise StateError(f"{unit.ident} has no mutants by line, so its sample cannot be planned")
@@ -1487,13 +1507,46 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
         lines, counts, before = window_counts(state, unit)
         taken.append((Pick(unit=unit, lines=lines, counts=counts, before=before, todo=todo), cost))
         total += cost
-    bins: list[list[int]] = [[] for _ in range(jobs)]
-    loads = [0.0] * jobs
-    for index in sorted(range(len(taken)), key=lambda i: (-taken[i][1], i)):
-        target = min(range(jobs), key=lambda j: (loads[j], j))
-        bins[target].append(index)
-        loads[target] += taken[index][1]
-    return [[taken[i][0] for i in sorted(b)] for b in bins]
+    return module_bins(taken, jobs)
+
+
+def module_bins(taken: Sequence[tuple[Pick, float]], jobs: int) -> list[list[Pick]]:
+    """The picks (in the tree's order, each with its estimated cost) cut
+    into ``jobs`` bins: each module's picks whole in one bin, the bins
+    contiguous runs of modules in the tree's order, every bin holding one
+    while the modules outnumber the jobs (when they do not, the last bins
+    are empty).  Of every such cut, the one whose dearest bin costs least
+    (the first such, cutting each run as early as it can): the dearest bin
+    then costs at most a share (the whole over the jobs) and one module."""
+    modules: list[tuple[list[Pick], float]] = []
+    for pick, cost in taken:
+        if modules and modules[-1][0][0].unit.path == pick.unit.path:
+            modules[-1] = (modules[-1][0] + [pick], modules[-1][1] + cost)
+        else:
+            modules.append(([pick], cost))
+    n = len(modules)
+    parts = min(jobs, n)
+    prefix = [0.0]
+    for _, cost in modules:
+        prefix.append(prefix[-1] + cost)
+    # best[p][i]: the least cost of the dearest bin over the first i modules
+    # cut into p runs; cut[p][i]: where its last run starts.
+    inf = float("inf")
+    best = [[inf] * (n + 1) for _ in range(parts + 1)]
+    cut = [[0] * (n + 1) for _ in range(parts + 1)]
+    best[0][0] = 0.0
+    for p in range(1, parts + 1):
+        for i in range(p, n + 1):
+            for j in range(p - 1, i):
+                worst = max(best[p - 1][j], prefix[i] - prefix[j])
+                if worst < best[p][i]:
+                    best[p][i], cut[p][i] = worst, j
+    bounds = [n]
+    for p in range(parts, 0, -1):
+        bounds.append(cut[p][bounds[-1]])
+    bounds.reverse()
+    bins = [[pick for group, _ in modules[bounds[p]:bounds[p + 1]] for pick in group] for p in range(parts)]
+    return bins + [[] for _ in range(jobs - parts)]
 
 
 def mutant_name(pick: Pick, number: int) -> str:
@@ -2621,6 +2674,32 @@ def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequen
     return decided
 
 
+def decide_undeclared(state: dict[str, Any], units: Sequence[SweepUnit],
+                      taken: list[tuple[str, int, str]] | None = None) -> int:
+    """Decide every sampled mutant still open of a unit whose module has no
+    declared oracle (``UNDECLARED``) as ``undeclared``: no slice runs one
+    (:func:`plan`), since no test declares the module, and the cycle can
+    still close.  Only a counted unit is decided; how many were."""
+    decided = 0
+    only = redraw_units(state)
+    for unit in units:
+        rec = state["units"].get(unit.ident)
+        if (unit.path not in md.UNDECLARED or rec is None or rec["lines"] is None or rec["window"] is not None
+                or (only is not None and unit.ident not in only)):
+            continue
+        todo = undecided_numbers(state, unit) or ()
+        if not todo:
+            continue
+        partial = rec["partial"] or {"decided": {}, "survivors": []}
+        for number in todo:
+            partial["decided"][str(number)] = UNDECLARED
+            if taken is not None:
+                taken.append((unit.ident, number, UNDECLARED))
+        decided += len(todo)
+        _settle(rec, partial, sum(window_counts(state, unit)[1]))
+    return decided
+
+
 def fold_window(partial: Mapping[str, Any], size: int) -> dict[str, Any]:
     """A window whose every mutant is decided, as the decided window the
     summary reads: its columns, its size and its listed mutants by number."""
@@ -2637,7 +2716,7 @@ def _column(status: str) -> str:
     """Where a decided mutant counts in the committed summary."""
     if status in ("killed", "caught by type check"):
         return "killed"
-    if status in ("timeout", "survived", SLOW, MEMORY, LOST):
+    if status in ("timeout", "survived", SLOW, MEMORY, LOST, UNDECLARED):
         return status
     if status == "no tests":
         return "no_tests"
@@ -2983,6 +3062,10 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
             # mutant by mutant, and the rest is planned again.
             notes.append(f"slice {record['slice']}: stopped by the budget with {decided_count(record)} "
                          f"mutant(s) decided; the rest of its bin waits for the next night")
+    undeclared = decide_undeclared(state, units, taken)
+    if undeclared:
+        notes.append(f"{undeclared} sampled mutant(s) of {_listed(sorted(md.UNDECLARED))} decided undeclared: "
+                     "no declared oracle, so none was run")
     if (added == 0 and (any(r.get("planned") for r in valid) or lost) and not complete(state, units)
             and empty_night(state_in.get("nights", []))):
         # One night that decides nothing is weather (a bin of slow
@@ -3119,6 +3202,10 @@ def write_summary(state: Mapping[str, Any], directory: Path,
         name, at, line = name.partition("@")
         module, key = md.unit_of_mutant(name)
         inventory_lines.append(f"{module},{key}__mutmut_{md._mutant_number(name)}{'@L' + line if at else ''},{status}")
+    for module, row in sorted(last["modules"].items()):
+        if row.get(UNDECLARED):
+            # Not one mutant of it ran: the module's count, named apart.
+            inventory_lines.append(f"{md.module_name(module)},{row[UNDECLARED]} sampled,{UNDECLARED}")
     (directory / "mutation-survivors.csv").write_text("\n".join(inventory_lines) + "\n",
                                                       encoding="utf-8")
     return score
@@ -3275,7 +3362,7 @@ COMMENT_LIMIT = 60_000
 #: The night comment's line budget.
 NIGHT_LINES = 25
 #: The order the columns are named in.
-ORDER = ("killed", "survived", "timeout", "slow", "memory", "lost", AT_IMPORT, "no_tests", "other")
+ORDER = ("killed", "survived", "timeout", "slow", "memory", "lost", AT_IMPORT, "no_tests", UNDECLARED, "other")
 #: MUTATION.md's section on a survivor's three ends.
 BURNDOWN = "MUTATION.md#the-cycles-survivors"
 #: MUTATION.md's section on the at-import rule (#1740), the same section.
@@ -3436,8 +3523,8 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     low, high = wilson(caught, total)
     columns = Counter[str]()
     for row in modules.values():
-        columns.update({c: int(row.get(c, 0)) for c in ("slow", "no_tests", MEMORY, LOST, AT_IMPORT)})
-    apart = ", ".join(f"{columns[c]} {_label(c)}" for c in ("slow", MEMORY, LOST, AT_IMPORT, "no_tests")
+        columns.update({c: int(row.get(c, 0)) for c in ("slow", "no_tests", MEMORY, LOST, AT_IMPORT, UNDECLARED)})
+    apart = ", ".join(f"{columns[c]} {_label(c)}" for c in ("slow", MEMORY, LOST, AT_IMPORT, "no_tests", UNDECLARED)
                       if columns[c])
     previous = last.get("previous")
     before: dict[str, float] = {}
