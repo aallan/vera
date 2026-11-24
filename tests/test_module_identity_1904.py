@@ -1368,9 +1368,12 @@ def test_e013_whole_for_a_file_that_cannot_be_identified(
     d = _one(entry, "E013")
     assert raised, "the injected failure did not run"
     assert _at(d, tmp_path) == ("main.vera", 1, 1, "import q.lib(word);")
-    assert d["description"] == (
-        "Error parsing imported module 'q.lib': [Errno 2] No such file or "
-        f"directory: '{target.resolve()}'")
+    # The error's own text, as `str(OSError)` prints it (its file name by
+    # `repr`, so a native path is spelled as the platform spells it); the
+    # injected path is the module's file.
+    err = FileNotFoundError(2, "No such file or directory", raised[0])
+    assert d["description"] == f"Error parsing imported module 'q.lib': {err}"
+    assert pathlib.Path(raised[0]).resolve() == target.resolve()
     assert d["rationale"] == _E013_RATIONALE
     assert d["fix"] == ("Run `vera check q/lib.vera` directly to see the detailed "
                         "syntax diagnostic, then correct the imported module.")
