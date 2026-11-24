@@ -804,6 +804,12 @@ class SmtContext:
         # (`check_valid`'s *own*).
         self._narrowed_terms: list[z3.ExprRef] = []
         self._narrowed_ids: set[int] = set()
+        # The narrowed values some unchecked narrowing row gave their type:
+        # a fact over one is established only by that row's own proof.
+        self._unestablished_ids: set[int] = set()
+        # The facts read off a type only checked narrowings gave the value:
+        # established, so every query reads them but the narrowing's own.
+        self._narrowed_facts: list[tuple[z3.ExprRef, frozenset[int]]] = []
         # Each walked term's id to the term and the narrowed ids under it
         # (`narrowed_ids_in`).
         self._narrowed_below: dict[int, tuple[Any, frozenset[int]]] = {}
@@ -4778,15 +4784,22 @@ class SmtContext:
         something we admitted we could not establish", which asserting them
         into the base context makes indistinguishable.
         """
-        result = self._check_refutation(goal, assumptions, tainted=False)
-        if result.status == "verified" or not self._tainted_facts:
-            return result
         saved = self._own_excluded
         if own is not None:
-            # #1897: a narrowing's own query is never offered a fact withheld
-            # because that narrowing published it, on either attempt.
-            self._own_excluded = frozenset(self.narrowed_ids_in(own))
+            # #1897: a narrowing's own query is never offered a fact read
+            # off the type that narrowing gave its value, on either attempt:
+            # established (a checked row's) or withheld (an unchecked one's).
+            # Its OWN value only: a narrowing of a component read off
+            # another narrowed value reads that value's facts as any query
+            # does.
+            own_id = self._term_id(own)
+            self._own_excluded = (
+                frozenset({own_id}) if own_id in self._narrowed_ids
+                else frozenset())
         try:
+            result = self._check_refutation(goal, assumptions, tainted=False)
+            if result.status == "verified" or not self._tainted_facts:
+                return result
             with_tainted = self._check_refutation(
                 goal, assumptions, tainted=True)
         finally:
@@ -4833,10 +4846,37 @@ class SmtContext:
             cache[cur_id] = (cur, frozenset(found))
         return set(cache.get(top, (None, frozenset()))[1])
 
-    def note_narrowed(self, term: z3.ExprRef) -> None:
+    @staticmethod
+    def _term_id(term: object) -> int | None:
+        try:
+            return int(term.get_id())  # type: ignore[attr-defined]
+        except (AttributeError, z3.Z3Exception):
+            return None
+
+    def unestablished_narrowed_ids(self) -> set[int]:
+        """The narrowed values (#1897) an unchecked narrowing row gave their
+        type, whose reader facts only that row's proof establishes."""
+        return self._unestablished_ids
+
+    def assume_narrowed(
+        self, facts: Sequence[z3.ExprRef], owners: set[int],
+    ) -> None:
+        """Take *facts*, read off a type checked narrowings gave the values
+        *owners* (#1897), as premises of every query but the narrowings'
+        own (`check_valid`'s *own*)."""
+        key = frozenset(owners)
+        for fact in facts:
+            self._narrowed_facts.append((fact, key))
+
+    def note_narrowed(
+        self, term: z3.ExprRef, established: bool = True,
+    ) -> None:
         """Record *term* as a value a narrowing in this function gave a type
-        its own does not state (#1897)."""
+        its own does not state (#1897); *established* is False where the
+        row is not checked, and a value any such row gave stays so."""
         tid = term.get_id()
+        if not established:
+            self._unestablished_ids.add(tid)
         if tid in self._narrowed_ids:
             return
         self._narrowed_terms.append(term)
@@ -5080,6 +5120,10 @@ class SmtContext:
                 self.solver.add(a)
             for pc in self._path_conditions:
                 self.solver.add(pc)
+            for nf, nf_owners in self._narrowed_facts:
+                if nf_owners & self._own_excluded:
+                    continue  # #1897: the narrowing's own goal
+                self.solver.add(nf)
             if tainted:
                 for tf in self._tainted_facts:
                     owners = self._withheld_owners.get(tf.get_id())
@@ -5325,6 +5369,8 @@ class SmtContext:
         self._narrowed_terms.clear()  # #1897: per function, as the taint is
         self._narrowed_ids.clear()
         self._narrowed_below.clear()
+        self._unestablished_ids.clear()
+        self._narrowed_facts.clear()
         self._withheld_owners.clear()
         self._own_excluded = frozenset()
         self._value_facts.clear()  # #1480 review: per-function placeholders

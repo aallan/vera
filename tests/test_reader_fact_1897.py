@@ -484,13 +484,15 @@ ISSUE = SMALL + textwrap.dedent("""\
 
 def test_repro_issue_1897() -> None:
     """The reported program: the `let` was `verified` from its reader's
-    fact, and so was the `ensures`.  Now the narrowing is refuted and the
-    `ensures`, which holds only from the withheld fact, is Tier 3 (E534)."""
+    fact.  Now the narrowing is refuted (E505): its own query never reads
+    the fact.  The `ensures` stays `verified`: the `let`'s row is checked,
+    and the check runs before the reader, so the reader's fact is
+    established for every query but the narrowing's own."""
     verified = _verify(ISSUE)
     let = _line(ISSUE, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
     assert _at_line(verified, let) == ["violated/E505"]
-    assert _at_line(verified, _line(ISSUE, "ensures(@Int.result < 10)"), "ensures") == ["tier3/E534"]
-    assert "E534" in {d.error_code for d in verified.warnings}
+    assert _at_line(verified, _line(ISSUE, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
+    assert _run(ISSUE, [VIOLATING]).trap is not None
 
 
 def _let_program(shape: str, reader: str, refined: str = "Small",
@@ -599,8 +601,10 @@ def test_repro_call_apply_and_return(position: str, order: str) -> None:
 
 def test_repro_other_obligations_over_the_value() -> None:
     """Class line 5: an `ensures` over the value read, and a call's
-    precondition after the reader: `verified`, refuted at run time.  Now
-    Tier 3, each with the check that refutes it."""
+    precondition after the reader, were `verified` beside a narrowing
+    proved from the same fact.  The narrowing is now refuted; the two stay
+    `verified`, since the `let`'s row is checked and its check, which
+    traps the run, stands before the reader."""
     body = textwrap.dedent("""\
         private fn need(@Int -> @Int)
           requires(@Int.0 < 10)
@@ -632,12 +636,10 @@ def test_repro_other_obligations_over_the_value() -> None:
     verified = _verify(source)
     ensures = _line(source, "ensures(@Int.result < 10)")
     call = _line(source, "need(@Int.0)")
-    # Tier 3: `E534` where the withheld fact is what the proof needs, or
-    # `E522` where the refutation without it rests on the call's stand-in.
-    assert [r.split("/")[0] for r in _at_line(verified, ensures, "ensures")] \
-        == ["tier3"]
-    assert [r.split("/")[0] for r in _at_line(verified, call, "call_pre")] \
-        == ["tier3"]
+    let = _line(source, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+    assert _at_line(verified, ensures, "ensures") == ["verified"]
+    assert _at_line(verified, call, "call_pre") == ["verified"]
     ran = _run(source, [VIOLATING])
     assert ran.trap is not None
 
@@ -739,6 +741,102 @@ def test_a_proved_narrowing_still_proves_its_readers() -> None:
     assert _at_line(verified, _line(source, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
 
 
+POS = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+
+CHECKED_AFTER_READER = {
+    # name: (the function's ensures, its tail over the component @Int.0,
+    #        the kind of the record the reader's fact proves)
+    "ensures": ("ensures(@Int.result > 0)", "@Int.0", "ensures"),
+    "divisor": ("ensures(true)", "100 / @Int.0", "div_zero"),
+    "nat": ("ensures(true)", "{ let @Nat = @Int.0; nat_to_int(@Nat.0) }",
+            "nat_bind"),
+}
+
+
+def _checked_narrowing(shape: str, ensures: str, tail: str) -> str:
+    refined, base, reader = {
+        "tuple": ("Tuple<Pos, Int>", "Tuple<Int, Int>",
+                  "match @Tuple<Pos, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }"),
+        "option": ("Option<Pos>", "Option<Int>",
+                   "match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }"),
+    }[shape]
+    return POS + (
+        f"type MkT = fn(Int -> {base}) effects(pure);\n\n"
+        "public fn go(@MkT, @Int -> @Int)\n"
+        f"  requires(true)\n  {ensures}\n  effects(pure)\n{{\n"
+        f"  let @{refined} = apply_fn(@MkT.0, @Int.0);\n"
+        f"  let @Int = {reader};\n"
+        f"  {tail}\n}}\n")
+
+
+@pytest.mark.parametrize("obligation", list(CHECKED_AFTER_READER))
+def test_repro_a_checked_narrowing_establishes_its_readers_fact(
+        obligation: str) -> None:
+    """A narrowing whose row is checked (a tuple component at a `let`)
+    establishes the facts a reader takes off the type it gives: its check
+    runs where the value takes the type, before any reader.  An obligation
+    after the reader that the fact proves is `verified`, as it was before
+    #1897; the narrowing itself, over a value the solver cannot read, is
+    Tier 3 with its check (E506), never proved from the fact.  The same
+    reader over an `Option` payload, whose row no check covers, leaves the
+    obligation Tier 3."""
+    ensures, tail, kind = CHECKED_AFTER_READER[obligation]
+    source = _checked_narrowing("tuple", ensures, tail)
+    verified = _verify(source)
+    let = _line(source, "let @Tuple<Pos, Int> = apply_fn(@MkT.0, @Int.0);")
+    assert _at_line(verified, let) == ["tier3/E506"]
+    line = _line(source, ensures if kind == "ensures" else tail)
+    assert _at_line(verified, line, kind) == ["verified"]
+    payload = _checked_narrowing("option", ensures, tail)
+    verified = _verify(payload)
+    line = _line(payload, ensures if kind == "ensures" else tail)
+    assert [r.split("/")[0] for r in _at_line(verified, line, kind)] \
+        == ["tier3"]
+
+
+COMPONENT_OF_A_NARROWING = {
+    # shape: (the composite at Pos, its base, the reader of the component,
+    #         the `@Nat` narrowing's status)
+    "tuple": ("Tuple<Pos, Int>", "Tuple<Int, Int>",
+              "match @Tuple<Pos, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }",
+              "verified"),
+    "nested": ("Tuple<Tuple<Pos, Int>, Int>", "Tuple<Tuple<Int, Int>, Int>",
+               "match @Tuple<Tuple<Pos, Int>, Int>.0 "
+               "{ Tuple(Tuple(@Int, @Int), _) -> @Int.1 }",
+               "verified"),
+    "option": ("Option<Pos>", "Option<Int>",
+               "match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }",
+               "tier3"),
+    "data": ("Wrap<Pos>", "Wrap<Int>",
+             "match @Wrap<Pos>.0 { W(@Int) -> @Int.0 }", "tier3"),
+}
+
+
+@pytest.mark.parametrize("shape", list(COMPONENT_OF_A_NARROWING))
+def test_repro_a_component_narrowing_is_not_the_composites_own(
+        shape: str) -> None:
+    """A `@Nat` narrowing of a component read off a narrowed composite is
+    a narrowing of its own value, not of the composite: the composite's
+    reader facts are kept from the composite's own query only.  It reads
+    them as any query does: proved where the composite's row is checked (a
+    tuple component), Tier 3 where they are withheld (a payload), and
+    never refuted (E503) for a value the composite's type bounds."""
+    refined, base, reader, status = COMPONENT_OF_A_NARROWING[shape]
+    source = POS + "public data Wrap<T> { W(T) }\n\n" + (
+        f"public fn go(@{base} -> @Nat)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+        f"  let @{refined} = @{base}.0;\n"
+        f"  let @Int = {reader};\n"
+        "  let @Nat = @Int.0;\n"
+        "  @Nat.0\n}\n")
+    verified = _verify(source)
+    let = _line(source, f"let @{refined} = @{base}.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+    nat = _line(source, "let @Nat = @Int.0;")
+    assert [r.split("/")[0] for r in _at_line(verified, nat, "nat_bind")] \
+        == [status]
+
+
 def _nested_builtins(depth: int, narrow: bool) -> str:
     expr = "@Int.0"
     for i in range(depth):
@@ -820,14 +918,25 @@ def test_no_narrowing_is_proved_from_its_readers_fact(cell: Cell) -> None:
 def test_every_proof_survives_with_the_readers_facts_withheld(
     cell: Cell, withheld_readers: None,
 ) -> None:
-    """The differential: no record of the cell's program is `verified` only
-    because a reader's fact was assumed."""
+    """The differential: a record of the cell's program `verified` only
+    because a reader's fact was assumed rests on a check the run executes
+    before it.  The fact is established only where the narrowing's row is
+    checked, and that check runs where the value takes the type: at the
+    violating value the run traps.  No narrowing record at the site is
+    among them (its own query never reads the fact)."""
     made = _program(cell)
     assert made is not None
-    source, _site = made
+    source, site = made
     without = _verified_records(_verify(source))
     with_facts = _verified_with_facts(source)
-    assert with_facts <= without, sorted(with_facts - without)
+    extra = sorted(with_facts - without)
+    if not extra:
+        return
+    line = _line(source, site)
+    assert not [r for r in extra if r[0] == "refine_bind" and r[1] == line], \
+        extra
+    ran = _run(source, [VIOLATING])
+    assert ran.trap is not None, extra
 
 
 def _verified_with_facts(source: str) -> set[tuple[str, int, int]]:
