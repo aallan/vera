@@ -1294,7 +1294,8 @@ def test_a_refused_clause_beside_a_throwing_body_reports_what_it_did() -> None:
 def test_repro_1716_a_clause_no_position_reconciles_is_refused_whole() -> None:
     """A clause whose value no position of the body's type reconciles is
     refused at the clause (E341), every field of the diagnostic as at
-    f71c401c."""
+    f71c401c but the handler's type, which the function's return type now
+    gives the handled body (#1812)."""
     source = ("public fn f(@Int -> @Result<Int, Int>)\n  requires(true)\n"
               "  ensures(true)\n  effects(pure)\n{\n  handle[Exn<Int>] {\n"
               "    throw(@Int) -> { Some(5) }\n  } in {\n    Ok(@Int.0)\n"
@@ -1304,17 +1305,17 @@ def test_repro_1716_a_clause_no_position_reconciles_is_refused_whole() -> None:
     assert (found.location.line, found.location.column) == (7, 22)
     assert found.description == (
         "The 'throw' clause's value has type Option<Int>, but the "
-        "handler's value is Result<Int, ?>.")
+        "handler's value is Result<Int, Int>.")
     assert found.rationale == (
         "An Exn handler's value is its handled body's, or, when the body "
         "throws, the clause's: the two are one value, so they have one "
         "type, as the branches of an if do.")
     # The fix names no type with an open part (`?`), which no program
-    # writes (#1778), where the message shows Result<Int, ?>.
+    # writes (#1778).
     assert found.fix == (
-        "Make the clause's value the handled body's type: replace "
-        "'Some(5)' with 'Ok(0)', or give the handled body the clause's "
-        "type.")
+        "Make the clause's value the handled body's type, `Result<Int, "
+        "Int>`: replace 'Some(5)' with 'Ok(0)', or give the handled body "
+        "the clause's type.")
     assert found.spec_ref == 'Chapter 7, Section 7.5.2 "Handler Semantics"'
 
 

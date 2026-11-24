@@ -768,6 +768,13 @@ class TypeChecker(
         # by node identity and by span, so a literal checked again clears
         # its own earlier record and no other check's.
         self._element_target_ids: set[int] = set()
+        # #1812: the refusals of an index that a first synthesis could not
+        # type, held, one frame a synthesis, until the type its position's
+        # context names is known (`ExpressionsMixin._synth_held`).
+        self._held_refusals: list[list[tuple[ast.IndexExpr, bool]]] = []
+        # Every error-severity diagnostic `_error` was asked for, the
+        # duplicates it collapses among them (`_synth_held`).
+        self._errors_raised = 0
         self._element_target_spans: set[tuple[int, int, int, int]] = set()
         self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
@@ -1308,6 +1315,10 @@ class TypeChecker(
                error_code: str = "") -> None:
         """Record a type error diagnostic, placed at *node*
         (:meth:`_placement`)."""
+        if severity == "error":
+            # Counted before the duplicate collapse below: a synthesis that
+            # met an error is one, whether or not the error was new (#1812).
+            self._errors_raised += 1
         span = self._placement(node)
         placed = locate_at(self.file, self.source, span)
         loc = placed["location"]

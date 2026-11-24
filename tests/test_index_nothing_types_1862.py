@@ -25,8 +25,9 @@ exists with no diagnostic behind it.  The instrument:
   destructuring `let`, an `if` branch, an operand, an interpolation, a
   discarded statement) × what leaves its element type unfixed (an empty
   literal, an empty literal read from an index, an `Array` written with no
-  type argument) × whether the position's type reaches the index itself or
-  a generic call that leaves it to the index (`idg(..)`).  Each cell is
+  type argument) × whether the index stands bare or in a generic call
+  (`idg(..)`), whose instantiated parameter the position's type reaches
+  (#1812).  Each cell is
   refused with E164 alone and its fix, applied, checks and compiles with no
   function dropped, or (a position whose type reaches the index) checks and
   compiles as it is;
@@ -151,18 +152,22 @@ def test_repro_the_issue_s_match_over_an_empty_literal_s_index() -> None:
 
 
 def test_repro_an_untyped_index_as_an_element_at_a_typed_binding() -> None:
-    """`let @Array<Int> = [[][0]];`: the binding's type reaches the array
-    literal and not the index (12 November)."""
-    assert _codes(_main("Int", "let @Array<Int> = [[][0]];\n"
-                               "nat_to_int(array_length(@Array<Int>.0))")) == [
-        "E164"]
+    """`let @Array<Int> = [[][0]];`: refused (E164) from 12 November until
+    the binding's element type reached the index (#1812)."""
+    source = _main("Int", "let @Array<Int> = [[][0]];\n"
+                          "nat_to_int(array_length(@Array<Int>.0))")
+    assert _codes(source) == []
+    _compiles_clean(source)
 
 
 def test_repro_an_untyped_index_as_a_tuple_component_at_a_typed_binding(
 ) -> None:
-    """`let @Tuple<Int, Int> = Tuple([][0], 1);` (12 November)."""
-    assert _codes(_main("Int", "let @Tuple<Int, Int> = Tuple([][0], 1);\n0")
-                  ) == ["E164"]
+    """`let @Tuple<Int, Int> = Tuple([][0], 1);`: refused (E164) from 12
+    November until the binding's component type reached the index
+    (#1812)."""
+    source = _main("Int", "let @Tuple<Int, Int> = Tuple([][0], 1);\n0")
+    assert _codes(source) == []
+    _compiles_clean(source)
 
 
 _PICK_FIRST = (f"private forall<T> fn pick_first(@T, @T -> @T)\n{_SIG}"
@@ -184,16 +189,15 @@ _E164_LITERAL_FIX = (
 def test_repro_an_untyped_index_as_a_generic_call_s_argument(
         helpers: str, call: str) -> None:
     """A generic call's argument is typed on its own before the call's
-    variable is fixed, by the binding or by another argument, so the type
-    does not reach the index: at base `vera check` passed and code
-    generation dropped `main` (`E602`, then `vera run` `E907`).  Refused at
-    check with the literal's fix, which, applied, checks and keeps `main`.
-    Carrying the instantiated parameter type back to the argument is issue
-    #1812's mechanism."""
+    variable is fixed, by the binding or by another argument: at base
+    `vera check` passed and code generation dropped `main` (`E602`, then
+    `vera run` `E907`); from #1862 the index was refused (E164).  The
+    argument is now checked against its instantiated parameter once the
+    call fixes it (#1812), so the index has the binding's type, and the
+    literal's fix, applied, checks as well."""
     source = helpers + _main("Int", f"let @Int = {call};\n@Int.0")
-    error, = _errors(source)
-    assert error.error_code == "E164"
-    assert error.fix == _E164_LITERAL_FIX
+    assert _codes(source) == []
+    _compiles_clean(source)
     fixed = helpers + _main(
         "Int", "let @Array<Int> = [];\n"
                f"let @Int = {call.replace('[][0]', '@Array<Int>.0[0]')};\n"
@@ -225,12 +229,12 @@ def test_the_positions_whose_type_reaches_the_index(body: str) -> None:
 def test_repro_an_untyped_index_as_a_non_generic_constructor_s_argument(
 ) -> None:
     """`Box([][0])` with `Box` a constructor of a data type with no type
-    parameters: its field's type does not reach the argument, as a generic
-    constructor's does where its own type is expected.  Dropped at base
-    (`E602`), refused at check now."""
+    parameters: dropped at base (`E602`), refused from #1862 (E164), and
+    typed by the field it is written in since #1812."""
     source = ("private data Box {\n  Box(Int)\n}\n\n"
               + _main("Int", "let @Box = Box([][0]);\n1"))
-    assert _codes(source) == ["E164"]
+    assert _codes(source) == []
+    _compiles_clean(source)
 
 
 def test_repro_an_index_into_an_array_written_with_no_type_argument() -> None:
@@ -763,8 +767,8 @@ POSITIONS: dict[str, tuple[str, str, bool]] = {
     "return": ("Int", "{e}", True),
     "if_branch": ("Int", "if true then {{\n  {e}\n}} else {{\n  1\n}}", True),
     "element": ("Int", "let @Array<Int> = [{e}];\n"
-                       "nat_to_int(array_length(@Array<Int>.0))", False),
-    "component": ("Int", "let @Tuple<Int, Int> = Tuple({e}, 1);\n0", False),
+                       "nat_to_int(array_length(@Array<Int>.0))", True),
+    "component": ("Int", "let @Tuple<Int, Int> = Tuple({e}, 1);\n0", True),
     "match": ("Int", "match {e} {{\n  _ -> 1\n}}", False),
     "destructure": ("Int", "let Tuple<@Int, @Int> = {e};\n@Int.0", False),
     "operand": ("Int", "{e} + 1", False),
@@ -772,8 +776,8 @@ POSITIONS: dict[str, tuple[str, str, bool]] = {
     "discard": ("Int", "{e};\n1", False),
 }
 
-#: Whether the position's type reaches the index or a generic call that
-#: leaves the index with nothing expected of it.
+#: Whether the index stands bare or as a generic call's argument, which the
+#: position's type reaches through the call's instance (#1812).
 FORMS = ("direct", "open_call")
 
 #: The element type the fix writes in place of its `Int`: the type the
@@ -800,7 +804,7 @@ def _cell(source: str, position: str, form: str) -> tuple[str, bool]:
         # A tuple is no array element: the neighbour is the value at a
         # tuple's type, which only the bare type can be refused at.
         typed = False
-    refused = source == "no_type_argument" or form == "open_call" or not typed
+    refused = source == "no_type_argument" or not typed
     return program, refused
 
 

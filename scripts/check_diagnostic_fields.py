@@ -1392,7 +1392,7 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # rule.
     "E125": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
-        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_args"),
         ("vera/checker/calls.py", "CallsMixin._refuse_operation_outside_row"),
         ("vera/checker/expressions.py",
          "ExpressionsMixin._apply_quantifier_predicate"),
@@ -1440,7 +1440,7 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # Call arity mismatch: named call vs. apply_fn, same rule.
     "E201": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
-        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_args"),
     }),
     # Argument type mismatch: named call vs. apply_fn, same rule; and a
     # function-typed argument that fixes one type variable at `Int` and at
@@ -1450,7 +1450,7 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # instance of.
     "E202": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
-        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_args"),
         ("vera/checker/calls.py", "CallsMixin._refuse_unfixed_application"),
         ("vera/checker/resolution.py",
          "ResolutionMixin._refuse_polarity_conflict"),
@@ -1464,7 +1464,7 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # Zero-size element type has no WASM representation: the array-literal
     # inferred form and the written Array/Map/Set type-expression form.
     "E135": frozenset({
-        ("vera/checker/expressions.py", "ExpressionsMixin._check_array_lit"),
+        ("vera/checker/expressions.py", "ExpressionsMixin._array_element_type"),
         ("vera/checker/resolution.py",
          "ResolutionMixin._refuse_array_component"),
         ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),

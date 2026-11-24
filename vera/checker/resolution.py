@@ -1260,6 +1260,22 @@ class ResolutionMixin:
             soft = dict(mapping)
             for tv in holed:
                 mapping[tv] = default_literal_holes(mapping[tv])
+                # #1812: rule C for a binding that also holds a literal,
+                # once its holes are filled: the variable a nested call left
+                # open beside it (`idg(Tuple(head_ord([]), 1))`) takes the
+                # type the result is expected at, in the instance and in the
+                # soft record alike, whose holes it leaves where they are.
+                ctx_ty = from_context.get(tv)
+                if ctx_ty is not None and contains_fresh_typevar(mapping[tv]):
+                    filled = self._join(ctx_ty, mapping[tv])
+                    if (filled is not None
+                            and not contains_fresh_typevar(filled)):
+                        sigma: dict[str, Type] = {}
+                        self._unify_for_inference(mapping[tv], filled, sigma)
+                        sigma = {v: t for v, t in sigma.items()
+                                 if "$" in v and v != LITERAL_HOLE.name}
+                        mapping[tv] = filled
+                        soft[tv] = substitute(soft[tv], sigma)
         else:
             soft = dict(mapping)
         if pinned:

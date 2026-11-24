@@ -22,6 +22,7 @@ from vera.lowering import (
     effect_operation_lowerable,
     handler_lowerable,
 )
+from vera.checker.expressions import Held
 from vera.checker.sql import (
     count_placeholders,
     resolve_array_len,
@@ -1092,7 +1093,28 @@ class CallsMixin:
                                  node: ast.Node, *,
                                  expected: Type | None = None,
                                  ) -> Type | None:
-        """Check a call against a known function signature."""
+        """Check a call against a known function signature.
+
+        A generic function's argument is synthesized before its
+        instantiated parameter is known (`_synth_held`), and settled against
+        it once the call's inference closes it (`_settle`, #1812); an
+        argument the check leaves unsettled has its held refusals made."""
+        helds: list[Held | None] = []
+        try:
+            return self._check_fn_call_args(
+                fn_info, args, node, helds, expected=expected)
+        finally:
+            for held in helds:
+                if held is not None:
+                    self._release(held)
+
+    def _check_fn_call_args(self, fn_info: FunctionInfo,
+                            args: tuple[ast.Expr, ...],
+                            node: ast.Node, helds: list[Held | None], *,
+                            expected: Type | None = None,
+                            ) -> Type | None:
+        """`_check_fn_call_with_info`'s check, each generic argument's
+        first synthesis in *helds* until it is settled."""
         # Synth arg types.  For non-generic functions pass the declared
         # param type as *expected* so that nested constructors can resolve
         # TypeVars from context (fixes #243).  A type variable in it is the
@@ -1102,9 +1124,14 @@ class CallsMixin:
         # (#1684 rule C).
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
+            if fn_info.forall_vars:
+                held = self._synth_held(arg)
+                helds.append(held)
+                arg_types.append(held.ty)
+                continue
+            helds.append(None)
             exp: Type | None = None
-            if (not fn_info.forall_vars
-                    and i < len(fn_info.param_types)):
+            if i < len(fn_info.param_types):
                 pt = fn_info.param_types[i]
                 if not contains_fresh_typevar(pt):
                     exp = pt
@@ -1136,6 +1163,7 @@ class CallsMixin:
         # call is held to the row at the type arguments it fixes, as its
         # parameters and its return are.
         call_effect = fn_info.effect
+        mapping: dict[str, Type] = {}
         if fn_info.forall_vars:
             conflicts: set[str] = set()
             # #1541/#1565: an argument's literals take their type from the
@@ -1294,6 +1322,16 @@ class CallsMixin:
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):
             if type_arg_conflict:
                 break
+            # #1812 (rule E): a generic argument is checked against its
+            # parameter once the inference closes it, where it left a part
+            # open: `idg([][0])` at `let @Int`, `array_reverse([])` at an
+            # `Array<Int>`.
+            held = helds[i]
+            if held is not None:
+                helds[i] = None
+                arg_ty = self._settle(args[i], held, param_ty, foreign=frozenset(
+                    v for v in fn_info.forall_vars or () if v not in mapping))
+                arg_types[i] = arg_ty
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             # #1684: a parameter that is a type variable meets the fit below
@@ -2263,10 +2301,14 @@ class CallsMixin:
     def _check_ability_op_call(self, op_info: OpInfo,
                                args: tuple[ast.Expr, ...],
                                node: ast.Node) -> Type | None:
-        """Check a call to an ability operation."""
-        arg_types: list[Type | None] = []
-        for arg in args:
-            arg_types.append(self._synth_expr(arg))
+        """Check a call to an ability operation.
+
+        Each argument is synthesized before the ability's type variable is
+        known (`_synth_held`), and settled against its parameter once the
+        arguments fix the variable (`_settle`, #1812): in
+        `compare(head_ord([]), 5)` the `5` makes `head_ord([])` an `Int`."""
+        helds = [self._synth_held(arg) for arg in args]
+        arg_types: list[Type | None] = [held.ty for held in helds]
         if not ability_lowerable(op_info.parent_effect):
             # `vera.lowering` rule 4 (#1499): a user ability's operation
             # has no body at any type.  Checked on, so the call's own
@@ -2279,6 +2321,15 @@ class CallsMixin:
         param_types = tuple(
             substitute(p, mapping) for p in op_info.param_types)
         return_type = substitute(op_info.return_type, mapping)
+        ability = self.env.abilities.get(op_info.parent_effect)
+        unfixed = frozenset(
+            v for v in (ability.type_params or () if ability else ())
+            if v not in mapping)
+        for i, held in enumerate(helds):
+            arg_types[i] = self._settle(
+                args[i], held,
+                param_types[i] if i < len(param_types) else None,
+                foreign=unfixed)
 
         if len(args) != len(param_types):
             self._error(
@@ -2861,7 +2912,10 @@ class CallsMixin:
                 and len(expected.type_args) == len(ci.parent_type_params)):
             for tv, exp_arg in zip(ci.parent_type_params,
                                    expected.type_args):
-                if not isinstance(exp_arg, TypeVar):
+                # The enclosing function's own variable is a type like any
+                # other (#1812: `Some([][0])` at an `Option<T>`).
+                if (not isinstance(exp_arg, TypeVar)
+                        or exp_arg.name in self.env.type_params):
                     expected_mapping[tv] = exp_arg
 
         # Compute field types with expected-type substitution so we can
@@ -2870,6 +2924,13 @@ class CallsMixin:
         if ci.field_types is not None and expected_mapping:
             field_types_for_expected = tuple(
                 substitute(ft, expected_mapping) for ft in ci.field_types)
+        # A data type with no type parameters writes its field types whole:
+        # each is the type its argument's position names, and checks an
+        # argument that leaves a part open against it (`_settle`, #1812):
+        # `Box([][0])` takes `Box`'s `Int`.
+        written_fields = (ci.field_types
+                          if ci.field_types is not None
+                          and not ci.parent_type_params else None)
 
         # Synth arg types, passing resolved field type as expected
         arg_types: list[Type | None] = []
@@ -2877,7 +2938,11 @@ class CallsMixin:
             field_expected: Type | None = None
             if field_types_for_expected and i < len(field_types_for_expected):
                 ft = field_types_for_expected[i]
-                if not contains_typevar(ft):
+                # A field type the expected type closes is the argument's,
+                # the enclosing function's own variables included (#1812:
+                # `Some([])` at an `Option<Array<T>>`).
+                if self._closes(ft, foreign=frozenset(
+                        ci.parent_type_params or ()) - set(expected_mapping)):
                     field_expected = ft
                 elif isinstance(
                     arg, (ast.ConstructorCall, ast.NullaryConstructor)
@@ -2897,7 +2962,12 @@ class CallsMixin:
                     # sees a name mismatch, mints fresh, and the field-type
                     # check then rejects the genuinely ill-typed nesting).
                     field_expected = ft
-            arg_types.append(self._synth_expr(arg, expected=field_expected))
+            if written_fields is not None and i < len(written_fields):
+                arg_types.append(self._settle(
+                    arg, self._synth_held(arg), written_fields[i]))
+            else:
+                arg_types.append(
+                    self._synth_expr(arg, expected=field_expected))
 
         if ci.field_types is None:
             if expr.args:
@@ -3210,7 +3280,9 @@ class CallsMixin:
     ) -> Type | None:
         """Type-check a variadic Tuple constructor: Tuple(a, b, ...).
 
-        A component is synthesized with no expected type; where *expected*
+        A component is synthesized with no expected type, and checked
+        against the component *expected* names where that closes a part it
+        leaves open (`_settle`, #1812); where *expected*
         is a tuple whose component is a `Nat` and a generic call in the
         component let a negative literal fix an `Int` there, the component
         is checked against it (``_check_in_literal_context``; PR #1583
@@ -3235,7 +3307,9 @@ class CallsMixin:
             components = base.type_args
         arg_types: list[Type] = []
         for i, arg in enumerate(expr.args):
-            t = self._synth_expr(arg)
+            t = self._settle(arg, self._synth_held(arg),
+                             components[i] if components is not None
+                             else None)
             if components is not None:
                 t = self._check_in_literal_context(
                     arg, t, components[i], component=True)
