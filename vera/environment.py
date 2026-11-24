@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast
-from vera.builtins import BUILTINS, BuiltinSpec
+from vera.builtins import BUILTINS, BuiltinSpec, Inline, Prelude
 from vera.types import (
     BOOL,
     BUILTIN_TYPEVAR_MARKER,
@@ -57,13 +57,27 @@ class FunctionInfo:
     # local materialization).  A generic monomorphized at `T = Unit` only
     # crashes codegen (dangling `@T.n`) when its body READS `@T`; a `@T`
     # parameter that is never read erases cleanly from the ABI.  Empty for
-    # non-generic and built-in functions.  Drives the narrowed E206.
+    # non-generic functions and for a built-in with hand-written lowering; a
+    # built-in lowered as the prelude's body reads what that body reads
+    # (#1870).  Drives the narrowed E206.
     forall_vars_read: frozenset[str] = frozenset()
 
 
 def _function_info(spec: BuiltinSpec) -> FunctionInfo:
     """A built-in's record as the function the checker registers."""
     sig = spec.signature
+    # #1870: the E206 judgment asks which type variables a built-in reads.
+    # One lowered as the prelude's Vera body reads them there, so that body
+    # answers; one with an emitter reads those its record names (an
+    # accumulator held in a local).
+    forall_vars_read: frozenset[str] = frozenset()
+    if isinstance(spec.lowering, Prelude) and sig.forall:
+        from vera.prelude import prelude_forall_vars_read
+
+        forall_vars_read = prelude_forall_vars_read().get(
+            spec.name, frozenset())
+    elif isinstance(spec.lowering, Inline):
+        forall_vars_read = frozenset(spec.lowering.reads)
     return FunctionInfo(
         name=spec.name,
         forall_vars=sig.forall,
@@ -73,6 +87,7 @@ def _function_info(spec: BuiltinSpec) -> FunctionInfo:
         forall_constraints=tuple(
             ast.AbilityConstraint(ability_name=ability, type_var=var)
             for ability, var in sig.constraints),
+        forall_vars_read=forall_vars_read,
     )
 
 
@@ -887,6 +902,8 @@ class TypeEnv:
                 v: v + BUILTIN_TYPEVAR_MARKER for v in original_vars
             }
             info.forall_vars = tuple(renamed_name[v] for v in original_vars)
+            info.forall_vars_read = frozenset(
+                renamed_name[v] for v in info.forall_vars_read)
             info.param_types = tuple(
                 substitute(p, rename) for p in info.param_types
             )

@@ -734,7 +734,7 @@ class TestInferenceProviderDispatch:
         """Anthropic branch uses correct endpoint, headers, and request body shape."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         # Every block in a Messages response carries a `type` discriminator,
         # and the parse selects on it (#1333) — an untyped block is a shape
@@ -743,7 +743,7 @@ class TestInferenceProviderDispatch:
         body = json.dumps({"content": [{"type": "text", "text": "hello"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("anthropic", "prompt", "", "sk-ant")
+            result = _call_inference_provider("anthropic", "prompt", "", "sk-ant", held=HeldKeys(("sk-ant",)))
         assert result == "hello"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.anthropic.com/v1/messages"
@@ -765,12 +765,12 @@ class TestInferenceProviderDispatch:
         """OpenAI branch uses correct endpoint, bearer auth, and OpenAI-compatible body."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider, _PROVIDERS
+        from vera.runtime.inference import HeldKeys, _call_inference_provider, _PROVIDERS
 
         body = json.dumps({"choices": [{"message": {"content": "world"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("openai", "prompt", "", "sk-openai")
+            result = _call_inference_provider("openai", "prompt", "", "sk-openai", held=HeldKeys(("sk-openai",)))
         assert result == "world"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == _PROVIDERS["openai"].url
@@ -790,12 +790,12 @@ class TestInferenceProviderDispatch:
         """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "moonshot"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("moonshot", "prompt", "", "sk-moon")
+            result = _call_inference_provider("moonshot", "prompt", "", "sk-moon", held=HeldKeys(("sk-moon",)))
         assert result == "moonshot"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.moonshot.ai/v1/chat/completions"
@@ -806,12 +806,12 @@ class TestInferenceProviderDispatch:
         """Mistral branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "mistral"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("mistral", "prompt", "", "sk-mistral")
+            result = _call_inference_provider("mistral", "prompt", "", "sk-mistral", held=HeldKeys(("sk-mistral",)))
         assert result == "mistral"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.mistral.ai/v1/chat/completions"
@@ -840,12 +840,12 @@ class TestInferenceProviderDispatch:
         """xAI branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "grok"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("xai", "prompt", "", "sk-xai")
+            result = _call_inference_provider("xai", "prompt", "", "sk-xai", held=HeldKeys(("sk-xai",)))
         assert result == "grok"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.x.ai/v1/chat/completions"
@@ -914,12 +914,12 @@ class TestInferenceProviderDispatch:
         """DeepSeek branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "deepseek"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider("deepseek", "prompt", "", "sk-deepseek")
+            result = _call_inference_provider("deepseek", "prompt", "", "sk-deepseek", held=HeldKeys(("sk-deepseek",)))
         assert result == "deepseek"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.deepseek.com/v1/chat/completions"
@@ -1040,14 +1040,14 @@ class TestInferenceProviderDispatch:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.runtime.inference import _call_inference_provider
+        from vera.runtime.inference import HeldKeys, _call_inference_provider
 
         # Typed block: see `test_anthropic_provider` — the parse selects on
         # `type` (#1333), so an untyped block is not a valid success fixture.
         body = json.dumps({"content": [{"type": "text", "text": "ok"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            _call_inference_provider("anthropic", "hi", "claude-opus-4-6", "sk-ant")
+            _call_inference_provider("anthropic", "hi", "claude-opus-4-6", "sk-ant", held=HeldKeys(("sk-ant",)))
         import json as _json
         sent = _json.loads(mock_urlopen.call_args[0][0].data.decode())
         assert sent["model"] == "claude-opus-4-6"
@@ -1060,10 +1060,10 @@ class TestInferenceProviderDispatch:
         verbatim, so that the boundary needs a single rule rather than a
         list of stdlib types an unforeseen failure also raises.
         """
-        from vera.runtime.inference import _call_inference_provider, InferenceError
+        from vera.runtime.inference import HeldKeys, _call_inference_provider, InferenceError
         import pytest
         with pytest.raises(InferenceError, match="Unknown inference provider"):
-            _call_inference_provider("unknown", "p", "", "")
+            _call_inference_provider("unknown", "p", "", "", held=HeldKeys(("",)))
 
 
 class TestPostconditionHostImportPropagation823:

@@ -1930,6 +1930,16 @@ class SmtContext:
                 right = self.translate_expr(expr.right, env)
         else:
             right = self.translate_expr(expr.right, env)
+        # #1870: a type with no WebAssembly value (`Unit`, a `Future` of
+        # one, a refinement of one) has one value, so two values of it are
+        # equal whatever their operands are; code generation evaluates both
+        # and gives the same constant.  Decided before the operands' terms
+        # are read: an operand with no sort has none, and one that has a
+        # stand-in (a call's result) has a fresh one, which the solver may
+        # choose unequal to the other side's.
+        if (expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ)
+                and self._compares_two_zero_size_values(expr)):
+            return z3.BoolVal(expr.op == ast.BinOp.EQ)
         if left is None or right is None:
             return None
         # #797 defense-in-depth: a binary op mixing an FP operand with a non-FP
@@ -2089,6 +2099,17 @@ class SmtContext:
                 if self._sort_contains_fp(sort.accessor(i, j).range(), seen):
                     return True
         return False
+
+    def _compares_two_zero_size_values(self, expr: ast.BinaryExpr) -> bool:
+        """Whether both operands of *expr* are of a type that erases
+        (``erases_to_unit``), by the checker's types
+        (``_recorded_type_hook``); with none, no (#1870)."""
+        hook = self._recorded_type_hook
+        if hook is None:
+            return False
+        left_type, right_type = hook(expr.left), hook(expr.right)
+        return (left_type is not None and right_type is not None
+                and erases_to_unit(left_type) and erases_to_unit(right_type))
 
     def _equates_two_types(
         self, expr: ast.BinaryExpr, left: z3.ExprRef, right: z3.ExprRef,
