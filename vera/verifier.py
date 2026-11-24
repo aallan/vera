@@ -11228,6 +11228,14 @@ class ContractVerifier:
         if isinstance(element_ty, RefinedType):
             pred = self._translate_refined_predicate(
                 smt, element_ty, element_term)
+            chain = self._refined_chain(element_ty)
+            if (pred is not None and chain is not None
+                    and isinstance(chain[0], AdtType)
+                    and not self._per_element(pred, element_term)):
+                # #1814: a data type's predicate is decided now, and one
+                # that calls a helper would share the helper's one result
+                # across every element (`_per_element`).
+                pred = None
             if pred is None:
                 complete = False
             else:
@@ -11392,13 +11400,40 @@ class ContractVerifier:
             return []
         sequence, index_fn, length_fn, _element_sort = observers
         idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
-        body = self._invariant_at(
-            smt, element_ty, index_fn(sequence, idx), head=False, seen=seen)
+        element = index_fn(sequence, idx)
+        body = [fact for fact in self._invariant_at(
+            smt, element_ty, element, head=False, seen=seen)
+            if self._per_element(fact, element)]
         if not body:
             return []
         inner = z3.And(*body) if len(body) > 1 else body[0]
         return [z3.ForAll([idx], z3.Implies(
             z3.And(idx >= 0, idx < length_fn(sequence)), inner))]
+
+    @staticmethod
+    def _per_element(fact: z3.ExprRef, element: z3.ExprRef) -> bool:
+        """Whether *fact* is about the quantified *element* alone: every
+        uninterpreted constant it mentions is one of the element term's own.
+        A predicate that calls a helper, or reads a stand-in, is translated
+        to a constant minted once for the call and its argument's term, so
+        under the index quantifier every element would share it (a helper
+        `ident(x) == x` would make every element equal).  Such a fact is not
+        stated of the elements."""
+        def constants(root: z3.ExprRef) -> set[int]:
+            found: set[int] = set()
+            stack = [root]
+            visited: set[int] = set()
+            while stack:
+                e = stack.pop()
+                if e.get_id() in visited:
+                    continue
+                visited.add(e.get_id())
+                if (z3.is_const(e)
+                        and e.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+                    found.add(e.get_id())
+                stack.extend(e.children())
+            return found
+        return constants(fact) <= constants(element)
 
     def _states_anything(self, ty: Type | None, seen: frozenset[str]) -> bool:
         """Whether :py:meth:`_invariant_at` states something at some position
@@ -15107,7 +15142,11 @@ class ContractVerifier:
                 predicate, smt._alias_env)
             if binder_key is not None and binder_key != base_name:
                 inner_env = inner_env.push(binder_key, value_term)
-            elif base_name is None:
+            elif base_name is None and any(
+                    isinstance(n, ast.SlotRef) for n in fold.walk(predicate)):
+                # A data type's predicate reads its value under a binder
+                # this did not find; one that reads no slot (`{ @Box |
+                # false }`) is decided as written.
                 return None
             translated = smt.translate_expr(predicate, inner_env)
             if translated is None or translated.sort() != z3.BoolSort():

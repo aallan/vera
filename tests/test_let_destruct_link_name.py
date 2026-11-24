@@ -9,9 +9,11 @@ block had no term and every obligation over it was a runtime check (`E522`)
 where the `match` spelling of the same read is proved.
 
 The matrix: how the destructure names its shape (the constructor, the type,
-an alias of the type) x the data type (generic, non-generic, two fields) x
-where the value comes from (a construction, a parameter, a `let`).  Every
-cell's `ensures` is proved, as its `match` twin's is.
+an alias of the type) x the data type (generic, non-generic, two fields,
+two fields of one type) x where the value comes from (a construction, a
+parameter, a `let`).  Every cell's `ensures` is proved, as its `match`
+twin's is.  The two `Int` fields are unequal and read by a subtraction, so a
+destructure that swapped them proves nothing, and the built cells are run.
 """
 
 from __future__ import annotations
@@ -27,28 +29,35 @@ pytestmark = pytest.mark.matrix(decides=["vera/binding.py", "vera/smt.py"])
 FILE = "destructure.vera"
 
 #: name: (declaration, the value's type, constructor, the type's name,
-#:        the binders, the slot the result reads, a construction)
+#:        the binders, the slot the result reads, a construction, the
+#:        parameter's precondition)
 _TYPES = {
     "generic": ("private data Box<T> { MkBox(T) }", "Box<Int>", "MkBox", "Box",
-                "<@Int>", "@Int.0", "MkBox(5)"),
+                "<@Int>", "@Int.0", "MkBox(5)",
+                "match @Box<Int>.0 { MkBox(@Int) -> @Int.0 == 5 }"),
     "plain": ("private data One { MkOne(Int) }", "One", "MkOne", "One",
-              "<@Int>", "@Int.0", "MkOne(5)"),
+              "<@Int>", "@Int.0", "MkOne(5)",
+              "match @One.0 { MkOne(@Int) -> @Int.0 == 5 }"),
     "pair": ("private data Two { MkTwo(Int, Bool) }", "Two", "MkTwo", "Two",
-             "<@Int, @Bool>", "@Int.0", "MkTwo(5, true)"),
+             "<@Int, @Bool>", "@Int.0", "MkTwo(5, true)",
+             "match @Two.0 { MkTwo(@Int, _) -> @Int.0 == 5 }"),
+    # The first field minus the second: 7 - 2.  Swapped, it reads -5.
+    "ints": ("private data Ints { MkInts(Int, Int) }", "Ints", "MkInts", "Ints",
+             "<@Int, @Int>", "@Int.1 - @Int.0", "MkInts(7, 2)",
+             "match @Ints.0 { MkInts(@Int, @Int) -> @Int.1 - @Int.0 == 5 }"),
 }
 _NAMES = ("constructor", "type", "alias")
 _SOURCES = ("construction", "parameter", "let")
 
 
 def _program(tname: str, naming: str, source: str) -> str:
-    decl, te, ctor, tyname, binders, read, built = _TYPES[tname]
+    decl, te, ctor, tyname, binders, read, built, pre_param = _TYPES[tname]
     alias = f"type Alias = {te};"
     shape = {"constructor": ctor, "type": tyname, "alias": "Alias"}[naming]
     if source == "construction":
         param, value, pre = "Int", built, "true"
     elif source == "parameter":
-        param, value = te, f"@{te}.0"
-        pre = f"match @{te}.0 {{ {ctor}({', '.join(['@Int'] + (['_'] if tname == 'pair' else []))}) -> @Int.0 == 5 }}"
+        param, value, pre = te, f"@{te}.0", pre_param
     else:
         param, value, pre = "Int", f"{{ let @{te} = {built}; @{te}.0 }}", "true"
     return (
@@ -68,6 +77,9 @@ def test_a_destructure_of_a_data_type_translates(cell: tuple[str, str, str]) -> 
     (status,) = [o.status for o in verified.obligations
                  if o.fn_name == "f" and o.kind == "ensures"]
     assert status == "verified"
+    if cell[2] != "parameter":
+        ran = pipeline.run(_program(*cell), "f", [0], file=FILE)
+        assert ran.ok and ran.value == 5, ran.trap
 
 
 _REPRO = """\

@@ -474,8 +474,10 @@ def test_the_result_constant_proves_no_return_row() -> None:
     only: the return position's narrowing is asked of the body's value, and
     stays a runtime check."""
     statuses = _statuses(_NARROWED_RETURN)["h2"]
-    assert all(status != "verified" for kind, status, _ in statuses
-               if kind in ("nat_bind", "refine_bind")), statuses
+    narrowings = [status for kind, status, _ in statuses
+                  if kind in ("nat_bind", "refine_bind")]
+    assert narrowings, statuses
+    assert all(status != "verified" for status in narrowings), statuses
 
 
 #: An operation whose exact result a row asks to be in range, inside a
@@ -528,6 +530,90 @@ def test_repro_a_payloads_fact_holds_only_under_its_constructor() -> None:
     verified = pipeline.verify(_EMPTY_PAYLOAD, file=FILE)
     assert "E500" in [d.error_code for d in verified.errors], [
         (o.kind, o.status) for o in verified.obligations]
+
+
+_SHARED_HELPER_ELEMENTS = """\
+private fn ident_opt(@Option<Int> -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == @Option<Int>.0)
+  effects(pure)
+{
+  @Option<Int>.0
+}
+
+type R = { @Option<Int> | ident_opt(@Option<Int>.0) == @Option<Int>.0 };
+
+public fn f(@Array<R> -> @Bool)
+  requires(array_length(@Array<R>.0) == 2)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  @Array<R>.0[0] == @Array<R>.0[1]
+}
+
+public fn go(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f([Some(1), Some(2)])
+}
+"""
+
+
+def test_repro_an_element_predicate_with_a_helper_is_not_shared() -> None:
+    """A data type's element refinement whose predicate calls a helper is
+    not stated under the index quantifier: the helper's result is one
+    constant for the call, so every element would share it and `a[0] ==
+    a[1]` would be proved, which `go` refutes at run time."""
+    verified = pipeline.verify(_SHARED_HELPER_ELEMENTS, file=FILE)
+    assert "E500" in [d.error_code for d in verified.errors], [
+        (o.kind, o.status) for o in verified.obligations]
+    ran = pipeline.run(pipeline.compile(_SHARED_HELPER_ELEMENTS, file=FILE),
+                       "go", [0])
+    assert not ran.ok, ran
+
+
+_NO_BINDER = """\
+private data Box { MkBox(Int) }
+
+type Nope = { @Box | false };
+
+type Always = { @Box | true };
+
+private fn take_nope(@Nope -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+private fn take_always(@Always -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take_nope(MkBox(1)) + take_always(MkBox(2))
+}
+"""
+
+
+def test_repro_a_data_types_predicate_that_reads_no_binder_is_decided() -> None:
+    """`{ @Box | false }` and `{ @Box | true }` read no slot: each is decided
+    as written at the argument, refused and proved."""
+    verified = pipeline.verify(_NO_BINDER, file=FILE)
+    rows = sorted((o.status, o.error_code) for o in verified.obligations
+                  if o.fn_name == "f" and o.kind == "refine_bind")
+    assert rows == [("verified", ""), ("violated", "E505")], rows
 
 
 def test_a_quotient_stand_in_carries_the_range() -> None:

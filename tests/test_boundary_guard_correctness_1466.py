@@ -1726,8 +1726,8 @@ def test_a_violating_value_is_refused(
         # without one: E121, E213), before any verification is asked.
         bad_errors = m["bad_errors"] or _errors(
             _envelope(_write(tmp_path, _sources(cell)[1], "bad.vera")))
-        checker_refused = bool(bad_errors) and not any(
-            code.startswith("E5") for code in bad_errors)
+        checker_refused = bool(bad_errors) and set(bad_errors) <= {
+            "E121", "E213"}
         assert "E505" in bad_errors or checker_refused, (
             f"{_ids(cell)}: the value decides this data type's refinement, "
             f"and verification says {bad_errors}"
