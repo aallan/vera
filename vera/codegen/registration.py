@@ -327,7 +327,6 @@ class RegistrationMixin:
             layouts[ctor.name] = layout
         self._adt_layouts[decl.name] = layouts
         self._needs_alloc = True
-        self._needs_memory = True
 
         # Build per-constructor type-param index mapping so the monomorphizer and
         # WASM type inference can correctly bind forall vars from sparse constructors

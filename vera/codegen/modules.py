@@ -390,24 +390,50 @@ class CrossModuleMixin:
                 # module's own generic ADT absent from the scoped table, so
                 # its structural-Eq lost the type argument and
                 # `Wrap(3) == Wrap(3)` came back false.
-                _owned_tp = temp._adt_ctor_tp_indices.get(adt_name, {})
+                #
+                # Not mutated where a mutant only stops or changes the copy:
+                # what the per-owner entry holds changes no module (below),
+                # and the test always holds, since `_register_data` writes an
+                # entry for every constructor of every data type it registers
+                # and the built-in layouts, written without one, are skipped
+                # above.
+                _owned_tp = (
+                    temp._adt_ctor_tp_indices.get(  # pragma: no mutate
+                        adt_name, {}))
                 for _ctor_name in layouts:
-                    if _ctor_name in _owned_tp:
-                        self._adt_ctor_tp_indices.setdefault(
-                            adt_name, {}).setdefault(
-                                _ctor_name, _owned_tp[_ctor_name])
-                    # ctor-owner-exempt: the flat mirror, rebuilt per
-                    # namespace by `_namespace_ctor_projection`
-                    if _ctor_name in temp._ctor_adt_tp_indices:
+                    if (
+                        _ctor_name in _owned_tp  # pragma: no mutate
+                    ):
+                        _per_owner = self._adt_ctor_tp_indices
+                        if adt_name not in _per_owner:
+                            _per_owner[adt_name] = {}
+                        # The entry is not mutated: what it holds changes no
+                        # module.  The equality gate and generator and the
+                        # show and hash plans fall back to substituting the
+                        # parameters' names, carried over above, into the
+                        # declared field type; the wildcard-width reader
+                        # runs only for a field whose type is still a type
+                        # variable, whose width is the placeholder either
+                        # way.
+                        _per_owner[adt_name].setdefault(  # pragma: no mutate
+                            _ctor_name, _owned_tp[_ctor_name])
+                    if (
+                        # ctor-owner-exempt: the flat mirror, rebuilt per
+                        # namespace by `_namespace_ctor_projection`.  The
+                        # test and the copy below are not mutated: no
+                        # generator reads its own flat mirror (a context is
+                        # built from the projection), so what it holds
+                        # changes no module.
+                        _ctor_name in temp._ctor_adt_tp_indices  # pragma: no mutate
+                    ):
                         # ctor-owner-exempt: the flat mirror carried
                         # alongside the per-owner copy above (#1436)
-                        self._ctor_adt_tp_indices.setdefault(
+                        self._ctor_adt_tp_indices.setdefault(  # pragma: no mutate
                             _ctor_name,
                             # ctor-owner-exempt: the flat mirror carried
                             # alongside the per-owner copy above (#1436)
                             temp._ctor_adt_tp_indices[_ctor_name])
                 self._needs_alloc = True
-                self._needs_memory = True
 
             # The alias-namespace capture (#1111) that used to sit here now
             # runs immediately after `temp._register_all` above, where the
