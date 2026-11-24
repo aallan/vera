@@ -4289,33 +4289,30 @@ def test_e505_a_refuted_value_inside_a_handle(tmp_path: Path) -> None:
 
 
 def test_e506_a_value_inside_a_handle_clause(tmp_path: Path) -> None:
-    """_relocate_diagnostic: E506."""
+    """_relocate_diagnostic: E506.  The payload's row is a checked one
+    (#1542): the Tier 3 note, where it was the disclosure of a stale reason."""
     assert _found(
         pipeline.verify(_E506_A_VALUE_INSIDE_A_HANDLE_CLAUSE, file="main.vera"),
         "E506", tmp_path) == (
         [{'severity': 'warning',
-          'description': "The refinement narrowing in 'f' could not be "
-                         'verified statically, and no runtime check can be '
-                         'emitted for it: code generation emits no store check '
-                         'for a value produced inside a handle body. It is '
-                         'counted in neither tier.',
+          'description': "Refinement predicate at a return type in 'f' could "
+                         'not be verified statically; it will be checked at '
+                         'run time. To prove it statically, add a '
+                         '`requires(...)` implying the predicate or guard the '
+                         'binding with an `if`.',
           'location': {'line': 9, 'column': 27, 'file': 'main.vera'},
           'source_line': '    throw(@Int) -> { Some(0 - 5) }',
-          'rationale': 'It was not discharged statically: the only '
-                       'countermodel ran over an opaque stand-in for a value '
-                       'the verifier cannot translate, which refutes nothing '
-                       'the program produces.  No runtime check guards this '
-                       'site because code generation emits no store check for '
-                       'a value produced inside a handle body, so a value that '
-                       'violates it is not caught at run time; the verifier '
-                       'discloses it rather than claim a runtime check.',
-          'fix': 'Produce the payload inside the handle and build the value '
-                 "outside it: bind the handle's result with a `let` at the "
-                 "payload's type and construct from that slot (`let @Int = "
-                 'handle[...] {...} in {...}; Some(@Int.0)`), where the '
-                 "construction's store is checked at run time.",
-          'spec_ref': 'Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
-          'error_code': 'E506'}])
+          'rationale': 'The refinement predicate was not discharged '
+                       'statically: the only countermodel ran over an opaque '
+                       'stand-in for a value the verifier cannot translate, '
+                       'which refutes nothing the program produces.  Codegen '
+                       'emits a runtime predicate guard at the function '
+                       'boundary, so the narrowing is checked at run time '
+                       '(Tier 3) rather than silently accepted.',
+          'spec_ref': 'Chapter 2, Section 2.6 "Refinement Types" and Chapter '
+                      '6, Section 6.8 "Summary of Verification Tiers"',
+          'error_code': 'E506',
+          'tier': 3}])
 
 
 def test_e503_e505_a_binder_after_a_wildcard(tmp_path: Path) -> None:
