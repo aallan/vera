@@ -1,0 +1,813 @@
+"""A narrowing is never proved from the fact its own reader reads (#1897).
+
+A `match` arm that binds a component of a composite takes the component's
+declared refinement as a fact (`ContractVerifier._subpattern_source_facts`),
+read off the scrutinee's declared type, and the SMT layer asserts it into the
+solver's base context while it translates the body (`_translate_match`).  A
+slot bound by a narrowing (`let @Tuple<Small, Int> = @Tuple<Int, Int>.0`)
+holds the source value's own term, so that fact is the goal of the
+narrowing's own `refine_bind`, asserted before the binding walk asks it.  The
+narrowing was recorded `verified`, and so was every other obligation over the
+same term (an `ensures`, a call's precondition, a second narrowing of the same
+value at a call, a `put`, a return); a payload no boundary checks reached its
+reader with every gate green.
+
+THE RULE.  A producer's own obligation is discharged without the fact it
+publishes (spec §6.2.5, §2.6.4).  A narrowing row below a type's head (the
+table lists one exactly where the value's own type does not state the
+refinement its position writes) is the producer of every fact a reader takes
+off that type, so the translation records the narrowed value
+(`ContractVerifier._note_narrowing`): at the row's value, at the component a
+binder row takes apart, at the stand-in a walk binds where it cannot read the
+value, at a join whose leaf narrows, and at a built-in's result over a
+narrowed value (a store, a read back out of it).  The one gate every reader
+asks, `_established_facts`, withholds a fact over a term that holds a
+narrowed value, as it withholds a disclosed producer's: offered only on a
+second attempt, so a goal that needs it is Tier 3 (E534, E532), and the
+narrowing's own query (`check_valid`'s *own*) is offered it on no attempt, so
+a narrowing nothing else establishes is refuted (E505) or left to its check.
+
+THE INSTRUMENT.  The generated matrix crosses where the narrowed value comes
+from (a parameter, a call's result, a `let`-bound slot, a `match` binder, a
+destructured component, an `if` join, a handler clause's parameter, a
+`handle`'s value), where it narrows (a `let`, a constructor field, a tuple
+component, a `State` `put`, a call argument, an `apply_fn` argument, a return,
+a narrowing `match` binder, a destructured component), the shape
+(`Tuple<Small, Int>`, `Option<Small>`, a data type `Wrap<Small>`, a nested
+tuple), the reader (a binding sub-pattern at the base type, one at the
+refined type, a wildcard, a destructure, none), where the reader stands (the
+narrowed value itself, a `let` narrowing of the same value before the
+position, or after it), and the predicate (one the solver decides, one
+outside its fragment).  The value is 50 at every run, which `Small` refuses
+under both predicates, so in every cell:
+
+* no `refine_bind` record at the narrowing is `verified`;
+* a run that delivers the value does so only where verification refuses the
+  program or discloses the narrowing (`tier3_unguarded`, E506);
+* the differential: every `verified` record of the program is `verified`
+  again with every reader fact withheld (`_subpattern_source_facts` returning
+  none), so no record rests on a reader's fact.
+
+The narrowing `match` binder and the destructured component below a binder's
+head have no record at all: they are #1542's, pinned here as they are (no
+record) for the lane that adds them.
+"""
+
+from __future__ import annotations
+
+import itertools
+import re
+import textwrap
+from dataclasses import dataclass
+from typing import Any, Callable
+
+import pytest
+
+from tests import pipeline
+from vera import verifier as verifier_mod
+from vera.reconcile import reconcile
+
+# The modules that decide the class: the translation that records a narrowed
+# value and asserts a reader's facts, and the verifier's gate, its hook and
+# the narrowing discharges.
+pytestmark = pytest.mark.matrix(decides=["vera/smt.py", "vera/verifier.py"])
+
+FILE = "reader_fact_1897.vera"
+VIOLATING = 50
+
+PREDICATES = {
+    "solver": "@Int.0 < 10",
+    "outside": "string_length(to_string(@Int.0)) < 2",
+}
+
+
+@dataclass(frozen=True)
+class Shape:
+    refined: str
+    base: str
+    build: str
+    valid: str
+    bind: tuple[tuple[str, str], ...]
+    ref: tuple[tuple[str, str], ...]
+    wild: tuple[tuple[str, str], ...]
+    destr: tuple[tuple[str, ...], str] | None
+
+
+SHAPES = {
+    "tuple": Shape(
+        "Tuple<Small, Int>", "Tuple<Int, Int>", "Tuple(@Int.0, 0)",
+        "Tuple(1, 0)",
+        (("Tuple(@Int, @Int)", "@Int.1"),),
+        (("Tuple(@Small, @Int)", "@Small.0"),),
+        (("Tuple(_, @Int)", "1"),),
+        (("let Tuple<@Int, @Int> = {E};",), "@Int.1")),
+    "option": Shape(
+        "Option<Small>", "Option<Int>", "Some(@Int.0)", "Some(1)",
+        (("Some(@Int)", "@Int.0"), ("None", "0")),
+        (("Some(@Small)", "@Small.0"), ("None", "0")),
+        (("Some(_)", "1"), ("None", "0")),
+        None),
+    "data": Shape(
+        "Wrap<Small>", "Wrap<Int>", "W(@Int.0)", "W(1)",
+        (("W(@Int)", "@Int.0"),),
+        (("W(@Small)", "@Small.0"),),
+        (("W(_)", "1"),),
+        None),
+    "nested": Shape(
+        "Tuple<Tuple<Small, Int>, Int>", "Tuple<Tuple<Int, Int>, Int>",
+        "Tuple(Tuple(@Int.0, 0), 0)", "Tuple(Tuple(1, 0), 0)",
+        (("Tuple(Tuple(@Int, @Int), _)", "@Int.1"),),
+        (("Tuple(Tuple(@Small, @Int), _)", "@Small.0"),),
+        (("Tuple(Tuple(_, @Int), _)", "1"),),
+        (("let Tuple<@Tuple<Int, Int>, @Int> = {E};",
+          "let Tuple<@Int, @Int> = @Tuple<Int, Int>.0;"), "@Int.1")),
+}
+SOURCES = ("param", "call", "let", "binder", "destructure", "ifjoin",
+           "clause", "handleval")
+POSITIONS = ("let", "field", "tcomp", "put", "call", "apply", "return",
+             "mbind", "destrp")
+READERS = ("bind", "ref", "wild", "destr", "none")
+#: The positions #1542 owns: a binder below the head with no record.
+NO_RECORD_1542 = ("mbind", "destrp")
+
+
+def _slot(t: str) -> str:
+    return "@" + t
+
+
+def _reader(shape: Shape, kind: str, expr: str,
+            wrap: Callable[[str], str] = lambda p: p,
+            wrap_bind: str | None = None) -> tuple[list[str], str] | None:
+    """The statements reading *expr* (of the refined type) and the Int
+    they leave, through a container pattern *wrap* where one is given."""
+    if kind == "none":
+        return [], "0"
+    if kind == "destr":
+        if shape.destr is None:
+            return None
+        stmts, res = shape.destr
+        if wrap_bind is None:
+            return [s.replace("{E}", expr) for s in stmts], res
+        inner = " ".join(s.replace("{E}", _slot(shape.refined) + ".0")
+                         for s in stmts)
+        return ([f"let @Int = match {expr} {{ {wrap_bind} -> "
+                 f"{{ {inner} {res} }} }};"], "@Int.0")
+    arms = ", ".join(f"{wrap(p)} -> {r}" for p, r in getattr(shape, kind))
+    return [f"let @Int = match {expr} {{ {arms} }};"], "@Int.0"
+
+
+def _orders(position: str, reader: str) -> tuple[str, ...]:
+    if reader == "none":
+        return ("none",)
+    if position in ("let", "mbind", "destrp"):
+        return ("self",)
+    if position in ("field", "tcomp"):
+        return ("self", "pre", "post")
+    if position == "return":
+        return ("pre",)
+    return ("pre", "post")
+
+
+def _shift(expr: str, by: int) -> str:
+    m = re.fullmatch(r"@Int\.(\d+)", expr)
+    return f"@Int.{int(m.group(1)) + by}" if m else expr
+
+
+@dataclass(frozen=True)
+class Cell:
+    source: str
+    position: str
+    shape: str
+    reader: str
+    predicate: str
+    order: str
+
+    @property
+    def id(self) -> str:
+        return "-".join((self.source, self.position, self.shape, self.reader,
+                         self.predicate, self.order))
+
+
+def _program(cell: Cell) -> tuple[str, str] | None:
+    """The cell's program and the text of the narrowed expression's line
+    (whose records are the narrowing's), or None for a product that is
+    no program (a destructure reader of a non-tuple shape)."""
+    sh = SHAPES[cell.shape]
+    S, B = sh.refined, sh.base
+    pre: list[str] = []
+    post: list[str] = []
+    inner_param, go_arg = "@Int", "@Int.0"
+
+    def x_of(k: int) -> str:
+        return {
+            "param": f"{_slot(B)}.0", "let": f"{_slot(B)}.0",
+            "binder": f"{_slot(B)}.0", "destructure": f"{_slot(B)}.0",
+            "clause": f"{_slot(B)}.0",
+            "call": f"mk(@Int.{k})",
+            "ifjoin": (f"if @Int.{k} > 100 then {{ mk(@Int.{k}) }} "
+                       f"else {{ mk(@Int.{k} + 1) }}"),
+            "handleval": (f"handle[Exn<Int>] {{ throw(@Int) -> mk(@Int.0) }}"
+                          f" in {{ mk(@Int.{k}) }}"),
+        }[cell.source]
+
+    if cell.source == "param":
+        inner_param, go_arg = _slot(B), "mk(@Int.0)"
+    elif cell.source == "let":
+        pre = [f"let {_slot(B)} = mk(@Int.0);"]
+    elif cell.source == "binder":
+        pre, post = [f"match hold(@Int.0) {{ H({_slot(B)}) -> {{"], ["} }"]
+    elif cell.source == "destructure":
+        pre = [f"let Tuple<{_slot(B)}, @Int> = pair(@Int.0);"]
+    elif cell.source == "clause":
+        pre = [f"handle[Exn<{B}>] {{", f"throw({_slot(B)}) -> {{"]
+        post = ["}", "} in {", "throw(mk(@Int.0))", "}"]
+
+    extra: list[str] = []
+    ret = "@Int"
+    go_tail: tuple[list[str], str] | None = None
+    order, reader = cell.order, cell.reader
+
+    if cell.position in NO_RECORD_1542:
+        if cell.position == "mbind":
+            extra.append(_fn("wrapH", f"{_slot(B)}", f"@Hold<{B}>",
+                             f"H({_slot(B)}.0)"))
+        else:
+            extra.append(_fn("pairOf", f"{_slot(B)}", f"@Tuple<{B}, Int>",
+                             f"Tuple({_slot(B)}.0, 0)"))
+        r = _reader(sh, reader, f"{_slot(S)}.0")
+        if r is None:
+            return None
+        st, res = r
+        if cell.position == "mbind":
+            head = f"match wrapH({x_of(0)}) {{ H({_slot(S)}) ->"
+            body = [head, "{ " + " ".join(st) + f" {res} }}", "}"]
+        else:
+            head = f"let Tuple<{_slot(S)}, @Int> = pairOf({x_of(0)});"
+            body = [head, *st, res]
+        return _assemble(cell, sh, pre + body + post, inner_param, go_arg,
+                         ret, extra, go_tail), head
+
+    def site(k: int) -> tuple[list[str], str, int]:
+        x = x_of(k)
+        pos = cell.position
+        if pos == "let":
+            return [f"let {_slot(S)} = {x};"], x, 0
+        if pos == "field":
+            return [f"let @Bx = MkBx({x});"], x, 0
+        if pos == "tcomp":
+            return [f"let @Tuple<{S}, Int> = Tuple({x}, 1);"], x, 0
+        if pos == "put":
+            return [f"put({x});"], x, 0
+        if pos == "call":
+            return [f"let @Int = consume({x});"], x, 1
+        if pos == "apply":
+            st, res = _reader(sh, "bind", f"{_slot(S)}.0")  # type: ignore[misc]
+            clo = (f"fn({_slot(S)} -> @Int) effects(pure) {{ "
+                   + " ".join(st) + f" {res} }}")
+            return [f"let @Int = apply_fn({clo}, {x});"], x, 1
+        return [x], x, 0  # return
+
+    if cell.position == "field":
+        extra.append(f"public data Bx {{ MkBx({S}) }}")
+    if cell.position == "call":
+        st, res = _reader(sh, "bind", f"{_slot(S)}.0")  # type: ignore[misc]
+        extra.append(_fn("consume", _slot(S), "@Int", "\n  ".join([*st, res])))
+    if cell.position == "return":
+        ret = _slot(S)
+        go_tail = _reader(sh, "bind", f"{_slot(S)}.0")  # type: ignore[assignment]
+
+    def let_reader(k: int) -> tuple[list[str], str] | None:
+        r = _reader(sh, reader, f"{_slot(S)}.0")
+        if r is None:
+            return None
+        return [f"let {_slot(S)} = {x_of(k)};", *r[0]], r[1]
+
+    if order == "none":
+        lines, _x, n_site = site(0)
+        body = lines + ([] if cell.position == "return"
+                        else ["@Int.0" if n_site else "0"])
+    elif order == "self":
+        lines, _x, _n = site(0)
+        if cell.position == "let":
+            r = _reader(sh, reader, f"{_slot(S)}.0")
+        elif cell.position == "field":
+            r = _reader(sh, reader, "@Bx.0", wrap=lambda p: f"MkBx({p})",
+                        wrap_bind=f"MkBx({_slot(S)})")
+        else:
+            r = _reader(sh, reader, f"@Tuple<{S}, Int>.0",
+                        wrap=lambda p: f"Tuple({p}, _)",
+                        wrap_bind=f"Tuple({_slot(S)}, _)")
+        if r is None:
+            return None
+        body = lines + r[0] + [r[1]]
+    elif order == "pre":
+        lr = let_reader(0)
+        if lr is None:
+            return None
+        st, res = lr
+        n = _int_binders(st)
+        lines, _x, n_site = site(n)
+        body = st + lines + ([] if cell.position == "return"
+                             else [_shift(res, n_site)])
+    else:  # post
+        lines, _x, n_site = site(0)
+        lr = let_reader(n_site)
+        if lr is None:
+            return None
+        body = lines + lr[0] + [lr[1]]
+
+    if cell.position == "put":
+        body = [f"handle[State<{S}>]({_slot(S)} = {sh.valid}) {{",
+                f"get(@Unit) -> {{ resume({_slot(S)}.0) }},",
+                f"put({_slot(S)}) -> {{ resume(()) }}",
+                "} in {", *body, "}"]
+    line_of_site = lines[0]
+    return _assemble(cell, sh, pre + body + post, inner_param, go_arg, ret,
+                     extra, go_tail), line_of_site
+
+
+def _int_binders(stmts: list[str]) -> int:
+    """How many `@Int` slots *stmts* bind, so a later `@Int.k` still names
+    the function's parameter."""
+    n = 0
+    for s in stmts:
+        if s.startswith("let @Int "):
+            n += 1
+        elif s.startswith("let Tuple<@Int, @Int>"):
+            n += 2
+        elif s.startswith("let Tuple<@Tuple<Int, Int>, @Int>"):
+            n += 1
+    return n
+
+
+def _fn(name: str, param: str, ret: str, body: str) -> str:
+    return (f"private fn {name}({param} -> {ret})\n  requires(true)\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n  {body}\n}}")
+
+
+def _assemble(cell: Cell, sh: Shape, body: list[str], inner_param: str,
+              go_arg: str, ret: str, extra: list[str],
+              go_tail: tuple[list[str], str] | None) -> str:
+    B = sh.base
+    parts = [f"type Small = {{ @Int | {PREDICATES[cell.predicate]} }};",
+             "public data Wrap<T> { W(T) }",
+             "public data Hold<T> { H(T) }"]
+    parts += [d for d in extra if d.startswith("public data")]
+    parts += [_fn("mk", "@Int", _slot(B), sh.build),
+              _fn("hold", "@Int", f"@Hold<{B}>", "H(mk(@Int.0))"),
+              _fn("pair", "@Int", f"@Tuple<{B}, Int>", "Tuple(mk(@Int.0), 0)")]
+    parts += [d for d in extra if not d.startswith("public data")]
+    parts.append(
+        f"private fn inner({inner_param} -> {ret})\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        + "\n".join("  " + ln for ln in body) + "\n}")
+    if go_tail is None:
+        go_body = f"inner({go_arg})"
+    else:
+        go_body = "\n  ".join(
+            [f"let {_slot(sh.refined)} = inner({go_arg});", *go_tail[0],
+             go_tail[1]])
+    parts.append(_fn("go", "@Int", "@Int", go_body).replace(
+        "private fn go", "public fn go"))
+    return "\n\n".join(parts) + "\n"
+
+
+CELLS = [
+    Cell(source, position, shape, reader, predicate, order)
+    for source, position, shape, reader, predicate in itertools.product(
+        SOURCES, POSITIONS, SHAPES, READERS, PREDICATES)
+    for order in _orders(position, reader)
+    if not (reader == "destr" and SHAPES[shape].destr is None)
+]
+
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+
+def _status(o: Any) -> str:
+    code = getattr(o, "error_code", None)
+    return f"{o.status}/{code}" if code else o.status
+
+
+def _verify(source: str) -> pipeline.Verified:
+    verified = pipeline.verify(source, file=FILE)
+    assert not verified.checked.errors, [
+        (d.error_code, d.description[:80]) for d in verified.checked.errors]
+    return verified
+
+
+def _run(source: str, args: list[int]) -> pipeline.Ran:
+    ran = pipeline.run(source, "go", args, file=FILE)
+    assert ran.compiled is not None and ran.compiled.ok, (
+        [(d.error_code, d.description[:80]) for d in ran.compiled.errors]
+        if ran.compiled is not None else "no compile")
+    return ran
+
+
+def _line(source: str, text: str) -> int:
+    for n, ln in enumerate(source.splitlines(), 1):
+        if ln.strip() == text.strip():
+            return n
+    raise AssertionError(f"no line {text!r}")
+
+
+def _at_line(verified: pipeline.Verified, line: int,
+             kind: str = "refine_bind") -> list[str]:
+    return sorted(_status(o) for o in verified.obligations
+                  if o.kind == kind and o.line == line)
+
+
+def _site_records(verified: pipeline.Verified, source: str, line: int,
+                  position: str) -> list[str]:
+    """The narrowing's `refine_bind` records.  A return's stand at the
+    body (column 3, the block it returns); an `apply_fn` argument's at the
+    argument, after the closure on the same line, whose own records stand
+    inside it; every other position's at its line."""
+    if position == "return":
+        return sorted(_status(o) for o in verified.obligations
+                      if o.kind == "refine_bind" and o.fn_name == "inner"
+                      and o.column == 3)
+    first = 0
+    if position == "apply":
+        text = source.splitlines()[line - 1]
+        first = text.rindex("}, ") + len("}, ") + 1
+    return sorted(_status(o) for o in verified.obligations
+                  if o.kind == "refine_bind" and o.line == line
+                  and o.column >= first)
+
+
+def _verified_records(verified: pipeline.Verified) -> set[tuple[str, int, int]]:
+    return {(o.kind, o.line, o.column) for o in verified.obligations
+            if o.status == "verified"}
+
+
+@pytest.fixture
+def withheld_readers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every reader fact withheld: a `match` arm states nothing off the
+    scrutinee's declared type."""
+    monkeypatch.setattr(
+        verifier_mod.ContractVerifier, "_subpattern_source_facts",
+        lambda self, scrutinee, scrutinee_z3, pattern, smt: [])
+
+
+# =====================================================================
+# The reported instance and the class lines, unparametrised
+# =====================================================================
+
+SMALL = "type Small = { @Int | @Int.0 < 10 };\n\n"
+SHORT = "type Short = { @Int | string_length(to_string(@Int.0)) < 3 };\n\n"
+
+ISSUE = SMALL + textwrap.dedent("""\
+    private fn inner(@Tuple<Int, Int> -> @Int)
+      requires(true)
+      ensures(@Int.result < 10)
+      effects(pure)
+    {
+      let @Tuple<Small, Int> = @Tuple<Int, Int>.0;
+      match @Tuple<Small, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }
+    }
+
+    public fn go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      inner(Tuple(@Int.0, 0))
+    }
+    """)
+
+
+def test_repro_issue_1897() -> None:
+    """The reported program: the `let` was `verified` from its reader's
+    fact, and so was the `ensures`.  Now the narrowing is refuted and the
+    `ensures`, which holds only from the withheld fact, is Tier 3 (E534)."""
+    verified = _verify(ISSUE)
+    let = _line(ISSUE, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+    assert _at_line(verified, _line(ISSUE, "ensures(@Int.result < 10)"), "ensures") == ["tier3/E534"]
+    assert "E534" in {d.error_code for d in verified.warnings}
+
+
+def _let_program(shape: str, reader: str, refined: str = "Small",
+                 head: str = SMALL) -> str:
+    sh = SHAPES[shape]
+    S = sh.refined.replace("Small", refined)
+    arms = reader.replace("Small", refined)
+    return head + textwrap.dedent(f"""\
+        public data Wrap<T> {{ W(T) }}
+
+        private fn mk(@Int -> @{sh.base})
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {{
+          {sh.build}
+        }}
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {{
+          let @{S} = mk(@Int.0);
+          match @{S}.0 {{ {arms} }}
+        }}
+        """)
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_repro_let_at_each_shape(shape: str) -> None:
+    """Class line 1: a `let` at `Tuple<Small, Int>`, `Option<Small>`,
+    `Wrap<Small>` or a nested tuple from a call, read by a binding
+    sub-pattern: `verified` and 50 delivered; now refuted (E505)."""
+    arms = ", ".join(f"{p} -> {r}" for p, r in SHAPES[shape].bind)
+    source = _let_program(shape, arms)
+    verified = _verify(source)
+    let = _line(source, f"let @{SHAPES[shape].refined} = mk(@Int.0);")
+    assert _at_line(verified, let) == ["violated/E505"]
+
+
+def test_repro_outside_the_solver() -> None:
+    """The issue's comment of 24 Nov: `Short` outside the solver's fragment
+    at an `Option` from a call, read by a binding sub-pattern: the `let` was
+    `verified` and 5000 delivered.  Now no record at the `let` is
+    `verified`."""
+    source = _let_program("option", "Some(@Int) -> @Int.0, None -> 0",
+                          refined="Short", head=SHORT)
+    verified = _verify(source)
+    let = _line(source, "let @Option<Short> = mk(@Int.0);")
+    assert "verified" not in _at_line(verified, let)
+    assert _at_line(verified, let)
+
+
+def _cell_program(**kw: str) -> tuple[str, int]:
+    cell = Cell(**kw)  # type: ignore[arg-type]
+    made = _program(cell)
+    assert made is not None
+    source, site = made
+    return source, _line(source, site)
+
+
+@pytest.mark.parametrize("position", ["field", "tcomp"])
+def test_repro_field_and_tuple_component(position: str) -> None:
+    """Class line 2: a constructor field and a tuple component given the
+    parameter, beside a `let` narrowing of it that a reader reads: the store
+    was `verified` and 50 delivered; now refuted."""
+    source, line = _cell_program(source="param", position=position,
+                                 shape="tuple", reader="bind",
+                                 predicate="solver", order="pre")
+    verified = _verify(source)
+    assert _at_line(verified, line) == ["violated/E505"]
+
+
+def test_repro_state_put() -> None:
+    """Class line 3: a `put` of the parameter after a reader of it at
+    `State<Tuple<Small, Int>>`: `verified` and 50 delivered; now refuted."""
+    source, line = _cell_program(source="param", position="put",
+                                 shape="tuple", reader="bind",
+                                 predicate="solver", order="pre")
+    verified = _verify(source)
+    assert _at_line(verified, line) == ["violated/E505"]
+
+
+@pytest.mark.parametrize(("position", "order"), [
+    ("call", "pre"), ("call", "post"), ("apply", "pre"), ("apply", "post"),
+    ("return", "pre"),  # a return has nothing after it
+])
+def test_repro_call_apply_and_return(position: str, order: str) -> None:
+    """Class line 4: a call argument, an `apply_fn` argument and a return,
+    before or after a reader of the same value: `verified`; an `Option`
+    payload was delivered.  Now refuted."""
+    source, line = _cell_program(source="param", position=position,
+                                 shape="option", reader="bind",
+                                 predicate="solver", order=order)
+    verified = _verify(source)
+    if position == "return":
+        records = sorted(_status(o) for o in verified.obligations
+                         if o.kind == "refine_bind" and o.fn_name == "inner"
+                         and o.line >= line - 2)
+        assert "verified" not in records, records
+        assert "violated/E505" in records, records
+    else:
+        assert _at_line(verified, line) == ["violated/E505"]
+
+
+def test_repro_other_obligations_over_the_value() -> None:
+    """Class line 5: an `ensures` over the value read, and a call's
+    precondition after the reader: `verified`, refuted at run time.  Now
+    Tier 3, each with the check that refutes it."""
+    body = textwrap.dedent("""\
+        private fn need(@Int -> @Int)
+          requires(@Int.0 < 10)
+          ensures(@Int.result == @Int.0)
+          effects(pure)
+        {
+          @Int.0
+        }
+
+        private fn inner(@Tuple<Int, Int> -> @Int)
+          requires(true)
+          ensures(@Int.result < 10)
+          effects(pure)
+        {
+          let @Tuple<Small, Int> = @Tuple<Int, Int>.0;
+          let @Int = match @Tuple<Small, Int>.0 { Tuple(@Int, @Int) -> @Int.1 };
+          need(@Int.0)
+        }
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          inner(Tuple(@Int.0, 0))
+        }
+        """)
+    source = SMALL + body
+    verified = _verify(source)
+    ensures = _line(source, "ensures(@Int.result < 10)")
+    call = _line(source, "need(@Int.0)")
+    # Tier 3: `E534` where the withheld fact is what the proof needs, or
+    # `E522` where the refutation without it rests on the call's stand-in.
+    assert [r.split("/")[0] for r in _at_line(verified, ensures, "ensures")] \
+        == ["tier3"]
+    assert [r.split("/")[0] for r in _at_line(verified, call, "call_pre")] \
+        == ["tier3"]
+    ran = _run(source, [VIOLATING])
+    assert ran.trap is not None
+
+
+READ_BACKS = {
+    "array_literal": (
+        "let @Array<Tuple<Small, Int>> = [mk(@Int.0)];",
+        "match @Array<Tuple<Small, Int>>.0[0] { Tuple(@Int, @Int) -> @Int.1 }"),
+    "map_insert": (
+        "let @Map<Int, Tuple<Small, Int>> = "
+        "map_insert(map_new(), 1, mk(@Int.0));",
+        "match map_get(@Map<Int, Tuple<Small, Int>>.0, 1) "
+        "{ Some(Tuple(@Int, @Int)) -> @Int.1, None -> 0 }"),
+    "array_append": (
+        "let @Array<Tuple<Small, Int>> = "
+        "array_append([Tuple(1, 0)], mk(@Int.0));",
+        "match @Array<Tuple<Small, Int>>.0[1] { Tuple(@Int, @Int) -> @Int.1 }"),
+}
+
+
+@pytest.mark.parametrize("store", list(READ_BACKS))
+def test_repro_read_back_from_a_store(store: str) -> None:
+    """Class line 6: an `ensures` over a component read back from an array
+    literal, a `map_insert` value or an `array_append` element at a refined
+    component type was proved from the read-back's declared type, which only
+    the store's narrowing establishes.  Now Tier 3 (E534)."""
+    let, read = READ_BACKS[store]
+    source = SMALL + textwrap.dedent(f"""\
+        private fn mk(@Int -> @Tuple<Int, Int>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {{
+          Tuple(@Int.0, 0)
+        }}
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(@Int.result < 10)
+          effects(pure)
+        {{
+          {let}
+          {read}
+        }}
+        """)
+    verified = _verify(source)
+    ensures = _line(source, "ensures(@Int.result < 10)")
+    assert _at_line(verified, ensures, "ensures") == ["tier3/E534"]
+
+
+# =====================================================================
+# What stays: the shapes the rule leaves at Tier 1
+# =====================================================================
+
+
+def test_a_reader_of_a_parameter_at_its_own_type_keeps_its_fact() -> None:
+    """A slot whose type its producer established (a parameter declared at
+    the refined type) is no narrowing: its reader's fact proves the
+    `ensures`, as before."""
+    source = SMALL + textwrap.dedent("""\
+        public fn go(@Tuple<Small, Int> -> @Int)
+          requires(true)
+          ensures(@Int.result < 10)
+          effects(pure)
+        {
+          match @Tuple<Small, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }
+        }
+        """)
+    verified = _verify(source)
+    assert verified.ok
+    assert _at_line(verified, _line(source, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
+
+
+def test_a_proved_narrowing_still_proves_its_readers() -> None:
+    """A narrowing the context proves (a `requires` over the component) is
+    `verified` without the fact, and what its reader proves stays Tier 1:
+    the premises that prove the narrowing are in the reader's context."""
+    source = SMALL + textwrap.dedent("""\
+        private fn inner(@Tuple<Int, Int> -> @Int)
+          requires(match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 < 10 })
+          ensures(@Int.result < 10)
+          effects(pure)
+        {
+          let @Tuple<Small, Int> = @Tuple<Int, Int>.0;
+          match @Tuple<Small, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }
+        }
+
+        public fn go(@Int -> @Int)
+          requires(@Int.0 < 10)
+          ensures(true)
+          effects(pure)
+        {
+          inner(Tuple(@Int.0, 0))
+        }
+        """)
+    verified = _verify(source)
+    let = _line(source, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["verified"]
+    assert _at_line(verified, _line(source, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
+
+
+# =====================================================================
+# The class instrument
+# =====================================================================
+
+
+@pytest.mark.parametrize("cell", CELLS, ids=[c.id for c in CELLS])
+def test_no_narrowing_is_proved_from_its_readers_fact(cell: Cell) -> None:
+    """The rule, per cell (see the module docstring)."""
+    made = _program(cell)
+    assert made is not None
+    source, site = made
+    verified = _verify(source)
+    line = _line(source, site)
+    records = _site_records(verified, source, line, cell.position)
+    if cell.position in NO_RECORD_1542:
+        # #1542's: a binder below the head has no record yet.
+        assert records == [], records
+    else:
+        assert records, f"no record at line {line}"
+        assert "verified" not in records, records
+    ran = _run(source, [VIOLATING])
+    if ran.trap is None and cell.position not in NO_RECORD_1542:
+        # Delivered: verification refused the program, disclosed the
+        # narrowing (E506), or claimed a check the module does not hold,
+        # which `vera verify` reports as the E541 error (#1542's loud line).
+        disclosed = any(r.startswith("tier3_unguarded") or r.endswith("/E506")
+                        for r in records)
+        assert ran.compiled is not None
+        unanswered = [m for m in reconcile(
+            verified.result, ran.compiled.result,
+            program=verified.checked.program, file=verified.checked.file)
+            if m.line == line]
+        assert not verified.ok or disclosed or unanswered, (
+            records, [d.error_code for d in verified.warnings])
+
+
+@pytest.mark.parametrize("cell", CELLS, ids=[c.id for c in CELLS])
+def test_every_proof_survives_with_the_readers_facts_withheld(
+    cell: Cell, withheld_readers: None,
+) -> None:
+    """The differential: no record of the cell's program is `verified` only
+    because a reader's fact was assumed."""
+    made = _program(cell)
+    assert made is not None
+    source, _site = made
+    without = _verified_records(_verify(source))
+    with_facts = _verified_with_facts(source)
+    assert with_facts <= without, sorted(with_facts - without)
+
+
+def _verified_with_facts(source: str) -> set[tuple[str, int, int]]:
+    """The verified records with the readers' facts in force: the
+    fixture's patch is lifted for this one verification."""
+    patched = verifier_mod.ContractVerifier._subpattern_source_facts
+    verifier_mod.ContractVerifier._subpattern_source_facts = _ORIGINAL_READER
+    try:
+        return _verified_records(_verify(source))
+    finally:
+        verifier_mod.ContractVerifier._subpattern_source_facts = patched
+
+
+_ORIGINAL_READER = verifier_mod.ContractVerifier._subpattern_source_facts
+
+
+def test_the_matrix_is_the_product() -> None:
+    """Every product is a cell bar the destructure reader of a shape with no
+    tuple to destructure, and every id names one product."""
+    ids = [c.id for c in CELLS]
+    assert len(ids) == len(set(ids))
+    expected = sum(
+        len(_orders(position, reader))
+        for source, position, shape, reader, predicate in itertools.product(
+            SOURCES, POSITIONS, SHAPES, READERS, PREDICATES)
+        if not (reader == "destr" and SHAPES[shape].destr is None))
+    assert len(ids) == expected == 4160

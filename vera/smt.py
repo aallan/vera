@@ -793,6 +793,19 @@ class SmtContext:
         # that needs one is provable only from something this run admitted it
         # could not establish, which is a Tier-3 truth and not a Tier-1 proof.
         self._tainted_facts: list[z3.ExprRef] = []
+        # #1897: the values a narrowing in this function gave a type whose
+        # refinements below its head their own type does not state (the
+        # verifier's `_narrowing_hook` records them as they translate).  A
+        # fact read off such a value's declared type is published by the
+        # narrowing's own obligation, so it is withheld like a disclosed
+        # producer's (`ContractVerifier._established_facts`), and each fact
+        # withheld for one is keyed here, by the fact's id, to the narrowed
+        # values it rests on: the narrowing's own query never reads it
+        # (`check_valid`'s *own*).
+        self._narrowed_terms: list[z3.ExprRef] = []
+        self._withheld_owners: dict[int, frozenset[int]] = {}
+        self._own_excluded: frozenset[int] = frozenset()
+        self._narrowing_hook: Any = None
         # #1480 review: what a placeholder's binder guarantees about it.  A
         # refined binder whose value does not translate is bound to a fresh
         # value, and codegen's §2.6.5 guard at the bind establishes the
@@ -1898,6 +1911,8 @@ class SmtContext:
         term = None if arm is None else arm(self, expr, env)
         if term is None and not isinstance(expr, (ast.SlotRef, ast.ResultRef)):
             term = self._stand_in(expr, env)
+        if term is not None and self._narrowing_hook is not None:
+            self._narrowing_hook(expr, term, env, self)
         return term
 
     def _translate_slot_ref(
@@ -4731,8 +4746,15 @@ class SmtContext:
         self,
         goal: z3.ExprRef,
         assumptions: list[z3.ExprRef],
+        *,
+        own: object = None,
     ) -> SmtResult:
         """Check if assumptions ⟹ goal is valid.
+
+        *own* is the value a NARROWING's obligation is over (#1897): the
+        facts withheld because a narrowing of that value published them are
+        its own goal, so they are left out of its second attempt as well, and
+        a narrowing nothing else establishes is refuted, not demoted.
 
         Uses refutation: assert assumptions and ¬goal.
         Also includes any accumulated ``_path_conditions`` from
@@ -4755,10 +4777,43 @@ class SmtContext:
         result = self._check_refutation(goal, assumptions, tainted=False)
         if result.status == "verified" or not self._tainted_facts:
             return result
-        with_tainted = self._check_refutation(goal, assumptions, tainted=True)
+        saved = self._own_excluded
+        if own is not None:
+            # #1897: a narrowing's own query is never offered a fact withheld
+            # because that narrowing published it, on either attempt.
+            self._own_excluded = frozenset(self.narrowed_ids_in(own))
+        try:
+            with_tainted = self._check_refutation(
+                goal, assumptions, tainted=True)
+        finally:
+            self._own_excluded = saved
         if with_tainted.status == "verified":
             return SmtResult(status="disclosed")
         return result
+
+    def narrowed_ids_in(self, term: object) -> set[int]:
+        """The ids of the narrowed values (`_narrowed_terms`, #1897) that
+        occur in *term*."""
+        if term is None or not self._narrowed_terms:
+            return set()
+        return self._ids_in(
+            [term], {t.get_id() for t in self._narrowed_terms})
+
+    def note_narrowed(self, term: z3.ExprRef) -> None:
+        """Record *term* as a value a narrowing in this function gave a type
+        its own does not state (#1897)."""
+        if all(t.get_id() != term.get_id() for t in self._narrowed_terms):
+            self._narrowed_terms.append(term)
+
+    def withhold_narrowed(
+        self, facts: Sequence[z3.ExprRef], owners: set[int],
+    ) -> None:
+        """Hold *facts* apart as `_tainted_facts`, each keyed to the narrowed
+        values *owners* it was read off (#1897)."""
+        key = frozenset(owners)
+        for fact in facts:
+            self._tainted_facts.append(fact)
+            self._withheld_owners[fact.get_id()] = key
 
     def term_is_disclosed(self, term: object) -> bool:
         """Whether *term* is, or is built from, a disclosed call's result.
@@ -4986,6 +5041,9 @@ class SmtContext:
                 self.solver.add(pc)
             if tainted:
                 for tf in self._tainted_facts:
+                    owners = self._withheld_owners.get(tf.get_id())
+                    if owners and owners & self._own_excluded:
+                        continue  # #1897: the narrowing's own goal
                     self.solver.add(tf)
             for vf in self._facts_of_values_read(goal, assumptions):
                 self.solver.add(vf)
@@ -5223,6 +5281,9 @@ class SmtContext:
         self._path_conditions.clear()
         self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
+        self._narrowed_terms.clear()  # #1897: per function, as the taint is
+        self._withheld_owners.clear()
+        self._own_excluded = frozenset()
         self._value_facts.clear()  # #1480 review: per-function placeholders
         self._guarded_values.clear()  # and the guarded binders' projections
         self._reach_extras.clear()
