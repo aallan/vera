@@ -128,6 +128,14 @@ _TRUNCATED_SCAN = "\x00truncated"
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 
+#: #1814: how many times the invariant walk re-enters a recursive type below
+#: its first occurrence.  Each unfolded level is a true fact of every value,
+#: so a bound is a weaker statement, never a wrong one.  A Z3 recursive
+#: function stating every level was measured instead: a satisfiable query
+#: over it (a refuted goal two elements down a list) took 93 s where this
+#: takes 0.14 s.
+_RECURSIVE_UNFOLDING = 2
+
 #: The E506 reason shared by the two sub-pattern sites whose SCRUTINEE the SMT
 #: layer cannot project (#1251).  Nothing about the predicate or its base is at
 #: fault there — the field the predicate is about was never formed — so saying
@@ -2350,6 +2358,13 @@ class ContractVerifier:
         facts: list[object] = list(smt.declared_facts(var, ty, nested_facts))
         facts.extend(self._established_facts(
             nested_facts, source=None, term=var, smt=smt))
+        # #1814: and what the type states at every position that neither
+        # walk above states, through the same gate.  The caller's argument
+        # rows and the composite-coercion guards at the call (#1818), or an
+        # exported function's entry guard, establish it before the body runs.
+        facts.extend(self._established_facts(
+            list(self._type_invariant(smt, ty, var)),
+            source=None, term=var, smt=smt))
         return facts
 
     def _fresh_smt(self, scope: CalleeScope) -> SmtContext:
@@ -2389,6 +2404,11 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1814: and let a stand-in carry what its type states at every
+        # position.  Stateless but for the process-wide recursive-function
+        # cache, so safe on the warm (shared) smt too.
+        smt._type_invariant_hook = (
+            lambda ctx, ty, term: self._type_invariant(ctx, ty, term))
         # #1468: and let a generic call's precondition be read off the clone
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
@@ -4492,6 +4512,13 @@ class ContractVerifier:
         else:
             result_var = smt.declare_int("@result")
         smt.set_result_var(result_var)
+        # #1814: what the return type states of the result, as `declare_nat`
+        # states a `@Nat` result's range.  The goal side only: the return
+        # position's own rows are asked of the body's value, never of this
+        # constant, and their checks run at the return, before the
+        # postcondition reads the result.
+        for fact in self._type_invariant(smt, ret_type, result_var):
+            smt.assume(fact)
 
         # #1451: the index this function's own obligations start at, so the
         # premise-consistency check below can demote exactly them.  A slice
@@ -11240,6 +11267,139 @@ class ContractVerifier:
         pred = smt.refines_predicate(self._type_key(base), term_sort)
         return [pred(term)], True
 
+    # -----------------------------------------------------------------
+    # #1814 — what a type states of a value, at every position
+    # -----------------------------------------------------------------
+
+    def _type_invariant(
+        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef,
+    ) -> list[z3.ExprRef]:
+        """What *ty* states of a value *term* of it that the head and nested
+        refinement walks do not (#1814): an `Int`'s i64 range and a `Nat`'s
+        `0 .. 2^63 - 1` (spec §2.2) at the head and at every position inside
+        the type, a refinement over a data type at a position inside it, an
+        `Array`'s elements under the bounded index quantifier, and a
+        recursive position unfolded `_RECURSIVE_UNFOLDING` times (a `match`
+        arm's binder reads the levels below from its own declared type).
+
+        Assumed only of a constant whose value the program checked before any
+        reader sees it: a parameter, a predicate's binder, a stand-in, a
+        binder stand-in, the function's own result (each caller says which
+        check).  A fact of the head and of a nested refinement over a
+        primitive base is stated where it was before (`declare_nat`,
+        `_type_facts`, `_nested_refinement_facts`); this walk states the rest,
+        so a fact is never missing at a position, and a duplicate is
+        harmless."""
+        return self._invariant_at(smt, ty, term, head=True, seen=frozenset())
+
+    def _invariant_at(
+        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
+        head: bool, seen: frozenset[str],
+    ) -> list[z3.ExprRef]:
+        """One position of :py:meth:`_type_invariant`'s walk."""
+        if ty is None or not smt.type_is_regular(ty):
+            return []
+        facts: list[z3.ExprRef] = []
+        if isinstance(ty, RefinedType) and not head:
+            # A refinement over a data type: `_nested_refinement_facts`
+            # states a nested refinement over a primitive base only.
+            chain = self._refined_chain(ty)
+            if chain is not None and isinstance(chain[0], AdtType):
+                predicate = self._translate_refined_predicate(smt, ty, term)
+                if predicate is not None:
+                    facts.append(predicate)
+        base = self._strip_refinements(ty)
+        try:
+            sort = term.sort()
+        except (AttributeError, z3.Z3Exception):  # pragma: no cover
+            return facts
+        if sort == z3.IntSort():
+            if base == NAT:
+                facts.extend([term >= 0, term <= _I64_MAX])
+            elif base == INT:
+                facts.extend([term >= _I64_MIN, term <= _I64_MAX])
+            return facts
+        if not isinstance(base, AdtType):
+            return facts
+        if base.name == "Array" and len(base.type_args) == 1:
+            facts.extend(self._element_invariant(
+                smt, base.type_args[0], term, seen))
+            return facts
+        if not isinstance(sort, z3.DatatypeSortRef):
+            return facts
+        key = self._type_key(base)
+        if key in seen:
+            # A recursive position: unfolded a bounded number of times.
+            entered = sum(1 for k in seen
+                          if k == key or k.startswith(key + "#"))
+            if entered > _RECURSIVE_UNFOLDING:
+                return facts
+            key = f"{key}#{len(seen)}"
+        deeper = seen | {key}
+        count = sort.num_constructors()
+        for i in range(count):
+            ctor = sort.constructor(i)
+            if ctor.arity() == 0:
+                continue
+            field_types = self._payload_field_types(ctor.name(), base)
+            if field_types is None or len(field_types) != ctor.arity():
+                continue
+            recognizer = sort.recognizer(i)(term) if count > 1 else None
+            for j, field_ty in enumerate(field_types):
+                for fact in self._invariant_at(
+                        smt, field_ty, sort.accessor(i, j)(term),
+                        head=False, seen=deeper):
+                    facts.append(fact if recognizer is None
+                                 else z3.Implies(recognizer, fact))
+        return facts
+
+    def _element_invariant(
+        self, smt: SmtContext, element_ty: Type, term: z3.ExprRef,
+        seen: frozenset[str],
+    ) -> list[z3.ExprRef]:
+        """An `Array`'s element positions: the bounded index quantifier
+        `_element_facts` states for a refined element, over what the
+        element's type states."""
+        if not self._states_anything(element_ty, frozenset()):
+            return []
+        observers = smt.carrier_elements(term, None, element_ty)
+        if observers is None:
+            return []
+        sequence, index_fn, length_fn, _element_sort = observers
+        idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
+        body = self._invariant_at(
+            smt, element_ty, index_fn(sequence, idx), head=False, seen=seen)
+        if not body:
+            return []
+        inner = z3.And(*body) if len(body) > 1 else body[0]
+        return [z3.ForAll([idx], z3.Implies(
+            z3.And(idx >= 0, idx < length_fn(sequence)), inner))]
+
+    def _states_anything(self, ty: Type | None, seen: frozenset[str]) -> bool:
+        """Whether :py:meth:`_invariant_at` states something at some position
+        of *ty*: an `Int` or `Nat` anywhere, or a refinement over a data
+        type."""
+        if isinstance(ty, RefinedType):
+            chain = self._refined_chain(ty)
+            if chain is not None and isinstance(chain[0], AdtType):
+                return True
+        base = self._strip_refinements(ty)
+        if base in (INT, NAT):
+            return True
+        if not isinstance(base, AdtType):
+            return False
+        key = self._type_key(base)
+        if key in seen:
+            return False
+        deeper = seen | {key}
+        if any(self._states_anything(arg, deeper) for arg in base.type_args):
+            return True
+        for ctor in self._adt_constructor_names(base):
+            fields = self._payload_field_types(ctor, base)
+            if fields and any(self._states_anything(f, deeper) for f in fields):
+                return True
+        return False
+
     def _fresh_quantifier_name(self, stem: str) -> str:
         """A binder name unique within this run.
 
@@ -14878,22 +15038,36 @@ class ContractVerifier:
         when the refined-first gate routes a refinement-over-``@Nat`` here
         rather than down the bare-``@Nat`` ``nat_bind`` path.
 
-        Returns None when the base isn't a primitive or the predicate falls
-        outside the decidable fragment (caller treats None as Tier 3, #746).
+        A refinement over a data type (#1814) binds the value under the
+        predicate's own binder alone, the datatype term carrying its base's
+        meaning whole.
+
+        Returns None when the base is a primitive the solver does not model
+        (`Byte`, `Unit`), a data type whose value has no datatype term, or the
+        predicate falls outside the decidable fragment (caller treats None as
+        Tier 3, #746).
         """
         parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:
             return None
         base, predicates = parts
         base_name = ContractVerifier._base_slot_name(base)
-        if base_name is None:
+        # #1814: a refinement over a data type is a membership of a value
+        # the solver models whole (a datatype term), so its predicate is
+        # decided as written, bound under the predicate's own binder, as the
+        # assumption side (`SmtContext._type_facts`) already reads it.  An
+        # unmodelled primitive (`Byte`, `Unit`) still declines.
+        over_data = (base_name is None and isinstance(base, AdtType)
+                     and isinstance(value_term.sort(), z3.DatatypeSortRef))
+        if base_name is None and not over_data:
             return None
         conjuncts: list[z3.ExprRef] = []
         for predicate in predicates:
             # One env per LEVEL: each predicate binds its own name — the
             # inner `{ @Int | @Int.0 > 0 }` binds `@Int`, the outer
             # `{ @Pos | @Pos.0 < 10 }` binds `@Pos` — over the same value.
-            inner_env = SlotEnv().push(base_name, value_term)
+            inner_env = (SlotEnv() if base_name is None
+                         else SlotEnv().push(base_name, value_term))
             # The predicate may reference its binder by a syntactic alias
             # (`@Age.0` for `type Age = Nat`) that differs from the resolved
             # primitive `base_name`; bind the value under that key too so the
@@ -14908,8 +15082,10 @@ class ContractVerifier:
                 predicate, smt._alias_env)
             if binder_key is not None and binder_key != base_name:
                 inner_env = inner_env.push(binder_key, value_term)
+            elif base_name is None:
+                return None
             translated = smt.translate_expr(predicate, inner_env)
-            if translated is None:
+            if translated is None or translated.sort() != z3.BoolSort():
                 # One untranslatable level makes the whole membership
                 # undecidable: the conjunction is only as strong as its
                 # weakest conjunct, and dropping one would ASSERT a

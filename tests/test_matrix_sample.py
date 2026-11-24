@@ -741,6 +741,8 @@ MARKED_FILES = (
     "test_verifier_reads_the_typed_program_1525.py",
     "test_zero_size_operands_1870.py",
     "test_binders_held_to_is_subtype_1896.py",
+    "test_type_invariant_1814.py",
+    "test_let_destruct_link_name.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

@@ -632,6 +632,11 @@ def _renamed(
         if name_field is not None:
             current = getattr(node, name_field)
             table = ctors if isinstance(node, _CTOR_NODES) else types
+            if isinstance(node, ast.LetDestruct):
+                # A destructure names its shape by a constructor
+                # (`let MkBox<…>`) or by a type (`let Wrap<…>`), so the
+                # name is a constructor's where one is in scope (#1814's F1).
+                table = ctors if current in ctors else types
             renamed = (
                 current if current in bound and table is types
                 else table.get(current, current))
@@ -652,6 +657,8 @@ def _renamed_field(node: ast.Node) -> str | None:
         return "name"
     if isinstance(node, (ast.SlotRef, ast.ResultRef)):
         return "type_name"
+    if isinstance(node, ast.LetDestruct):
+        return "constructor"
     if isinstance(node, _CTOR_NODES):
         # A constructor the compiler wrote with its owner stated is the
         # prelude's (`compare`'s `Less`, #1414), whatever the program holds.

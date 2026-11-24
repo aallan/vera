@@ -455,6 +455,21 @@ def strip_refinements(ty: Type) -> Type:
     return ty
 
 
+#: The operators whose result has an `int_overflow` row (#798, #1875).
+_RANGED_OPS = frozenset({
+    ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL, ast.BinOp.DIV})
+
+
+def _is_arithmetic(node: object) -> bool:
+    """Whether *node* is an operation whose exact integer result a row asks
+    to be in range: an arithmetic operator, a negation, `abs` (#1814)."""
+    if isinstance(node, ast.BinaryExpr):
+        return node.op in _RANGED_OPS
+    if isinstance(node, ast.UnaryExpr):
+        return node.op == ast.UnaryOp.NEG
+    return isinstance(node, ast.FnCall) and node.name == "abs"
+
+
 def _holds_a_chosen_value(term: z3.ExprRef) -> bool:
     """Whether *term* holds a data value the solver chooses: a free
     constant of a datatype sort, a parameter's or an opaque result's, whose
@@ -874,6 +889,13 @@ class SmtContext:
         # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
         # driving (pure-SMT tests).
         self._call_result_facts_hook: Any = None
+        # #1814: what a type states of a value at every position the head
+        # and nested-refinement facts do not reach (an `Int`'s range, a
+        # `Nat` component, an `Array` element, a recursive position), as
+        # the verifier reads it (`ContractVerifier._type_invariant`).
+        # Signature: (smt, type, term) -> list of facts.  None when no
+        # verifier is driving.
+        self._type_invariant_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -3759,8 +3781,28 @@ class SmtContext:
         for stated in (self._base_facts(const, ty) if base_only
                        else self._type_facts(const, ty)):
             self.assume(stated)
+        if not _is_arithmetic(node):
+            # An arithmetic node's stand-in is the value the operation
+            # leaves, and its own `int_overflow` row asks whether the
+            # operation's exact result is in range: the range stated of the
+            # stand-in would answer that row with its own goal (#1814).
+            for stated in self._invariant_facts(const, ty):
+                self.assume(stated)
         self._inherit_disclosure(node, const)
         return const
+
+    def _invariant_facts(
+        self, term: z3.ExprRef, ty: Type,
+    ) -> list[z3.ExprRef]:
+        """What *ty* states of *term* at every position (#1814), through the
+        verifier's hook; nothing with no verifier driving.  A stand-in's
+        value comes from a producer the program checks where it builds the
+        value (a store's, a `put`'s, a bind's row), and the constant is
+        fresh, so its facts constrain no term minted before it."""
+        hook = self._type_invariant_hook
+        if hook is None:
+            return []
+        return list(hook(self, ty, term))
 
     def _literal_satisfies(self, leaf: ast.Expr, ty: Type) -> bool:
         """Whether every fact *ty* states (`_type_facts`) is true of the
@@ -3804,6 +3846,8 @@ class SmtContext:
         self._taint(const)
         for stated in (self._base_facts(const, ty) if binder
                        else self._type_facts(const, ty)):
+            self.assume(stated)
+        for stated in self._invariant_facts(const, ty):
             self.assume(stated)
         return const
 
@@ -4195,6 +4239,13 @@ class SmtContext:
                     if val is not None:
                         idx = self._find_ctor_index(
                             val.sort(), stmt.constructor)
+                        if (idx is None
+                                and isinstance(val.sort(), z3.DatatypeSortRef)
+                                and val.sort().num_constructors() == 1):
+                            # The shape named by its TYPE (`let Box<…>`),
+                            # which the checker accepted for the value's
+                            # one constructor (F1 of #1814).
+                            idx = 0
                         if (idx is not None
                                 and val.sort().constructor(idx).arity()
                                 != len(stmt.type_bindings)):
@@ -4491,13 +4542,15 @@ class SmtContext:
     def _find_ctor_index(
         self, sort: z3.SortRef, ctor_name: str,
     ) -> int | None:
-        """Find the index of a constructor by name in a Z3 ADT sort."""
+        """Find the index of a constructor by name in a Z3 ADT sort; None
+        where the sort has no constructor of that name (a destructure that
+        names its shape by the type, `let Box<…>`)."""
         if not isinstance(sort, z3.DatatypeSortRef):
             return None
         for i in range(sort.num_constructors()):
             if sort.constructor(i).name() == ctor_name:
                 return i
-        return None  # pragma: no cover
+        return None
 
     def _pattern_condition(
         self, scrutinee: z3.ExprRef, pattern: ast.Pattern

@@ -47,8 +47,9 @@ refusal and that the run completes (`vera run` is the oracle).  Beside it:
 the proof direction (for each source, a program whose run traps proves
 nothing), #1470's permutation row (an unrelated `let` changes no verdict),
 the `State.get(())`/`get(())` spelling row, the `repro` pins of the issue's
-thirteen reproducing lines, a regression cell for m10, and strict xfails for
-m04 (the index's post-fact, #1695) and m06 (an element's `>= 0`, #1814).
+thirteen reproducing lines, a regression cell for m10, a strict xfail for
+m04 (the index's post-fact, #1695), and m06 (an element's `>= 0`), which
+#1814 closed.
 """
 
 from __future__ import annotations
@@ -723,10 +724,8 @@ public fn f(@Array<Nat> -> @Int)
 """
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#1696's m06 is a composite fact (#1814): an `Array<Nat>` element's "
-    "`>= 0` is assumed only once every producer of a composite is a row."))
 def test_repro_m06_an_array_nat_element_carries_its_sign() -> None:
+    """#1814: a parameter's `Array<Nat>` carries its elements' `>= 0`."""
     verified = _verify(M06)
     assert _ensures_status(verified, "f") == "verified", _codes(verified)
 
