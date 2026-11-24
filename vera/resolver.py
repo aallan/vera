@@ -277,7 +277,7 @@ class ModuleResolver:
                     spec_ref=(
                         'Chapter 8, Section 8.6.1 "Path Mapping"'
                     ),
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E012",
                 ),
             )
@@ -316,7 +316,7 @@ class ModuleResolver:
                         'Chapter 8, Section 8.6.3 '
                         '"Circular Import Detection"'
                     ),
-                    severity="error",
+                    severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
                     error_code="E011",
                 ),
             )
@@ -421,7 +421,7 @@ class ModuleResolver:
             spec_ref=(
                 'Chapter 8, Section 8.6.5 "Resolution Errors"'
             ),
-            severity="error",
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code="E013",
         )
 
@@ -472,7 +472,7 @@ class ModuleResolver:
                 f"'{path}' names one file in the program."
             ),
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
-            severity="error",
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code="E014",
         )
 
@@ -553,7 +553,7 @@ class ModuleResolver:
             rationale=rationale,
             fix=fix,
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
-            severity="error",
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code="E015",
         )
 

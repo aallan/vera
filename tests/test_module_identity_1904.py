@@ -591,6 +591,17 @@ def _e015_form(tmp: pathlib.Path, form: str, x_first: bool) -> pathlib.Path | No
     return write(tmp, "main.vera", "\n".join(lines) + "\n\n" + main_fn(["wx(())", "wy(())"]))
 
 
+_E015_PATHS_RATIONALE = (
+    "A file is one module, under one path. Imported by two paths, it would be "
+    "checked and compiled twice, as two modules, and a data type it declares "
+    "would be two types that no value passes between.")
+_E015_DIRECTORIES_RATIONALE = (
+    "A file is one module, under one path, and its imports are looked up from "
+    "the directory that holds it. A file with entries in two directories (two "
+    "hard links) has two such directories, and which one its imports were "
+    "looked up from would depend on which import reached it first.")
+
+
 def _e015_text(form: str, x_first: bool) -> tuple[str, str, str]:
     """The diagnostic's file, description and fix, as each form states it
     for the order: the second importer meets the conflict."""
@@ -645,6 +656,10 @@ def test_each_form_of_e015_states_its_requirements(
     assert pathlib.Path(d["location"]["file"]).resolve() == (tmp_path / where).resolve(), d
     assert d["description"] == description
     assert d["fix"] == fix
+    assert d["rationale"] == (_E015_PATHS_RATIONALE if form == "paths"
+                              else _E015_DIRECTORIES_RATIONALE)
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.2 "Caching"'
+    assert d["severity"] == "error"
 
 
 @pytest.mark.parametrize("x_first", [True, False], ids=["x_first", "y_first"])
@@ -1241,3 +1256,123 @@ def test_a_repair_that_leaves_a_third_plain_path_to_the_file_is_not_offered(
     assert [d["error_code"] for d in found] == ["E015", "E015"], found
     assert all(_offers_nothing(d) for d in found), \
         [d["fix"] for d in found]
+
+
+# --- each resolver diagnostic's whole text, by a real tree -----------------
+#
+# Every module path below has two parts, so a text that joins a path's
+# parts is pinned by its separator too.
+
+def _one(entry: pathlib.Path, code: str) -> dict:
+    found = [d for d in check_json(entry) if d["error_code"] == code]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def _at(d: dict, root: pathlib.Path) -> tuple[str, int, int, str]:
+    loc = d["location"]
+    return (pathlib.Path(loc["file"]).resolve().relative_to(root.resolve()).as_posix(),
+            loc["line"], loc["column"], d["source_line"])
+
+
+def test_e014_whole(tmp_path: pathlib.Path) -> None:
+    write(tmp_path, "m/lib.vera", fn("word", "1"))
+    write(tmp_path, "a/m/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import m.lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.mid(w2);\nimport m.lib(word);\n\n"
+                  + main_fn(["w2(())"]))
+    d = _one(entry, "E014")
+    assert _at(d, tmp_path) == ("main.vera", 2, 1, "import m.lib(word);")
+    assert d["description"] == (
+        "Module path 'm.lib' names two files in this program: 'main.vera' imports "
+        "'m.lib' as 'm/lib.vera', and 'a/mid.vera' imports it as 'a/m/lib.vera'.")
+    assert d["rationale"] == (
+        "A module path names one module in a program. Every stage links a module by "
+        "its path, so two files under one path cannot both be compiled, and taking "
+        "either one would run a module that the other import does not name.")
+    assert d["fix"] == (
+        "Give one of the two modules another path: rename `m/lib.vera` (which "
+        "'main.vera' imports) or `a/m/lib.vera` (which 'a/mid.vera' imports) to a "
+        "name no other file of the program takes, and change each import of it, its "
+        "own `module` line and each call qualified by its old path to match, so that "
+        "'m.lib' names one file in the program.")
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.2 "Caching"'
+    assert d["severity"] == "error"
+
+
+def test_e011_whole(tmp_path: pathlib.Path) -> None:
+    write(tmp_path, "p/a.vera", "import p.b(wb);\n\n" + fn("wa", "wb(())"))
+    write(tmp_path, "p/b.vera", "import p.a(wa);\n\n" + fn("wb", "1"))
+    entry = write(tmp_path, "main.vera", "import p.a(wa);\n\n" + main_fn(["wa(())"]))
+    d = _one(entry, "E011")
+    assert _at(d, tmp_path) == ("p/b.vera", 1, 1, "import p.a(wa);")
+    assert d["description"] == "Circular import detected: 'p.a' is already being resolved."
+    assert d["rationale"] == ("Circular imports are not allowed. The module dependency "
+                              "graph must be acyclic.")
+    assert d["fix"] == ("Break the cycle: remove one of the imports, or extract the "
+                        "shared declarations into a third module that both modules "
+                        "import.")
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.3 "Circular Import Detection"'
+    assert d["severity"] == "error"
+
+
+def test_e012_whole(tmp_path: pathlib.Path) -> None:
+    entry = write(tmp_path, "main.vera", "import no.such;\n\n" + main_fn(["1"]))
+    d = _one(entry, "E012")
+    assert _at(d, tmp_path) == ("main.vera", 1, 1, "import no.such;")
+    assert d["description"] == "Cannot resolve import 'no.such': no file found."
+    assert d["rationale"] == ("Looked for 'no/such.vera' relative to the importing "
+                              "file and project root.")
+    assert d["fix"] == "Create the file 'no/such.vera' or check the import path."
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.1 "Path Mapping"'
+    assert d["severity"] == "error"
+
+
+_E013_RATIONALE = ("An imported module must itself parse and transform successfully "
+                   "before its declarations can be used by the importing program.")
+
+
+def test_e013_whole_for_a_module_that_does_not_parse(tmp_path: pathlib.Path) -> None:
+    write(tmp_path, "q/bad.vera", "public fn broken(\n")
+    entry = write(tmp_path, "main.vera", "import q.bad;\n\n" + main_fn(["1"]))
+    d = _one(entry, "E013")
+    assert _at(d, tmp_path) == ("main.vera", 1, 1, "import q.bad;")
+    assert d["description"].startswith("Error parsing imported module 'q.bad': [E"), d
+    assert d["rationale"] == _E013_RATIONALE
+    assert d["fix"] == ("Run `vera check q/bad.vera` directly to see the detailed "
+                        "syntax diagnostic, then correct the imported module.")
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.5 "Resolution Errors"'
+    assert d["severity"] == "error"
+
+
+def test_e013_whole_for_a_file_that_cannot_be_identified(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`q/lib.vera` is found and gone before its identity is read (the
+    resolver's `file_identity` raises for it): E013 at the import, whole,
+    the error's own text in the description."""
+    import vera.resolver as resolver
+
+    target = write(tmp_path, "q/lib.vera", fn("word", "1"))
+    entry = write(tmp_path, "main.vera", "import q.lib(word);\n\n" + main_fn(["word(())"]))
+    real = resolver.file_identity
+    raised: list[str] = []
+
+    def identity(path: pathlib.Path) -> tuple[int, int]:
+        if pathlib.Path(path).name == "lib.vera":
+            raised.append(str(path))
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real(path)
+
+    monkeypatch.setattr(resolver, "file_identity", identity)
+    d = _one(entry, "E013")
+    assert raised, "the injected failure did not run"
+    assert _at(d, tmp_path) == ("main.vera", 1, 1, "import q.lib(word);")
+    assert d["description"] == (
+        "Error parsing imported module 'q.lib': [Errno 2] No such file or "
+        f"directory: '{target.resolve()}'")
+    assert d["rationale"] == _E013_RATIONALE
+    assert d["fix"] == ("Run `vera check q/lib.vera` directly to see the detailed "
+                        "syntax diagnostic, then correct the imported module.")
+    assert d["spec_ref"] == 'Chapter 8, Section 8.6.5 "Resolution Errors"'
+    assert d["severity"] == "error"
