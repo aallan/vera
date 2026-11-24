@@ -143,7 +143,7 @@ def refusals(diags: list[dict]) -> list[dict]:
     refused import binds nothing)."""
     out = [d for d in diags if d["error_code"] in ("E011", "E014", "E015")]
     rest = [d["error_code"] for d in diags if d not in out]
-    assert set(rest) <= {"E200"}, diags
+    assert set(rest) <= {"E200", "E230"}, diags
     return out
 
 
@@ -579,28 +579,18 @@ def _linked_pair(tmp: pathlib.Path, shadow: bool,
                  + main_fn(["wp(())", "wq(())"]))
 
 
-def test_e015s_fix_uses_the_root_path_when_it_reaches_from_both(
+def test_e015s_fix_is_prose_where_a_hard_link_reaches_the_file(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Neither importer's path reaches the file from the other, but its
-    path from the project root, `y.z`, reaches it from both: the fix writes
-    that import in both files, and the program then checks."""
+    """`x/lib.vera` and `y/z.vera` are two hard links to one file: the
+    repair would have to model the link, so the fix is the rule in prose,
+    naming no import to write (spec §8.6.2)."""
     entry = _linked_pair(tmp_path, shadow=False)
     if entry is None:
         pytest.skip("this filesystem cannot make a hard link")
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
-    m = re.search(r"write `import ([^`]+)` here in place of `import ([^`]+)` "
-                  r"and in '([^']+)' in place of `import ([^`]+)`", d["fix"])
-    assert m, d["fix"]
-    new, here_old, other, other_old = m.groups()
-    assert new == "y.z"
-    for target, old in ((pathlib.Path(d["location"]["file"]), here_old),
-                        (tmp_path / other, other_old)):
-        text = target.read_text(encoding="utf-8")
-        target.write_text(text.replace(f"import {old}(", f"import {new}(", 1),
-                          encoding="utf-8")
-    assert check_json(entry) == []
-
+    assert "A repair is not composed here" in d["fix"], d["fix"]
+    assert "write `" not in d["fix"], d["fix"]
 
 def test_e015s_fix_says_when_no_path_reaches_it_from_both(tmp_path: pathlib.Path) -> None:
     """With the root path shadowed too, no path reaches the file from both
@@ -609,7 +599,7 @@ def test_e015s_fix_says_when_no_path_reaches_it_from_both(tmp_path: pathlib.Path
     if entry is None:
         pytest.skip("this filesystem cannot make a hard link")
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
-    assert "nor its path from the project root, written in both files" in d["fix"]
+    assert "A repair is not composed here" in d["fix"], d["fix"]
     assert "`import" not in d["fix"], d["fix"]
 
 
@@ -772,19 +762,17 @@ def test_e015s_root_path_is_checked_from_this_importer(tmp_path: pathlib.Path) -
 
 
 def test_e015s_fix_prefers_changing_this_import(tmp_path: pathlib.Path) -> None:
-    """`lib.vera` and `alias.vera` are one file (two hard links) beside both
-    importers, so each path reaches it from both: the fix changes this
-    import, the one that met the conflict, and not the other importer's."""
-    target = write(tmp_path, "lib.vera", fn("word", "2"))
-    try:
-        os.link(target, tmp_path / "alias.vera")
-    except (OSError, NotImplementedError):
-        pytest.skip("this filesystem cannot make a hard link")
-    write(tmp_path, "m.vera", "import alias(word);\n\n" + fn("wm", "word(())"))
-    entry = write(tmp_path, "main.vera", "import lib(word);\nimport m(wm);\n\n"
-                  + main_fn(["word(())", "wm(())"]))
+    """`a/m1.vera` imports `a/lib.vera` as `lib`, and `a/m2.vera` as
+    `a.lib` (through the root): each path reaches the file from both
+    importers, so the fix changes this import, the one that met the
+    conflict, and not the other importer's."""
+    write(tmp_path, "a/lib.vera", fn("word", "2"))
+    write(tmp_path, "a/m1.vera", "import lib(word);\n\n" + fn("w1", "word(())"))
+    write(tmp_path, "a/m2.vera", "import a.lib(word);\n\n" + fn("wm", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.m1(w1);\nimport a.m2(wm);\n\n"
+                  + main_fn(["w1(())", "wm(())"]))
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
-    assert "write `import lib` here in place of `import alias`" in d["fix"], d["fix"]
+    assert "write `import lib` here in place of `import a.lib`" in d["fix"], d["fix"]
     _apply_import_edit(d, tmp_path)
     assert check_json(entry) == []
 
@@ -793,21 +781,20 @@ def test_a_document_named_relative_to_the_working_directory(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The project root is the entry's directory as the command line names
-    it, here `.`; the diagnostics name files from it, and the root path is
-    found, as for an absolute entry."""
+    it, here `.`; the diagnostics name files from it, and the fixes are
+    composed, as for an absolute entry."""
     one = tmp_path / "one"
     _issue_tree(one, a_mid_first=True)
     two = tmp_path / "two"
-    linked = _linked_pair(two, shadow=False)
-    for root in (one,) + ((two,) if linked is not None else ()):
+    _shape_e015_here(two)
+    for root in (one, two):
         absolute = check_json(root / "main.vera")
         monkeypatch.chdir(root)
         relative = check_json(pathlib.Path("main.vera"))
         keep = ("error_code", "description", "fix")
         assert ([{k: d[k] for k in keep} for d in relative]
                 == [{k: d[k] for k in keep} for d in absolute]), relative
-    if linked is not None:
-        assert "`import y.z`" in relative[0]["fix"], relative
+        assert any("write `" in d["fix"] for d in relative), relative
 
 
 # --- review round 1 -------------------------------------------------------
@@ -928,9 +915,10 @@ def test_e014s_fix_renames_the_link_the_lookup_found(
 ) -> None:
     """`a/lib.vera` is a symbolic link to `shared/lib.vera`: E014 names the
     link, the name `a/mid.vera`'s lookup found, on either side of the
-    conflict, and where the link's import meets the conflict the fix
-    renames the link, so `import lib2` reaches the module through it.
-    Applied, the program checks and runs, and the target is untouched."""
+    conflict.  Where the link is the file a repair would rename, the fix is
+    the rule in prose (a link's repair is not composed); where the link is
+    the other file, the root `lib.vera` is renamed, and applied, the
+    program checks and runs, and the link's target is untouched."""
     target = write(tmp_path, "shared/lib.vera", fn("word", "2"))
     (tmp_path / "a").mkdir()
     try:
@@ -946,28 +934,25 @@ def test_e014s_fix_renames_the_link_the_lookup_found(
                   + main_fn(["word(())", "w2(())"]))
     (d,) = refusals(check_json(entry))
     assert "as 'a/lib.vera'" in d["description"] and "shared" not in d["description"], d
-    if link_first:
-        assert "rename `lib.vera` to `lib2.vera` and write `import lib2` here" in d["fix"], d
-    else:
-        assert "rename `a/lib.vera` to `a/lib2.vera` and write `import lib2` here" in d["fix"], d
+    if not link_first:
+        assert "A repair is not composed here" in d["fix"] and "write `" not in d["fix"], d
+        return
+    assert "rename `lib.vera` to `lib2.vera` and write `import lib2` here" in d["fix"], d
     _apply_e014(d, tmp_path)
     assert check_json(entry) == []
     assert pipeline.cli("run", entry).stdout.strip() == "12"
     assert target.read_text(encoding="utf-8") == fn("word", "2")
 
 
-def test_e015s_fix_under_a_symbolic_link_applied_clears_it(tmp_path: pathlib.Path) -> None:
-    """`_two_names_one_file` by a symbolic link: the fix's import, written
-    as it says, checks, and the program runs."""
+def test_e015s_fix_under_a_symbolic_link_is_prose(tmp_path: pathlib.Path) -> None:
+    """`_two_names_one_file` by a symbolic link: the fix is the rule in
+    prose, naming no import to write."""
     entry = _two_names_one_file(tmp_path, lambda t, n: os.symlink(t, n))
     if entry is None:
         pytest.skip("this platform or account cannot make a symbolic link")
     (d,) = refusals(check_json(entry))
     assert d["error_code"] == "E015"
-    _apply_import_edit(d, tmp_path)
-    assert check_json(entry) == []
-    assert pipeline.cli("run", entry).stdout.strip() == "22"
-
+    assert "A repair is not composed here" in d["fix"] and "write `" not in d["fix"], d
 
 def test_a_refused_import_is_not_qualified_callable(tmp_path: pathlib.Path) -> None:
     """The document's refused `import lib` does not make `lib::` callable,
@@ -1057,8 +1042,7 @@ def _apply_fix(diag: dict, root: pathlib.Path) -> set[str]:
                   r"in place of `([^`]+)`", fix)
     if m:
         edit(root / m.group(2), f"import {m.group(1)}", m.group(3))
-    m = re.search(r"In `([^`]+)`, write (.*)\.$", fix)
-    if m:
+    for m in re.finditer(r"In [`']([^`']+)[`'], write (.*?)\.(?= |$)", fix):
         for new, old in re.findall(r"`([^`]+)` in place of `([^`]+)`", m.group(2)):
             edit(root / m.group(1), new, old)
     return named
@@ -1161,15 +1145,92 @@ def _shape_e015_there(r: pathlib.Path) -> tuple[pathlib.Path, str]:
                  + main_fn(["word(())", "w2(())"])), "22"
 
 
+def _prose(built):
+    """An out-of-domain shape: a link is in play, so no repair is composed."""
+    return None if built is None else (built[0], None)
+
+
+def _shape_unedited_fallback(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """Renaming `a/x/lib.vera` would send `a/x/other.vera`'s unedited
+    `lib` to the root `lib.vera`, a different module that checks clean:
+    the program would print `192` where it means `122`."""
+    write(r, "x/lib.vera", fn("word", "1"))
+    write(r, "a/x/lib.vera", fn("word", "2"))
+    write(r, "lib.vera", fn("word", "9"))
+    write(r, "a/mid.vera", "import x.lib(word);\n\n" + fn("w2", "word(())"))
+    write(r, "a/x/other.vera", "import lib(word);\n\n" + fn("w3", "word(())"))
+    return write(r, "main.vera", "import x.lib(word);\nimport a.x.other(w3);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "w3(())", "w2(())"])), "122"
+
+
+def _shape_link_nested(r: pathlib.Path) -> tuple[pathlib.Path, str] | None:
+    """`a/lib.vera` links to `shared/lib.vera`, whose `import dep` the
+    resolver looks up from `shared/` (`shared/dep.vera`), not `a/`."""
+    write(r, "shared/lib.vera", "import dep(d);\n\n" + fn("word", "d(())"))
+    write(r, "shared/dep.vera", fn("d", "5"))
+    write(r, "dep.vera", fn("d", "7"))
+    (r / "a").mkdir(parents=True)
+    try:
+        os.symlink(r / "shared" / "lib.vera", r / "a" / "lib.vera")
+    except (OSError, NotImplementedError):
+        return None
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import lib(word);\nimport dep(d);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "d(())", "w2(())"])), "175"
+
+
+def _shape_link_to_renamed(r: pathlib.Path) -> tuple[pathlib.Path, str] | None:
+    """The root `alias.vera` links to `a/lib.vera`, the file a rename would
+    move: renaming it would leave `main.vera`'s `import alias` dangling."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/lib.vera", fn("wa", "2"))
+    try:
+        os.symlink(r / "a" / "lib.vera", r / "alias.vera")
+    except (OSError, NotImplementedError):
+        return None
+    write(r, "a/mid.vera", "import lib(wa);\n\n" + fn("w2", "wa(())"))
+    return write(r, "main.vera", "import lib(word);\nimport alias(wa);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "wa(())", "w2(())"])), "122"
+
+
+def _shape_e014_qualified(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """The document calls `lib::word` through the import the rename
+    changes: the call is renamed with it."""
+    write(r, "lib.vera", fn("word", "1"))
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(r, "main.vera", "import a.mid(w2);\nimport lib;\n\n"
+                 + main_fn(["lib::word(())", "w2(())"])), "12"
+
+
+def _shape_e015_qualified(r: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """`a/mid.vera` calls `lib::word` through the import E015's fix
+    rewrites to `a.lib`: the call is rewritten with it."""
+    write(r, "a/lib.vera", fn("word", "2"))
+    write(r, "a/mid.vera", "import lib;\n\n" + fn("w2", "lib::word(())"))
+    return write(r, "main.vera", "import a.lib(word);\nimport a.mid(w2);\n\n"
+                 + main_fn(["word(())", "w2(())"])), "22"
+
+
+#: In-domain shapes whose every candidate fails the check: the fix is then
+#: the prose, and nothing is applied.
+MAY_VERIFY_NONE = {"unedited_fallback"}
+
 REPAIR_SHAPES = {
     "issue": _shape_issue,
     "later_binding": _shape_later_binding,
     "own_path": _shape_own_path,
     "fallback": _shape_fallback,
     "none_free": _shape_none_free,
-    "link_meets": lambda r: _shape_link(r, link_first=False),
+    "link_meets": lambda r: _prose(_shape_link(r, link_first=False)),
     "link_bound": lambda r: _shape_link(r, link_first=True),
-    "hard_link_root_path": _shape_hard_link,
+    "hard_link": lambda r: _prose(_shape_hard_link(r)),
+    "unedited_fallback": lambda r: _shape_unedited_fallback(r),
+    "link_nested_lookup": lambda r: _prose(_shape_link_nested(r)),
+    "link_to_renamed": lambda r: _prose(_shape_link_to_renamed(r)),
+    "e014_qualified_calls": lambda r: _shape_e014_qualified(r),
+    "e015_qualified_calls": lambda r: _shape_e015_qualified(r),
     "bound_shared_path": _shape_bound_shared_path,
     "e015_this_import": _shape_e015_here,
     "e015_other_import": _shape_e015_there,
@@ -1184,6 +1245,11 @@ def test_every_repair_applied_as_written_clears(tmp_path: pathlib.Path, shape: s
     entry, value = built
     (d,) = refusals(check_json(entry))
     before = _snapshot(tmp_path)
+    if shape in MAY_VERIFY_NONE and "write `" not in d["fix"]:
+        # In the domain, a shape may verify no repair (the unedited
+        # fallback does not); that is the prose, and nothing changes.
+        assert "No rename of" in d["fix"] or "Neither '" in d["fix"], d["fix"]
+        value = None
     if value is None:
         assert "write `" not in d["fix"], d["fix"]
         assert not re.search(r"rename `[^`]+` to `", d["fix"]), d["fix"]
@@ -1247,3 +1313,45 @@ def test_a_repair_that_leaves_a_third_path_to_the_file_is_not_offered(
     found = refusals(check_json(entry))
     assert [d["error_code"] for d in found] == ["E015", "E015"], found
     assert all(_offers_nothing(d) for d in found), [d["fix"] for d in found]
+
+
+
+# --- review round 3: what an offered repair guarantees -------------------
+
+def test_an_offered_repair_leaves_the_programs_other_errors(tmp_path: pathlib.Path) -> None:
+    """E014 beside an unrelated E012: the repair, applied as written, clears
+    the E014 and leaves the E012, and its text says no more than that."""
+    entry = _issue_tree(tmp_path, a_mid_first=True)
+    write(tmp_path, "b/far.vera", "import nosuch;\n\n" + fn("w3", "3"))
+    text = entry.read_text(encoding="utf-8").replace(
+        "import lib(word);", "import lib(word);\nimport b.far(w3);")
+    entry.write_text(text, encoding="utf-8")
+    (d,) = [x for x in check_json(entry) if x["error_code"] == "E014"]
+    assert "any other error the program has is still there" in d["fix"], d["fix"]
+    _apply_fix(d, tmp_path)
+    got = [x["error_code"] for x in check_json(entry)]
+    assert got == ["E012"], got
+
+
+def test_a_lookup_that_raises_while_composing_keeps_the_refusal(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The refused module `a/lib.vera` imports `locked.dep` through a
+    directory the process cannot enter.  Resolution never reads it; the
+    repair check does, and its error gives the prose fix, never an
+    internal error or a lost E014."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", "import locked.dep;\n\n" + fn("word", "2"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    write(tmp_path, "locked/dep.vera", fn("d", "0"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\nimport a.mid(w2);\n\n"
+                  + main_fn(["word(())", "w2(())"]))
+    os.chmod(tmp_path / "locked", 0)
+    try:
+        if os.access(tmp_path / "locked", os.X_OK):
+            pytest.skip("this account can enter any directory")
+        (d,) = refusals(check_json(entry))
+    finally:
+        os.chmod(tmp_path / "locked", 0o755)
+    assert d["error_code"] == "E014"
+    assert "A repair is not composed here" in d["fix"], d["fix"]

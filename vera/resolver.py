@@ -112,15 +112,25 @@ class _Refusal:
 #: program, not by identity from a file.
 _DOCUMENT = (-1, -1)
 
-#: A repair as :meth:`ModuleResolver._violations` simulates it: an entry
-#: renamed (its name, the new name, the file's identity), and imports
-#: rewritten, each by its importer's key and path, to a path and the file it
-#: must reach.
+#: A repair as :meth:`ModuleResolver._walk` simulates it: an entry renamed
+#: (its name, the new name, the file's identity), and imports rewritten,
+#: each by its importer's key and path, to a new path.
 _Rename = tuple[Path, Path, tuple[int, int]]
-_Rewrites = dict[
-    tuple[tuple[int, int], tuple[str, ...]],
-    tuple[tuple[str, ...], tuple[int, int]],
-]
+_Rewrites = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[str, ...]]
+
+#: What a walk of the program gives: each import by its importer's key and
+#: path (as written, before a rewrite) to the file it reaches; the imports
+#: that reach no file; each file's identity to the entries it is reached by;
+#: and the paths that name two files and the files under two paths.
+_Edges = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[int, int]]
+
+
+@dataclass(frozen=True)
+class _Walk:
+    edges: _Edges
+    missing: frozenset[tuple[tuple[int, int], tuple[str, ...]]]
+    entries: dict[tuple[int, int], frozenset[Path]]
+    conflicts: frozenset[tuple[object, ...]]
 
 
 def _name(path: Path) -> Path:
@@ -196,7 +206,8 @@ class ModuleResolver:
         default_factory=dict)
     _document: Path | None = None
     _document_imports: tuple[tuple[str, ...], ...] = ()
-    _baseline: frozenset[tuple[object, ...]] | None = None
+    _document_program: ast.Program | None = None
+    _baseline: _Walk | None = None
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -243,6 +254,7 @@ class ModuleResolver:
         # import the resolver refused binds nothing, whatever module another
         # importer bound its path to (#1904).
         self._document = file
+        self._document_program = program
         self._document_imports = tuple(imp.path for imp in program.imports)
         direct = [self._resolve_single(imp, file) for imp in program.imports]
         self._compose_fixes()
@@ -583,25 +595,34 @@ class ModuleResolver:
         """Give each E014 and E015 its fix, now that resolution has
         finished and every binding the program makes is known (#1904).
 
-        A repair is offered only when :meth:`_verified` holds for it: the
-        program, with the repair applied to its lookups, has every import
-        finding a file, no path naming two files and no file under two
-        paths, beyond what it had before, and the conflict is gone."""
+        A concrete repair is offered only when it keeps the invariant of
+        spec §8.6.2, which :meth:`_verified` checks: applied as written, the
+        conflict this diagnostic reports is gone, every import the repair
+        does not edit reaches the file it reached before (by identity),
+        every import it edits reaches the file it reached before, and no
+        other path names two files or file has two paths that did not
+        already.  It is composed only inside the domain where that can be
+        checked without modelling links (:meth:`_in_domain`).  Elsewhere,
+        and whenever composing it meets a filesystem error, the fix is the
+        rule in prose, and the diagnostic is as resolution recorded it."""
         for refusal in self._refusals:
-            if refusal.diagnostic.error_code == "E014":
-                refusal.diagnostic.fix = self._e014_fix(refusal)
-            else:
-                refusal.diagnostic.fix = self._e015_fix(refusal)
+            e014 = refusal.diagnostic.error_code == "E014"
+            try:
+                fix = (self._e014_fix(refusal) if e014
+                       else self._e015_fix(refusal))
+            except OSError:
+                fix = None
+            refusal.diagnostic.fix = (
+                fix if fix is not None
+                else self._e014_prose(refusal) if e014
+                else self._e015_prose(refusal))
 
-    def _key(self, importer: Path) -> tuple[int, int] | None:
-        """*importer*'s key in :meth:`_violations`: the document's, or its
-        file's identity (None when it cannot be identified)."""
+    def _key(self, importer: Path) -> tuple[int, int]:
+        """*importer*'s key in :meth:`_walk`: the document's, or its file's
+        identity."""
         if self._document is not None and str(importer) == str(self._document):
             return _DOCUMENT
-        try:
-            return file_identity(importer)
-        except OSError:
-            return None
+        return file_identity(importer)
 
     def _program_of(
         self, ident: tuple[int, int], place: Path,
@@ -609,6 +630,8 @@ class ModuleResolver:
         """The program of the file *ident*, at *place*: as resolution read
         it, else read now (a refused import's file is never read during
         resolution).  None when it does not read or parse."""
+        if ident == _DOCUMENT:
+            return self._document_program
         if ident not in self._programs:
             try:
                 self._programs[ident] = transform(
@@ -618,20 +641,16 @@ class ModuleResolver:
                 self._programs[ident] = None
         return self._programs[ident]
 
-    def _violations(
+    def _walk(
         self, rename: _Rename | None = None,
         rewrites: _Rewrites | None = None,
-    ) -> frozenset[tuple[object, ...]]:
-        """What breaks the rules of spec §8.6.2 in the program, with
-        *rename* applied to the filesystem the lookups see and *rewrites*
-        to the imports: an import whose lookup finds no file, a rewritten
-        import that reaches another file than the one it is rewritten for,
-        a path that names two files, a file under two paths.
-
-        Every import of every file the document reaches is looked up, a
-        refused import's file included, by the lookup of spec §8.6.1.  What
-        this cannot see: a file that no import reaches, and the imports of a
-        file that does not read or parse."""
+    ) -> _Walk:
+        """Every import of every file the document reaches, a refused
+        import's file included, looked up by the lookup of spec §8.6.1 from
+        the directory of the file it is written in (resolved, as resolution
+        looks a module's imports up), with *rename* applied to the names the
+        lookups see and *rewrites* to the imports.  A filesystem error
+        propagates: the caller gives the prose fix."""
         rewrites = rewrites or {}
 
         def find(
@@ -644,65 +663,114 @@ class ModuleResolver:
                 if rename is not None and _name(place) == rename[0]:
                     continue
                 if place.is_file():
-                    try:
-                        return place, file_identity(place)
-                    except OSError:
-                        return None
+                    return place, file_identity(place)
             return None
 
-        if self._document is None:  # resolve_imports sets it first
-            return frozenset()
-        out: set[tuple[object, ...]] = set()
+        edges: _Edges = {}
+        missing: set[tuple[tuple[int, int], tuple[str, ...]]] = set()
+        entries: dict[tuple[int, int], set[Path]] = {}
         paths: dict[tuple[str, ...], set[tuple[int, int]]] = {}
         files: dict[tuple[int, int], set[tuple[str, ...]]] = {}
         seen: set[tuple[int, int]] = set()
-        queue: list[tuple[tuple[int, int], Path, tuple[tuple[str, ...], ...]]]
+        if self._document is None:  # resolve_imports sets it first
+            return _Walk({}, frozenset(), {}, frozenset())
         queue = [(_DOCUMENT, self._document, self._document_imports)]
         while queue:
             key, importer, imports = queue.pop(0)
-            for mod_path in imports:
-                wanted = rewrites.get((key, mod_path))
-                path = wanted[0] if wanted is not None else mod_path
+            for written in imports:
+                path = rewrites.get((key, written), written)
                 hit = find(path, importer)
                 if hit is None:
-                    out.add(("missing", key, path))
+                    missing.add((key, written))
                     continue
                 place, ident = hit
-                if wanted is not None and ident != wanted[1]:
-                    out.add(("astray", key, path))
+                edges[(key, written)] = ident
+                entries.setdefault(ident, set()).add(place)
                 paths.setdefault(path, set()).add(ident)
                 files.setdefault(ident, set()).add(path)
                 if ident in seen:
                     continue
                 seen.add(ident)
-                # A renamed file's program is read before the check, from
+                # A renamed file's program is read before the walk, from
                 # its old name (`_e014_fix`); every other is read here.
                 program = self._program_of(ident, place)
-                queue.append((ident, place, tuple(
+                home = place if rename is not None and ident == rename[2] \
+                    else place.resolve()
+                queue.append((ident, home, tuple(
                     imp.path for imp in program.imports) if program else ()))
-        out.update(("path", p) for p, s in paths.items() if len(s) > 1)
-        out.update(("file", f) for f, s in files.items() if len(s) > 1)
-        return frozenset(out)
+        conflicts: set[tuple[object, ...]] = {
+            ("path", p) for p, s in paths.items() if len(s) > 1}
+        conflicts |= {("file", f) for f, s in files.items() if len(s) > 1}
+        return _Walk(edges, frozenset(missing),
+                     {i: frozenset(e) for i, e in entries.items()},
+                     frozenset(conflicts))
+
+    def _base(self) -> _Walk:
+        if self._baseline is None:
+            self._baseline = self._walk()
+        return self._baseline
 
     def _verified(
         self, conflict: tuple[object, ...], rename: _Rename | None,
         rewrites: _Rewrites,
     ) -> bool:
-        """Whether the repair clears *conflict* and breaks nothing the
-        program did not already break."""
-        if self._baseline is None:
-            self._baseline = self._violations()
-        after = self._violations(rename, rewrites)
-        if conflict in after:
+        """Whether the repair keeps the invariant of spec §8.6.2: the
+        conflict is gone; every import, edited or not, reaches the file it
+        reached before, and no import that found a file finds none; no
+        path or file conflict is new."""
+        base, after = self._base(), self._walk(rename, rewrites)
+        if conflict in after.conflicts:
             return False
-        return after <= self._baseline  # pragma: no mutate (< is equivalent: the conflict is in the baseline and not in after)
+        if after.edges != base.edges or after.missing != base.missing:
+            return False
+        return after.conflicts <= base.conflicts
 
-    def _e014_fix(self, refusal: _Refusal) -> str:
+    def _in_domain(self, ident: tuple[int, int]) -> bool:
+        """Whether a repair of the file *ident* can be checked without
+        modelling links: every entry any import of the program reaches it
+        by is a plain file under its own name, with no second hard link
+        and no spelling that differs only in case.  A file NOT in play may
+        be a link, or have a second hard link: that is outside this test."""
+        for entry in self._base().entries.get(ident, frozenset()):
+            if entry.is_symlink() or os.stat(entry).st_nlink != 1:
+                return False
+            if entry.name not in os.listdir(entry.parent):
+                return False
+        return True
+
+    def _call_edits(
+        self, key: tuple[int, int], importer: Path, old: tuple[str, ...],
+        new: tuple[str, ...],
+    ) -> str | None:
+        """The sentence naming each qualified call in *importer* by the old
+        path, written by the new; "" when there is none; None when the
+        importer's program cannot be read, so the calls cannot be named."""
+        program = self._program_of(key, importer)
+        if program is None:
+            return None
+        calls = _module_calls(program, old)
+        if not calls:
+            return ""
+        was, now = self._spelled(old), self._spelled(new)
+        return (f" In '{self._shown(importer)}', write "
+                + ", and ".join(f"`{now}::{c}` in place of `{was}::{c}`"
+                                for c in calls) + ".")
+
+    #: The guarantee a concrete repair carries, said where it is offered.
+    _GUARANTEE = (
+        " Applied as written, this clears this conflict, and every other "
+        "import reaches the file it reaches now; any other error the "
+        "program has is still there.")
+
+    def _e014_fix(self, refusal: _Refusal) -> str | None:
         """Rename the file this import found, beside itself, and change the
         import: the first name, of *path* suffixed 2 to 99 then
-        ``_renamed``, that the check verifies."""
+        ``_renamed``, that :meth:`_verified` passes; None outside the
+        domain or where the calls cannot be named (the prose fix)."""
         imp, entry = refusal.imp, refusal.entry
         old = imp.path
+        if not self._in_domain(refusal.ident):
+            return None
         here = self._shown(entry)
         key = self._key(refusal.importer)
         program = self._program_of(refusal.ident, entry)
@@ -710,30 +778,47 @@ class ModuleResolver:
         for last in [*names, f"{old[-1]}_renamed"]:
             renamed = entry.with_name(last + entry.suffix)
             # A file at the new name would be replaced by the rename.  The
-            # check sees only files some import reaches, so a file no
+            # walk sees only files some import reaches, so a file no
             # import reaches is ruled out here.
             if os.path.lexists(renamed):
                 continue
             new = (*old[:-1], last)
-            if key is None or not self._verified(
+            if not self._verified(
                     ("path", old), (_name(entry), _name(renamed), refusal.ident),
-                    {(key, old): (new, refusal.ident)}):
+                    {(key, old): new}):
                 continue
-            fix = (
+            calls = self._call_edits(key, refusal.importer, old, new)
+            if calls is None:
+                return None
+            return (
                 f"Give one of the two modules another path: rename "
                 f"`{here}` to `{self._shown(renamed)}` and write "
                 f"`import {self._spelled(new)}` here in place of "
                 f"`import {self._spelled(old)}`."
-            )
-            return fix + self._own_path_edits(program, old, new, renamed)
+                + calls + self._own_path_edits(program, old, new, renamed)
+                + self._GUARANTEE)
         return (
             f"Give one of the two modules another path. No rename of "
             f"`{here}` to `{old[-1]}2` through `{old[-1]}99`, or to "
             f"`{old[-1]}_renamed`, with this import changed to match, "
-            f"clears the conflict and keeps every other import of the "
-            f"program finding its one file, so rename `{here}` or "
+            f"clears the conflict and leaves every other import reaching "
+            f"the file it reaches now, so rename `{here}` or "
             f"`{self._shown(refusal.bound.entry)}` to a name no file and no "
             f"module of the program takes, and change its imports to match."
+        )
+
+    def _e014_prose(self, refusal: _Refusal) -> str:
+        here = self._shown(refusal.entry)
+        there = self._shown(refusal.bound.entry)
+        return (
+            f"Give one of the two modules another path: rename `{here}` or "
+            f"`{there}` to a name no file and no module of the program "
+            f"takes, and change each import of it, and each qualified call "
+            f"by its old path, to match, so that every other import still "
+            f"reaches the file it reaches now. A repair is not composed "
+            f"here: a symbolic link, a second hard link or a spelling that "
+            f"differs only in case reaches the file, or the files could not "
+            f"be read."
         )
 
     def _own_path_edits(
@@ -753,73 +838,61 @@ class ModuleResolver:
         return (f" In `{self._shown(renamed)}`, write "
                 + ", and ".join(edits) + ".")
 
-    def _e015_fix(self, refusal: _Refusal) -> str:
+    def _e015_fix(self, refusal: _Refusal) -> str | None:
         """Import the file by one path everywhere: this import changed to
-        the other's path, else the other changed to this one's, else both
-        to the file's path from the project root; the first the check
-        verifies."""
+        the other's path, else the other changed to this one's; the first
+        that :meth:`_verified` passes.  None outside the domain or where
+        the calls cannot be named (the prose fix)."""
         imp, bound = refusal.imp, refusal.bound
         here, there = self._spelled(imp.path), self._spelled(bound.path)
         shown = self._shown(refusal.entry.resolve())
         other = self._shown(bound.importer)
-        none = (
-            f"Import `{shown}` by one path everywhere. Neither '{here}', "
-            f"nor '{there}', nor its path from the project root, written "
-            f"in both files, reaches it from both and keeps every other "
-            f"import of the program finding its one file, so move it to a "
-            f"directory both files reach by one path, such as the project "
-            f"root, and import it by that path in both."
-        )
+        if not self._in_domain(bound.ident):
+            return None
         mine, theirs = self._key(refusal.importer), self._key(bound.importer)
-        if mine is None:
-            return none
-        if theirs is None:
-            return none
         conflict = ("file", bound.ident)
-
-        def verified(rewrites: _Rewrites) -> bool:
-            return self._verified(conflict, None, rewrites)
-
-        if verified({(mine, imp.path): (bound.path, bound.ident)}):
+        if self._verified(conflict, None, {(mine, imp.path): bound.path}):
+            calls = self._call_edits(
+                mine, refusal.importer, imp.path, bound.path)
+            if calls is None:
+                return None
             return (
                 f"Import `{shown}` by one path everywhere: write "
                 f"`import {there}` here in place of `import {here}`, the "
                 f"path '{other}' imports it by, which reaches it from this "
-                f"file too."
+                f"file too." + calls + self._GUARANTEE
             )
-        if verified({(theirs, bound.path): (imp.path, bound.ident)}):
+        if self._verified(conflict, None, {(theirs, bound.path): imp.path}):
+            calls = self._call_edits(
+                theirs, bound.importer, bound.path, imp.path)
+            if calls is None:
+                return None
             return (
                 f"Import `{shown}` by one path everywhere: write "
                 f"`import {here}` in '{other}' in place of "
                 f"`import {there}`, the path this file imports it by, "
-                f"which reaches it from there too."
+                f"which reaches it from there too." + calls + self._GUARANTEE
             )
-        rooted = self._root_path(refusal.entry.resolve())
-        if rooted is not None and verified({
-                (mine, imp.path): (rooted, bound.ident),
-                (theirs, bound.path): (rooted, bound.ident),
-        }):
-            return (
-                f"Import `{shown}` by one path everywhere: its path from "
-                f"the project root, '{self._spelled(rooted)}', reaches it "
-                f"from both files, so write `import "
-                f"{self._spelled(rooted)}` here in place of `import {here}`"
-                f" and in '{other}' in place of `import {there}`."
-            )
-        return none
+        return (
+            f"Import `{shown}` by one path everywhere. Neither '{here}' "
+            f"nor '{there}', written in the other file, reaches it there "
+            f"and leaves every other import reaching the file it reaches "
+            f"now, so move it to a directory both files reach by one path, "
+            f"such as the project root, and import it by that path in both."
+        )
 
-    def _root_path(self, file_path: Path) -> tuple[str, ...] | None:
-        """*file_path*'s module path from the project root, if it lies
-        under the root and each part is a name a module path can hold."""
-        try:
-            rel = file_path.resolve().relative_to(self._root.resolve())
-        except ValueError:
-            return None
-        # A file under the root has at least its own name as a part.
-        parts = rel.with_suffix("").parts
-        if all(_MODULE_NAME.fullmatch(p) for p in parts):
-            return tuple(parts)
-        return None
+    def _e015_prose(self, refusal: _Refusal) -> str:
+        shown = self._shown(refusal.entry.resolve())
+        return (
+            f"Import `{shown}` by one path everywhere: choose one path that "
+            f"reaches it from '{self._shown(refusal.importer)}' and from "
+            f"'{self._shown(refusal.bound.importer)}', and write it in both "
+            f"imports, and in each qualified call by the other path, so "
+            f"that every other import still reaches the file it reaches "
+            f"now. A repair is not composed here: a symbolic link, a second "
+            f"hard link or a spelling that differs only in case reaches the "
+            f"file, or the files could not be read."
+        )
 
     def _lookup(
         self,
