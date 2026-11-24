@@ -1766,7 +1766,7 @@ class _Builder:
         if isinstance(pattern, ast.BindingPattern):
             declared = self.sem(pattern.type_expr)
             matched = self.sem(pattern)
-            if declared is None or matched is None:
+            if declared is None or matched is None:  # pragma: no mutate — equivalent: a binder the checker typed has its matched type too (0 binders with one and not the other)
                 return
             source = Source(scrutinee)
             if isinstance(declared, RefinedType):

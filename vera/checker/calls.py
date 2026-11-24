@@ -688,7 +688,7 @@ class CallsMixin:
             return False
         outcome = self._join_parts(ty, other)
         if outcome.joined is not None:
-            return unfit_function_value(ty, other) is None
+            return unfit_function_value(ty, other) is None  # pragma: no mutate — unreached: both callers ask only where this join failed, and it is asked again of the same pair (0 of 28 calls joined)
         return (outcome.builtin
                 and _compatible_modulo_typevars(
                     ty, other, frozenset(self.env.type_params))

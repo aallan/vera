@@ -78,6 +78,57 @@ def _holds_variable(ty: Type, rigid: Collection[str]) -> bool:
     return False
 
 
+def _open_in_function(ty: Type, rigid: Collection[str]) -> bool:
+    """Whether a type variable a call left open stands inside a function
+    type in *ty*, where `read_open_as_unknown` keeps it (#1896)."""
+    if isinstance(ty, AdtType):
+        return any(_open_in_function(a, rigid) for a in ty.type_args)
+    if isinstance(ty, RefinedType):
+        return _open_in_function(ty.base, rigid)
+    if isinstance(ty, FunctionType):
+        return _holds_open(ty, rigid)
+    return False
+
+
+def _holds_open(ty: Type, rigid: Collection[str]) -> bool:
+    """Whether a type variable not one of *rigid* stands anywhere in *ty*."""
+    if isinstance(ty, TypeVar):
+        return "$" in ty.name or ty.name not in rigid  # pragma: no mutate — equivalent: every variable a call leaves open is renamed with a `$` (0 others reached)
+    if isinstance(ty, AdtType):
+        return any(_holds_open(a, rigid) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(_holds_open(p, rigid) for p in ty.params)
+                or _holds_open(ty.return_type, rigid))
+    if isinstance(ty, RefinedType):
+        return _holds_open(ty.base, rigid)
+    return False
+
+
+def _open_bindings(value: Type, written: Type,
+                   found: dict[str, Type]) -> bool:
+    """Bind each open variable of *value* to the part of *written* it
+    stands against, into *found*; False where the two differ in shape or
+    a variable meets two types."""
+    if isinstance(value, TypeVar):
+        if value.name in found:
+            return types_equal(found[value.name], written)
+        found[value.name] = written
+        return True
+    value, written = base_type(value), base_type(written)
+    if isinstance(value, AdtType) and isinstance(written, AdtType):
+        return (value.name == written.name
+                and len(value.type_args) == len(written.type_args)
+                and all(_open_bindings(a, b, found)
+                        for a, b in zip(value.type_args, written.type_args)))
+    if isinstance(value, FunctionType) and isinstance(written, FunctionType):
+        return (len(value.params) == len(written.params)
+                and all(_open_bindings(a, b, found)
+                        for a, b in zip(value.params, written.params))
+                and _open_bindings(value.return_type, written.return_type,
+                                   found))
+    return True
+
+
 #: The State operations a bare or ``State.``-qualified call can name.
 _STATE_OPS = frozenset({"get", "put"})
 
@@ -450,6 +501,10 @@ def _shared_at(
 
 class ControlFlowMixin:
 
+    #: The scrutinee whose arm's pattern is being checked, its expression
+    #: and type, for a binder's fix that names it (`_open_variable_fix`).
+    _match_scrutinee: tuple[ast.Expr, Type] | None = None
+
     # -----------------------------------------------------------------
     # Control flow
     # -----------------------------------------------------------------
@@ -630,8 +685,12 @@ class ControlFlowMixin:
         result_type: Type | None = None
         arm_types: list[tuple[ast.Expr, Type]] = []
         for arm in expr.arms:
-            # Check pattern and collect bindings
+            # Check pattern and collect bindings.  A binder's fix may name
+            # the scrutinee (`_binder_mismatch`), so it is held while the
+            # arm's pattern is checked.
+            self._match_scrutinee = (expr.scrutinee, scrutinee_ty)
             bindings = self._check_pattern(arm.pattern, scrutinee_ty)
+            self._match_scrutinee = None  # pragma: no mutate — equivalent: read only while an arm's pattern is checked, after it is set
 
             # Push scope with pattern bindings
             self.env.push_scope()
@@ -1229,7 +1288,7 @@ class ControlFlowMixin:
         self._error(
             pat,
             f"{subject} {matches}, but the scrutinee has type "
-            f"{pretty_type(scrut)}.",
+            f"{pretty_inferred_type(scrut)}.",
             rationale=rationale or (
                 "Every value reaching a match arm has the "
                 "scrutinee's type, so a pattern of any other type "
@@ -1447,7 +1506,9 @@ class ControlFlowMixin:
         else:
             why = None
         fix = None
-        if holds_function(seen):
+        if _open_in_function(seen, rigid):
+            fix = self._open_variable_fix(seen, bound)
+        elif holds_function(seen):
             # A slot names a function type through an alias, so the
             # scrutinee's type is given in prose.
             fix = ("Bind the value at the scrutinee's type, named by a type "
@@ -1457,6 +1518,33 @@ class ControlFlowMixin:
             pat, f"Binding pattern '@{pretty_type(bound)}'",
             f"binds a value of type {pretty_type(bound)}", seen,
             rationale=why, fix=fix)
+
+    def _open_variable_fix(self, seen: Type, bound: Type) -> str:
+        """E314's fix at a binder over a function type whose type variable
+        the call left open (#1896): no type a program writes names that
+        function type, so the variable is fixed first, by a `let` at the
+        type the binder needs, where the call is instantiated."""
+        prose = ("The scrutinee holds a function type whose type variable "
+                 "the call leaves open, which no binder can name: fix the "
+                 "variable first, binding the scrutinee with a `let` at the "
+                 "type this binder needs, named by a type alias, so the call "
+                 "is instantiated at it, and match the `let`'s slot.")
+        held = self._match_scrutinee
+        found: dict[str, Type] = {}
+        if held is None or not _open_bindings(seen, bound, found):
+            return prose
+        scrutinee, whole = held
+        fixed = substitute(whole, found)
+        if _holds_open(fixed, self.env.type_params):
+            return prose
+        return ("The scrutinee holds a function type whose type variable "
+                "the call leaves open, which no binder can name: fix the "
+                "variable first, so the call is instantiated at the type "
+                f"this binder needs.  Declare "
+                f"`type Instance = {pretty_type(fixed)};`, bind the "
+                f"scrutinee before the `match` with "
+                f"`let @Instance = {format_expr_canonical(scrutinee)};`, "
+                f"and match `@Instance.0`.")
 
     # -----------------------------------------------------------------
     # A destructuring let, held to its constructor pattern (#1545)

@@ -455,7 +455,27 @@ CASES: dict[str, _Case] = {
                                    eff="<State<Pos>>"),
         replace("effects(<State<Pos>>)"),
         base=("effects(<IO, State<{@Int | ...}>>)",)),
+    # #1896: a binder over a function type whose variable the call leaves
+    # open names no writable type; the fix fixes the variable with a `let`.
+    "E314-binder-over-an-open-function-type": _Case(
+        "E314", "check", "type II = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @Option<fn(X -> Int) effects(pure)>",
+                  "Some(fn(@X -> @Int) effects(pure) { 40 })", "X")
+        + _fn("@Unit", "@Int", "match mk(()) {\n    Some(@II) -> "
+              "apply_fn(@II.0, 3),\n    None -> 7\n  }"),
+        lambda source, given: _instance_applied(source, given)),
 }
+
+
+def _instance_applied(source: str, given: list[str]) -> str:
+    """The open-variable fix's three spans, each where its text says: the
+    alias at the top, the `let` before the `match`, the slot matched."""
+    alias = next(g for g in given if g.startswith("type "))
+    let = next(g for g in given if g.startswith("let "))
+    slot = next(g for g in given if g.startswith("@"))
+    scrutinee = let.split(" = ", 1)[1].rstrip(";")
+    return alias + "\n\n" + _once(source, f"match {scrutinee} {{",
+                                  f"{let}\n  match {slot} {{")
 
 
 #: Refinements over an alias (R121 review): the predicate names its binder

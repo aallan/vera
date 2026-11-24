@@ -113,6 +113,45 @@ def test_repro_the_join_compares_a_parameter_s_row_the_right_way_round_1896(
     assert _codes(_JOIN_A4) == ["E202"], _JOIN_A4
 
 
+#: `mk(())` leaves `X` open inside a function type: the closure is compiled
+#: at a type of its own, which the binder's `Int` does not fix.
+_OPEN_IN_FN = (
+    "type II = fn(Int -> Int) effects(pure);\n\n"
+    + _fn("mk(@Unit -> @Option<fn(X -> Int) effects(pure)>)",
+          "Some(fn(@X -> @Int) effects(pure) { 40 })").replace(
+              "private fn", "private forall<X> fn"))
+
+
+def test_repro_a_binder_over_an_open_variable_inside_a_function_type_1896(
+        ) -> None:
+    """Was accepted, verified clean, and trapped `indirect call type
+    mismatch`: an open variable inside a function type was read as unknown,
+    so `fn(X -> Int)` held at `fn(Int -> Int)`.  The matrix's `open-in-*`
+    shapes hold every position and shape of it."""
+    source = _OPEN_IN_FN + _fn(
+        "main(@Unit -> @Int)",
+        "match mk(()) {\n    Some(@II) -> apply_fn(@II.0, 3),\n    None -> 7\n  }",
+        visibility="public")
+    (error,) = pipeline.check(source).errors
+    assert error.error_code == "E314", source
+    # The variable the call left open is shown as `?`, not by its own name.
+    assert error.description.endswith(
+        "but the scrutinee has type fn(? -> Int) effects(pure)."), error.description
+
+
+def test_an_open_variable_inside_a_function_type_its_context_fixes_runs(
+        ) -> None:
+    """Where the context fixes the variable (a `let`'s type, a parameter's),
+    the call is instantiated there, and the closure runs at that type."""
+    for body in ("let @Option<II> = mk(());\n  match @Option<II>.0 {\n"
+                 "    Some(@II) -> apply_fn(@II.0, 3),\n    None -> 7\n  }",):
+        source = _OPEN_IN_FN + _fn("main(@Unit -> @Int)", body,
+                                   visibility="public")
+        assert _codes(source) == [], source
+        ran = pipeline.run(source, fn="main")
+        assert ran.trap is None and ran.value == 40, (ran.trap, source)
+
+
 _CLAUSE = _fn(
     "go(@Int -> @Int)",
     "handle[Exn<Int>] {\n    throw(@String) -> { @String.0 + 1 }\n"
@@ -228,6 +267,22 @@ MISMATCHES: dict[str, tuple[str, str, str]] = {
     "same-beside-T": (
         "fn(Int, T -> Int) effects(pure)", "fn(Int, T -> Int) effects(pure)",
         "fn(@Int, @T -> @Int) effects(pure) { @Int.0 }"),
+    # A variable a generic call leaves open INSIDE a function type, which
+    # no context fixes once the call is typed: the function was compiled at
+    # a type of its own, so it is no function of the written type (the
+    # binder at `fn(Int -> Int)` over `fn(X -> Int)` trapped `indirect call
+    # type mismatch`).  The producers are `_OPEN_PRODUCERS`.
+    "open-in-parameter": ("?", "fn(Int -> Int) effects(pure)", "mk_par(())"),
+    "open-in-result": ("?", "fn(Int -> Int) effects(pure)", "mk_res([])"),
+    "open-in-both": ("?", "fn(Int -> Int) effects(pure)", "mk_both(())"),
+    "open-in-one-of-two": ("?", "fn(Int, Int -> Int) effects(pure)",
+                                "mk_two(())"),
+    "open-under-data": ("?", "fn(Option<Int> -> Int) effects(pure)",
+                        "mk_data(())"),
+    "open-in-nested": (
+        "?", "fn(fn(Int -> Int) effects(pure) -> Int) effects(pure)",
+        "mk_nested(())"),
+    "open-in-row": ("?", "fn(Int -> Int) effects(<Exn<Int>>)", "mk_row(())"),
 }
 
 POSITIONS = (
@@ -248,12 +303,40 @@ _PRELUDE = (
         "private fn", "private forall<X> fn")
     + _fn("idt(@Y -> @Y)", "@Y.0").replace("private fn", "private forall<Y> fn"))
 
+_G = "private forall<X> fn"
+
+#: Each shape's generic producer: its result holds `X` inside a function
+#: type, and `mk(())` (`mk_res([])`) leaves `X` open.
+_OPEN_PRODUCERS = (
+    "type GX<X> = fn(X -> Int) effects(pure);\n"
+    + _fn("mk_par(@Unit -> @fn(X -> Int) effects(pure))",
+          "fn(@X -> @Int) effects(pure) { 40 }").replace("private fn", _G)
+    + _fn("mk_res(@Array<X> -> @fn(Int -> X) effects(pure))",
+          "fn(@Int -> @X) effects(pure) { @Array<X>.0[0] }").replace(
+              "private fn", _G)
+    + _fn("mk_two(@Unit -> @fn(X, Int -> Int) effects(pure))",
+          "fn(@X, @Int -> @Int) effects(pure) { 40 }").replace("private fn", _G)
+    + _fn("mk_both(@Unit -> @fn(X -> X) effects(pure))",
+          "fn(@X -> @X) effects(pure) { @X.0 }").replace("private fn", _G)
+    + _fn("mk_data(@Unit -> @fn(Option<X> -> Int) effects(pure))",
+          "fn(@Option<X> -> @Int) effects(pure) { 40 }").replace(
+              "private fn", _G)
+    + _fn("mk_nested(@Unit -> @fn(GX<X> -> Int) effects(pure))",
+          "fn(@GX<X> -> @Int) effects(pure) { 40 }").replace("private fn", _G)
+    + _fn("mk_row(@Unit -> @fn(Int -> Int) effects(<Exn<X>>))",
+          "fn(@Int -> @Int) effects(<Exn<X>>) { 40 }").replace(
+              "private fn", _G))
+
+_OPEN_SHAPES = frozenset(m for m in MISMATCHES
+                         if m.startswith(("open-in-", "open-under-")))
+
 
 def _skipped(position: str, mismatch: str, generic: bool) -> str | None:
     """Why a cell has no program, or None."""
     if (mismatch == "rigid" or mismatch.endswith("-beside-T")) and not generic:
         return "a rigid variable is the enclosing generic's"
-    if mismatch == "open" and position in ("exn-clause", "state-clause"):
+    if (mismatch == "open" or mismatch in _OPEN_SHAPES) and position in (
+            "exn-clause", "state-clause"):
         return "a handled effect's type argument is written"
     if mismatch == "open" and position == "binder-whole":
         return "the whole-type binder writes `Option<WW>`, the open one's own"
@@ -322,15 +405,39 @@ def cell_program(position: str, mismatch: str, generic: bool) -> str:
     else:
         outer = ""
         main = _fn("main(@Unit -> @Int)", body, visibility="public")
-    return aliases + _PRELUDE + helpers + outer + main
+    prelude = _PRELUDE + (_OPEN_PRODUCERS if mismatch in _OPEN_SHAPES
+                          else "")
+    return aliases + prelude + helpers + outer + main
 
 
 def expected_codes(position: str, mismatch: str) -> list[str]:
     if mismatch in ("same", "open", "scalar-nat", "same-beside-T"):
         return []
+    if mismatch in _OPEN_SHAPES:
+        return _open_shape_codes(position, mismatch)
     if mismatch == "narrowing":
         return ["E190"]
     return [_SITE_CODE[position]]
+
+
+def _open_shape_codes(position: str, mismatch: str) -> list[str]:
+    """A binder under a head, or at the scrutinee's root, holds the value at
+    a type its function was not compiled for: E314.  Where the written type
+    reaches the call as its expected type (an argument, a whole-type binder
+    over `Some(...)`), the call is instantiated there and the program runs
+    at that type: no refusal.  The join's positions refuse the pair, as on
+    `main`: a variable inside a function type is not open at the join
+    (#1684), and an effect row holding one is compared as written."""
+    row = mismatch == "open-in-row"
+    if position.startswith("binder-") and position != "binder-whole":
+        return ["E314"]
+    if position == "binder-whole":
+        return ["E314"] if row else []
+    if position == "argument":
+        return ["E202"] if row else []
+    if position == "adopted":
+        return ["E170"] if row else ["E170", "E202"]
+    return ["E170"]
 
 
 CELLS = [
@@ -403,6 +510,238 @@ def test_a_head_over_a_bare_open_variable_reads_its_fields_as_unknown(
 # =====================================================================
 # The slot a clause parameter binds has the type the clause writes
 # =====================================================================
+
+#: Each head's E314 says what the pattern matches, as its own kind of
+#: pattern does (`_rigid_head_mismatch`).
+HEAD_SAYS = {
+    "option": "Pattern 'Some' is a constructor of Option<T>",
+    "nullary": "Pattern 'None' is a constructor of Option<T>",
+    "tuple": "Pattern 'Tuple(...)' matches a tuple",
+    "ctor": "Pattern 'Box' is a constructor of Box<Z>",
+    "int-literal": "Pattern literal 5 has type Int",
+    "string-literal": 'Pattern literal "x" has type String',
+    "bool-literal": "Pattern literal true has type Bool",
+}
+
+
+@pytest.mark.parametrize("head", sorted(HEADS))
+def test_a_head_over_the_function_s_own_variable_says_what_it_matches(
+        head: str) -> None:
+    body = f"match @A.0 {{\n    {HEADS[head]},\n    _ -> 0\n  }}"
+    source = _PRELUDE + _fn("run(@A -> @Int)", body).replace(
+        "private fn", "private forall<A> fn")
+    (error,) = pipeline.check(source).errors
+    assert error.description == (
+        f"{HEAD_SAYS[head]}, but the scrutinee has type A."), error.description
+    assert error.rationale.startswith(
+        "A is a type parameter of the enclosing function"), error.rationale
+
+
+def test_repro_a_refused_head_over_a_t_reads_its_fields_as_unknown_1896(
+        ) -> None:
+    """`Option`'s own parameter is named `T`, as the enclosing function's
+    is: once the head is refused, its field is read as unknown, not as the
+    function's `T`, so the binder under it draws no second E314."""
+    source = _fn("run(@T -> @Int)",
+                 "match @T.0 {\n    Some(@Int) -> @Int.0,\n    _ -> 0\n  }"
+                 ).replace("private fn", "private forall<T> fn")
+    assert _codes(source) == ["E314"], source
+
+
+#: (the program's function, the reason the rationale gives): each of the
+#: binder's three reasons (`_binder_mismatch`), the type parameter's from
+#: either side and from inside a function type's parameters.
+_BINDER_REASONS = {
+    "variable-in-value": (
+        _fn("run(@Tuple<T, Int> -> @Int)",
+            "match @Tuple<T, Int>.0 {\n    @Tuple<Int, Int> -> 0\n  }"
+            ).replace("private fn", "private forall<T> fn"),
+        "A type parameter of the enclosing function"),
+    "variable-in-binder": (
+        _fn("run(@Option<Int> -> @Int)",
+            "match @Option<Int>.0 {\n    @Option<T> -> 0\n  }"
+            ).replace("private fn", "private forall<T> fn"),
+        "A type parameter of the enclosing function"),
+    "variable-in-a-parameter": (
+        "type FT<T> = fn(T, Int -> Int) effects(pure);\n"
+        "type FI = fn(Int, Int -> Int) effects(pure);\n\n"
+        + _fn("run(@FT<T> -> @Int)", "match @FT<T>.0 {\n    @FI -> 0\n  }"
+              ).replace("private fn", "private forall<T> fn"),
+        "A type parameter of the enclosing function"),
+    "the-other-way-function": (
+        "type W = fn(Int -> Int) effects(pure);\n"
+        "type IOF = fn(Int -> Int) effects(<IO>);\n\n"
+        + _fn("run(@IOF -> @Int)", "match @IOF.0 {\n    @W -> 0\n  }"),
+        "A binder claims every value it binds has the type it writes"),
+    "the-other-way-never": (
+        _fn("run(@Int -> @Int)", "match @Int.0 {\n    @Never -> 0\n  }"),
+        "A binder claims every value it binds has the type it writes"),
+    "unrelated": (
+        _fn("run(@String -> @Int)", "match @String.0 {\n    @Int -> 0\n  }"),
+        "Every value reaching a match arm has the scrutinee's type"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BINDER_REASONS))
+def test_a_refused_binder_gives_the_reason_that_holds(case: str) -> None:
+    source, reason = _BINDER_REASONS[case]
+    (error,) = pipeline.check(source).errors
+    assert error.error_code == "E314", source
+    assert error.rationale.startswith(reason), error.rationale
+    if case.startswith("the-other-way"):
+        function = case.endswith("function")
+        assert error.rationale.endswith(
+            "does not declare)." if function else "can tell."), error.rationale
+
+
+def test_a_binder_over_an_open_variable_shows_it_as_unknown() -> None:
+    """The scrutinee's type is shown as the binder judged it: a variable the
+    call left open is `?`, not the call's own name for it."""
+    source = _PRELUDE + _fn(
+        "run(@Int -> @Int)",
+        "match Some(none_of(())) {\n    Some(@String) -> 0,\n    None -> 1\n  }")
+    (error,) = pipeline.check(source).errors
+    assert error.description.endswith(
+        "but the scrutinee has type Option<?>."), error.description
+
+
+def test_a_clause_parameter_at_an_undeclared_type_binds_the_operation_s(
+        ) -> None:
+    """Where the written type names nothing (E136), the slot takes the
+    operation's type, so the body is still checked against it."""
+    source = _fn("go(@Int -> @Int)",
+                 "handle[Exn<Int>] {\n    throw(@Foo) -> { string_length(@Foo.0) }\n"
+                 "  } in {\n    throw(@Int.0)\n  }")
+    assert _codes(source) == ["E136", "E202"], source
+
+
+def test_a_match_arm_beside_a_lost_variable_is_judged_both_ways_round(
+        ) -> None:
+    """`_branches_agree` asks of two arms side by side, the earlier arm's
+    holding a built-in's lost variable (#1688): a function value narrower
+    than its neighbour's in either arm draws E302 there, not a join at the
+    later arm's type."""
+    source = (
+        "type FI = fn(Int -> Int) effects(pure);\n\n"
+        + _fn("first(@Array<T> -> @T)", "@Array<T>.0[0]").replace(
+            "private fn", "private forall<T> fn").replace(
+            "requires(true)", "requires(array_length(@Array<T>.0) > 0)")
+        + _fn("main(@Int -> @Int)",
+              "let @Tuple<Int, FI> = match @Int.0 {\n"
+              "    0 -> Tuple(array_map([1], first([]))[0], "
+              "fn(@Nat -> @Int) effects(pure) { 1 }),\n"
+              "    _ -> Tuple(0, fn(@Int -> @Int) effects(pure) { 2 })\n  };\n  0",
+              visibility="public"))
+    assert _codes(source) == ["E190", "E302"], source
+
+
+_SPAN = re.compile(r"`([^`]+)`")
+
+
+@pytest.mark.parametrize(("position", "shape", "generic"), [
+    pytest.param(position, shape, generic,
+                 id=f"{position}-{shape}-{'generic' if generic else 'plain'}")
+    for position in ("binder-top", "binder-some", "binder-tuple",
+                     "binder-ctor", "binder-nested")
+    for shape in sorted(_OPEN_SHAPES - {"open-in-row"})
+    for generic in (False, True)])
+def test_the_open_variable_fix_applied_as_written_clears_e314(
+        position: str, shape: str, generic: bool) -> None:
+    """E314's fix over a function type a call left open declares the
+    instantiated type, binds the scrutinee with a `let` at it, and matches
+    its slot: applied as written, at every binder position and shape."""
+    source = cell_program(position, shape, generic)
+    (error,) = pipeline.check(source).errors
+    given = _SPAN.findall(error.fix)
+    alias = next(g for g in given if g.startswith("type "))
+    let = next(g for g in given if g.startswith("let "))
+    slot = next(g for g in given if g.startswith("@"))
+    scrutinee = let.split(" = ", 1)[1].rstrip(";")
+    site = f"match {scrutinee} {{"
+    assert source.count(site) == 1, (site, source)
+    fixed = alias + "\n\n" + source.replace(site, f"{let}\n  match {slot} {{")
+    assert _codes(fixed) == [], (error.fix, fixed)
+
+
+#: (the `match`, whether the fix writes the `let`): a binder whose pair
+#: binds each open variable to one type gets the `let` that fixes them; a
+#: variable met at two types, a data type other than the value's, or a
+#: variable the binder does not reach leaves no type to write, and the
+#: fix says what to do in prose.
+_OPEN_FIX_FORMS = {
+    "a-variable-at-two-types": (
+        "match Some(mk_both(())) {\n    Some(@IS) -> 0,\n    None -> 1\n  }",
+        False),
+    "another-data-type": (
+        "match Some(Some(mk_par(()))) {\n    Some(@Box<WW>) -> 0,\n    _ -> 1\n  }",
+        False),
+    "another-open-variable": (
+        "match Tuple(none_of(()), mk_par(())) {\n    Tuple(_, @WW) -> 0\n  }",
+        False),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_OPEN_FIX_FORMS))
+def test_the_open_variable_fix_writes_a_let_only_where_one_type_fixes_it(
+        form: str) -> None:
+    body, writes = _OPEN_FIX_FORMS[form]
+    source = ("type WW = fn(Int -> Int) effects(pure);\n"
+              "type IS = fn(Int -> String) effects(pure);\n"
+              + _PRELUDE + _OPEN_PRODUCERS
+              + _fn("main(@Unit -> @Int)", body, visibility="public"))
+    (error,) = pipeline.check(source).errors
+    assert error.error_code == "E314", source
+    assert error.fix.startswith("The scrutinee holds a function type"), error.fix
+    assert ("`type Instance = " in error.fix) is writes, error.fix
+    if writes:
+        given = _SPAN.findall(error.fix)
+        alias, let, slot = (next(g for g in given if g.startswith(s))
+                            for s in ("type ", "let ", "@"))
+        scrutinee = let.split(" = ", 1)[1].rstrip(";")
+        fixed = alias + "\n\n" + source.replace(
+            f"match {scrutinee} {{", f"{let}\n  match {slot} {{")
+        assert _codes(fixed) == [], fixed
+
+
+#: A function value in each arm beside a built-in's lost variable (#1688):
+#: (the first arm's, the second's) -> whether the arms are refused (E301 at
+#: an `if` whose branches lose two variables, E302 at a `match` whose first
+#: arm loses one).  `_branches_agree` asks the symmetric question: a
+#: narrower parameter, or a row the first arm's type would drop, either way.
+_SIBLING_FNS = {
+    "nat": "fn(@Nat -> @Int) effects(pure) { 1 }",
+    "int": "fn(@Int -> @Int) effects(pure) { 2 }",
+    "io": 'fn(@Int -> @Int) effects(<IO>) { IO.print("x"); 3 }',
+}
+_SIBLINGS = {
+    ("if", "int", "int"): False, ("if", "nat", "int"): False,
+    ("if", "int", "nat"): True, ("if", "io", "int"): False,
+    ("if", "int", "io"): True,
+    ("match", "int", "int"): False, ("match", "int", "nat"): False,
+    ("match", "nat", "int"): True, ("match", "io", "int"): True,
+    ("match", "int", "io"): False,
+}
+
+
+@pytest.mark.parametrize(("form", "first", "second"), sorted(_SIBLINGS))
+def test_arms_beside_a_lost_variable_are_compared_side_by_side(
+        form: str, first: str, second: str) -> None:
+    lost = "array_map([1], first_of([]))[0]"
+    a = f"Tuple({lost}, {_SIBLING_FNS[first]})"
+    if form == "if":
+        b = f"Tuple(map_values(first_of([]))[0], {_SIBLING_FNS[second]})"
+        join = f"if @Int.0 > 0 then {{ {a} }} else {{ {b} }}"
+    else:
+        b = f"Tuple(0, {_SIBLING_FNS[second]})"
+        join = f"match @Int.0 {{\n    0 -> {a},\n    _ -> {b}\n  }}"
+    source = (_fn("first_of(@Array<X> -> @X)", "@Array<X>.0[0]").replace(
+        "private fn", "private forall<X> fn").replace(
+        "requires(true)", "requires(array_length(@Array<X>.0) > 0)")
+        + _fn("main(@Int -> @Int)", f"let @Tuple<Int, Int> = {join};\n  0",
+              visibility="public", contract=_IO_CONTRACT))
+    refusal = "E301" if form == "if" else "E302"
+    assert (refusal in _codes(source)) is _SIBLINGS[(form, first, second)], source
+
 
 def test_a_narrower_clause_binder_is_guarded_once_1896() -> None:
     """`throw(@Nat)` under `Exn<Int>` binds a `Nat`: the bind is the one
