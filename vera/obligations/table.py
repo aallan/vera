@@ -48,7 +48,7 @@ first — names that row in ``answered_by`` and emits no check of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, cast
 
 from vera import ast, binding, carriers, fold, naming, narrowing
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES
@@ -1193,9 +1193,17 @@ class _Builder:
             self.expr_rows(expr, handed, nat_handed, in_closure, under_join,
                            store, store and not _is_nat(inplace))
         if isinstance(expr, ast.LetStmt):
-            let_ty = self.sem(expr.type_expr)
-            self.walk(expr.value, d, handed=self.target(expr.value) or let_ty,
-                      in_closure=in_closure)
+            # The checker synthesises a `let`'s value against the declared
+            # type and records it as the value's target
+            # (`vera/checker/expressions.py`, `_check_let`), and `expr_rows`
+            # reads that target where nothing is handed: the hand-down is
+            # the target (838 lets of the corpus and the instruments).
+            let_ty = self.sem(expr.type_expr)  # pragma: no mutate — equivalent, as above
+            self.walk(
+                expr.value, d,
+                handed=self.target(expr.value) or let_ty,  # pragma: no mutate — equivalent, as above
+                in_closure=in_closure,
+            )
             return
         if isinstance(expr, ast.LetDestruct):
             self.walk(expr.value, d, in_closure=in_closure)
@@ -1324,7 +1332,11 @@ class _Builder:
         for child in fold.children(expr):
             h = comps.get(id(child)) if comps is not None else None
             if h is None:
-                h = self._handed_override.get(id(child))
+                # A `get` clause's tail `resume(x)` (`_clause_rows`): the
+                # checker types `x` at the cell and records it as its
+                # target, which `expr_rows` reads where nothing is handed
+                # (391 resumes of the corpus and the instruments).
+                h = self._handed_override.get(id(child))  # pragma: no mutate — equivalent, as above
             child_store = (comps is not None and h is not None
                            and not (isinstance(expr, ast.FnCall)
                                     and child is expr.args[0]))
@@ -1335,8 +1347,10 @@ class _Builder:
                          and child_store else None),
                 fallback=from_own_type and h is not None
                 and id(child) not in self._handed_override,
-                nat_handed=(nat_comps.get(id(child)) if nat_comps is not None
-                            else self._handed_override.get(id(child))))
+                nat_handed=(
+                    nat_comps.get(id(child)) if nat_comps is not None
+                    else self._handed_override.get(id(child))  # pragma: no mutate — equivalent: the override is the recorded target `expr_rows` reads (above)
+                ))
 
     def _coerces_nothing(self, expr: ast.Expr, req: Type) -> bool:
         """Whether holding *expr* to *req* coerces no component below it: the
@@ -1873,9 +1887,12 @@ class _Builder:
         `Nat` requirement (*nat_handed*) as a block's tail is.  `walk`, the
         one caller, passes every keyword."""
         eff = expr.effect
-        cell: Type | None = None  # pragma: no mutate — equivalent: every handler that checks names its cell (`State` and `Exn` without one are E337, a user effect's handler E340), so the default is always replaced
-        if isinstance(eff, ast.EffectRef) and eff.type_args:
-            cell = self.sem(eff.type_args[0])
+        # Every handle the table meets is a built-in effect named with its
+        # cell or payload type: a qualified effect is refused at check
+        # (E330), `State` or `Exn` written bare (E337, both in
+        # `vera/checker/control.py`), a user effect's handler (E340).
+        args = cast("tuple[ast.TypeExpr, ...]", cast(ast.EffectRef, eff).type_args)
+        cell = self.sem(args[0])
         is_state = isinstance(eff, ast.EffectRef) and eff.name == "State"
         if expr.state is not None:
             self.walk(expr.state.init_expr, d,
@@ -1896,7 +1913,12 @@ class _Builder:
             # row (the tables of the corpus, the #1542 instrument and probes
             # with a recursive call and a closure inside a handle are equal
             # with either one None or dropped).
-            self.walk(expr.body, d, in_closure=in_closure, **value)  # pragma: no mutate — equivalent, as above
+            self.walk(
+                expr.body,
+                d,  # pragma: no mutate — equivalent, as above
+                in_closure=in_closure,  # pragma: no mutate — equivalent, as above
+                **value,
+            )
         finally:
             if is_state:
                 self._handler_stack.pop()

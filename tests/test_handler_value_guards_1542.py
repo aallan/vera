@@ -719,6 +719,172 @@ def test_two_handle_values_in_one_function_keep_their_own_rows() -> None:
     assert statuses == [(leaves[0], "tier3_unguarded"), (leaves[1], "tier3")], statuses
 
 
+_RECEIVER_HEAD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn opq(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @TYPE = HANDLE;
+  READ
+}
+"""
+#: A store whose receiver is itself a store: the table hands the value's
+#: type into a `map_insert`'s and a `set_add`'s receiver as into its key,
+#: value and element, so the inner value is held to the component type.
+_RECEIVERS = {
+    "map": ("Map<Int, {C}>", "map_insert(map_insert(map_new(), 1, opq(@Int.0)), 2, 3)",
+            "map_size(@Map<Int, {C}>.0)", 2),
+    "set": ("Set<{C}>", "set_add(set_add(set_new(), opq(@Int.0)), 2)",
+            "set_size(@Set<{C}>.0)", 2),
+    "map_in_map": ("Map<Int, Map<Int, {C}>>",
+                   "map_insert(map_new(), 1, map_insert(map_insert(map_new(), 1, opq(@Int.0)), 2, 3))",
+                   "map_size(@Map<Int, Map<Int, {C}>>.0)", 1),
+    "ctor": ("Option<Map<Int, {C}>>", "Some(map_insert(map_insert(map_new(), 1, opq(@Int.0)), 2, 3))",
+             "0", 0),
+}
+_RECEIVER_HANDLES = {
+    "state_body": ("handle[State<Bool>](@Bool = true) {{\n    get(@Unit) -> {{ resume(@Bool.0) }},\n"
+                   "    put(@Bool) -> {{ resume(()) }}\n  }} in {{\n    {V}\n  }}"),
+    "exn_clause": "handle[Exn<Int>] {{\n    throw(@Int) -> {{ {V} }}\n  }} in {{\n    throw(@Int.0)\n  }}",
+}
+
+
+def test_repro_a_nested_receiver_below_a_handles_value_is_checked() -> None:
+    """The value stored in a nested receiver (`map_insert(map_insert(...,
+    opq(x)), ...)`) below a handle's value has its row recorded and its
+    check emitted: -5 traps, 3 runs through.  Sixteen programs, one test:
+    each store, each handle, at `Pos` and at `Nat`."""
+    for store, (ty, value, read, out) in sorted(_RECEIVERS.items()):
+        for handle, form in sorted(_RECEIVER_HANDLES.items()):
+            for comp in ("Pos", "Nat"):
+                where = (store, handle, comp)
+                src = (_RECEIVER_HEAD.replace("TYPE", ty.format(C=comp))
+                       .replace("HANDLE", form.format(V=value))
+                       .replace("READ", read.format(C=comp)))
+                verified = pipeline.verify(src, reconcile=True)
+                assert verified.ok, (where, [d.error_code for d in verified.errors])
+                statuses = sorted(o.status for o in verified.obligations
+                                  if o.kind in _NARROWING)
+                assert statuses and set(statuses) == {"tier3"}, (where, statuses)
+                reconciled = verified.reconciled
+                assert reconciled is not None and reconciled.reconciliation is not None
+                assert reconciled.reconciliation.mismatches == [], where
+                compiled = pipeline.compile(src)
+                assert pipeline.run(compiled, fn="go", args=[-5]).trap is not None, where
+                assert pipeline.run(compiled, fn="go", args=[3]).value == out, where
+
+
+_STORE_JOIN = """\
+type Small = { @Int | @Int.0 < 10 };
+
+private fn mk(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn mt(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, 0)
+}
+
+public fn go(@Bool, @Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<TYPE> = [JOIN, JOIN];
+  0
+}
+"""
+#: A join whose arm stands where an array literal stores it: the arm under
+#: test holds LEAF, the other a literal of the component type.
+_STORE_JOINS = {
+    "if_then": "if @Bool.0 then { LEAF } else { Tuple(1, 0) }",
+    "if_else": "if @Bool.0 then { Tuple(1, 0) } else { LEAF }",
+    "match_arm": "match @Bool.0 { true -> LEAF, false -> Tuple(1, 0) }",
+}
+
+
+def _store_join(component: str, leaf: str, join: str) -> str:
+    return _STORE_JOIN.replace("TYPE", component).replace(
+        "JOIN", _STORE_JOINS[join].replace("LEAF", leaf))
+
+
+def test_repro_a_stored_construction_through_a_join_keeps_its_own_component_type() -> None:
+    """`Tuple(float_to_int(f), 0)` at `Tuple<Nat, Int>` through a join's arm into an
+    array literal's element: the arm is handed the store's own component
+    type, so the field's `Nat` row is the store's sign check, answered by
+    the `Nat` guard, not by a composite coercion."""
+    for join in sorted(_STORE_JOINS):
+        verified = pipeline.verify(
+            _store_join("Tuple<Nat, Int>", "Tuple(float_to_int(@Float64.0), 0)", join), reconcile=True)
+        assert verified.ok, (join, [d.error_code for d in verified.errors])
+        reconciled = verified.reconciled
+        assert reconciled is not None and reconciled.reconciliation is not None
+        rc = reconciled.reconciliation
+        emitters = {c.emitter for o, c in rc.pairs if o.kind == "nat_bind"}
+        assert emitters == {"wasm/operators.py:_emit_nat_bind_guard"}, (join, emitters)
+
+
+_UNEVALUATED_REASONS = """\
+public fn uninlined_put(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 1) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = 10 / @Int.0
+  } in {
+    get(())
+  }
+}
+
+public fn nested_uninlined(@Int -> @String)
+  requires(@Int.0 != 0)
+  ensures(string_length(@String.result) >= handle[State<Int>](@Int = 1) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = 10 / @Int.0
+  } in {
+    get(())
+  })
+  effects(pure)
+{
+  "ab"
+}
+"""
+
+
+def test_repro_a_row_no_check_evaluates_names_its_innermost_reason() -> None:
+    """A division in a `put` clause no call inlines is disclosed with that
+    clause's reason, also where the clause sits inside an `ensures` that is
+    not lowered (two reasons stacked: the innermost one names the row)."""
+    verified = pipeline.verify(_UNEVALUATED_REASONS)
+    disclosed = {(d.location.line, d.location.column): d.description
+                 for d in verified.warnings
+                 if d.error_code == "E543" and "'div_zero'" in d.description}
+    assert set(disclosed) == {(8, 45), (18, 45)}, disclosed
+    for text in disclosed.values():
+        assert "the handler clause is inlined at no operation call" in text, text
+
+
 def test_a_block_tail_hands_the_store_its_own_component_type() -> None:
     """A `Tuple<Nat, Int>` built as a handle's value in a constructor's
     field: the handle body's block tail is handed the store's own component
