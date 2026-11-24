@@ -8,10 +8,9 @@ types across modules (C7b) or enforce visibility (C7c).
 from __future__ import annotations
 
 import os
-import re
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from vera import ast
@@ -56,10 +55,6 @@ class ResolvedModule:
     refused_by: frozenset[str] = frozenset()
 
 
-#: A name one part of a module path can be (the grammar's ``LOWER_IDENT``).
-_MODULE_NAME = re.compile(r"[a-z][a-zA-Z0-9_]*")
-
-
 def file_identity(path: Path) -> tuple[int, int]:
     """The identity of the file at *path*: its device and file number,
     as the filesystem gives them (``os.stat``'s ``st_dev`` and
@@ -87,72 +82,11 @@ class _Binding:
     ident: tuple[int, int]
     file: Path
     importer: Path
-    #: The name the importer's lookup found (a symbolic link stays a link):
-    #: the file a fix renames.
+    #: The name the importer's lookup found (a symbolic link stays a link).
     entry: Path
-
-
-@dataclass
-class _Refusal:
-    """An E014 or E015 refusal, as resolution met it: its diagnostic, whose
-    fix is composed after resolution from the final tables
-    (:meth:`ModuleResolver._compose_fixes`), the import, its importer, the
-    name its lookup found and that file's identity, and the binding it
-    met (#1904)."""
-
-    diagnostic: Diagnostic
-    imp: ast.ImportDecl
-    importer: Path
-    entry: Path
-    ident: tuple[int, int]
-    bound: _Binding
-
-
-#: The document's key among importers: it is read from the caller's
-#: program, not by identity from a file.
-_DOCUMENT = (-1, -1)
-
-#: A repair as :meth:`ModuleResolver._walk` simulates it: an entry renamed
-#: (its name, the new name, the file's identity), and imports rewritten,
-#: each by its importer's key and path, to a new path.
-_Rename = tuple[Path, Path, tuple[int, int]]
-_Rewrites = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[str, ...]]
-
-#: What a walk of the program gives: each import by its importer's key and
-#: path (as written, before a rewrite) to the file it reaches; the files
-#: (by key) with an import that reaches no file; each file's identity to the
-#: entries it is reached by; and the paths that name two files and the
-#: files under two paths.
-_Edges = dict[tuple[tuple[int, int], tuple[str, ...]], tuple[int, int]]
-
-
-@dataclass(frozen=True)
-class _Walk:
-    edges: _Edges
-    missing: frozenset[tuple[int, int]]
-    entries: dict[tuple[int, int], frozenset[Path]]
-    conflicts: frozenset[tuple[object, ...]]
-
-
-def _name(path: Path) -> Path:
-    """*path* with its directory resolved and its own name kept: a symbolic
-    link is the link."""
-    return path.parent.resolve() / path.name
-
-
-def _module_calls(program: ast.Program, mod_path: tuple[str, ...]) -> list[str]:
-    """The names *program* calls qualified by *mod_path*, sorted."""
-    found: set[str] = set()
-    stack: list[object] = [program]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.ModuleCall) and tuple(node.path) == mod_path:
-            found.add(node.name)
-        if isinstance(node, ast.Node):
-            stack.extend(getattr(node, f.name) for f in fields(node))
-        elif isinstance(node, (tuple, list)):
-            stack.extend(node)
-    return sorted(found)
+    #: The identity of the directory that holds the file (a symbolic link
+    #: followed), which its imports are looked up from (spec §8.6.2).
+    directory: tuple[int, int]
 
 
 @dataclass
@@ -199,21 +133,6 @@ class ModuleResolver:
     #: and module path: whatever another importer bound the path to, this
     #: import binds nothing (#1904).
     _refused: set[tuple[str, tuple[str, ...]]] = field(default_factory=set)
-    #: The E014 and E015 refusals, whose fixes wait for the final tables.
-    _refusals: list[_Refusal] = field(default_factory=list)
-    #: Each file's program by identity, as resolution read it, or as the
-    #: repair check read it (None: it does not read or parse).
-    _programs: dict[tuple[int, int], ast.Program | None] = field(
-        default_factory=dict)
-    _document: Path | None = None
-    _document_imports: tuple[tuple[str, ...], ...] = ()
-    _document_program: ast.Program | None = None
-    _baseline: _Walk | None = None
-    #: What resolution showed, which a repair may leave and nothing more:
-    #: the conflicts its refusals reported, and the files whose imports it
-    #: looked up (each missing import of one is an E012 it reported).
-    _reported: frozenset[tuple[object, ...]] = frozenset()
-    _read: frozenset[tuple[int, int]] = frozenset()
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -259,11 +178,7 @@ class ModuleResolver:
         # A direct import is one this program's own import resolved to: an
         # import the resolver refused binds nothing, whatever module another
         # importer bound its path to (#1904).
-        self._document = file
-        self._document_program = program
-        self._document_imports = tuple(imp.path for imp in program.imports)
         direct = [self._resolve_single(imp, file) for imp in program.imports]
-        self._compose_fixes()
 
         # Assemble the closure.  Emit direct imports (in source order) first,
         # then the transitive-only modules from the cache, deduplicated by
@@ -371,6 +286,7 @@ class ModuleResolver:
         try:
             file_path = entry.resolve()
             ident = file_identity(file_path)
+            directory = file_identity(file_path.parent)
         except OSError as exc:
             # Found, and gone or unreadable before it could be identified:
             # the import cannot read it, as a failed read below is E013.
@@ -412,15 +328,18 @@ class ModuleResolver:
         # under one path (spec §8.6.2, #1904).
         by_path = self._path_binding.get(mod_path)
         if by_path is not None and by_path.ident != ident:
-            self._refuse(self._one_path_two_files(
-                imp, importing_file, entry, by_path),
-                imp, importing_file, entry, ident, by_path)
+            self._errors.append(self._one_path_two_files(
+                imp, importing_file, entry, by_path))
             return None
+        # A file's imports are looked up from its directory, so a file
+        # reached through entries in two directories (two hard links) is
+        # refused too, in either order: otherwise the first import to reach
+        # it would decide where its imports are looked up from.
         by_file = self._file_binding.get(ident)
-        if by_file is not None and by_file.path != mod_path:
-            self._refuse(self._one_file_two_paths(
-                imp, importing_file, file_path, by_file),
-                imp, importing_file, entry, ident, by_file)
+        if by_file is not None and (by_file.path != mod_path
+                                    or by_file.directory != directory):
+            self._errors.append(self._one_file_two_paths(
+                imp, importing_file, entry, by_file))
             return None
 
         if mod_path in self._cache:
@@ -431,7 +350,8 @@ class ModuleResolver:
             self._unread[(importing_file, mod_path)] = file_path
             return None
 
-        binding = _Binding(mod_path, ident, file_path, importing_file, entry)
+        binding = _Binding(
+            mod_path, ident, file_path, importing_file, entry, directory)
         self._path_binding.setdefault(mod_path, binding)
         self._file_binding.setdefault(ident, binding)
 
@@ -443,7 +363,6 @@ class ModuleResolver:
             source = read_source(file_path)
             tree = parse(source, file=str(file_path))
             program = transform(tree)
-            self._programs[ident] = program
 
             mod = ResolvedModule(
                 path=mod_path,
@@ -523,21 +442,13 @@ class ModuleResolver:
     def _spelled(self, mod_path: tuple[str, ...]) -> str:
         return ".".join(mod_path)
 
-    def _refuse(
-        self, diagnostic: Diagnostic, imp: ast.ImportDecl, importer: Path,
-        entry: Path, ident: tuple[int, int], bound: _Binding,
-    ) -> None:
-        self._errors.append(diagnostic)
-        self._refusals.append(
-            _Refusal(diagnostic, imp, importer, entry, ident, bound))
-
     def _one_path_two_files(
         self, imp: ast.ImportDecl, importing_file: Path,
         entry: Path, bound: _Binding,
     ) -> Diagnostic:
         """E014: *imp* finds another file for a path the program has
-        already bound (spec §8.6.2).  Its fix is composed after resolution
-        (:meth:`_e014_fix`)."""
+        already bound (spec §8.6.2).  Its fix states what must end up true;
+        it proposes no name."""
         path = self._spelled(imp.path)
         here, there = self._shown(entry), self._shown(bound.entry)
         return Diagnostic(
@@ -555,9 +466,15 @@ class ModuleResolver:
                 "cannot both be compiled, and taking either one would run a "
                 "module that the other import does not name."
             ),
-            # Composed after resolution, from the final tables
-            # (`_e014_fix`); this is its first sentence.
-            fix="Give one of the two modules another path.",
+            fix=(
+                f"Give one of the two modules another path: rename `{here}` "
+                f"(which '{self._shown(importing_file)}' imports) or "
+                f"`{there}` (which '{self._shown(bound.importer)}' imports) "
+                f"to a name no other file of the program takes, "
+                f"and change each import of it, its own `module` line and "
+                f"each call qualified by its old path to match, so that "
+                f"'{path}' names one file in the program."
+            ),
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
             severity="error",
             error_code="E014",
@@ -565,359 +482,67 @@ class ModuleResolver:
 
     def _one_file_two_paths(
         self, imp: ast.ImportDecl, importing_file: Path,
-        file_path: Path, bound: _Binding,
+        entry: Path, bound: _Binding,
     ) -> Diagnostic:
-        """E015: *imp* reaches, by another path, a file the program has
-        already imported (spec §8.6.2).  Its fix is composed after
-        resolution (:meth:`_e015_fix`)."""
+        """E015: *imp* reaches a file the program has already imported, by
+        another path, or by the same path through an entry in another
+        directory (two hard links), from which its imports would be looked
+        up otherwise (spec §8.6.2).  Its fix states what must end up true;
+        it proposes no path."""
         here, there = self._spelled(imp.path), self._spelled(bound.path)
+        mine, theirs = self._shown(importing_file), self._shown(bound.importer)
+        if imp.path != bound.path:
+            shown = self._shown(entry.resolve())
+            return Diagnostic(
+                description=(
+                    f"'{shown}' is imported by two paths: as '{here}' in "
+                    f"'{mine}', and as '{there}' in '{theirs}'."
+                ),
+                location=self._location_from_node(imp, importing_file),
+                source_line=self._source_line(importing_file, imp),
+                rationale=(
+                    "A file is one module, under one path. Imported by two "
+                    "paths, it would be checked and compiled twice, as two "
+                    "modules, and a data type it declares would be two types "
+                    "that no value passes between."
+                ),
+                fix=(
+                    f"Import `{shown}` by one path everywhere: choose one "
+                    f"path that reaches it from both '{mine}' and "
+                    f"'{theirs}', and write it in both imports and in each "
+                    f"call qualified by the other path, so that the file is "
+                    f"imported by one path in the program."
+                ),
+                spec_ref='Chapter 8, Section 8.6.2 "Caching"',
+                severity="error",
+                error_code="E015",
+            )
+        here_at = self._shown(entry.resolve())
+        there_at = self._shown(bound.file)
         return Diagnostic(
             description=(
-                f"'{self._shown(file_path)}' is imported by two paths: as "
-                f"'{here}' in '{self._shown(importing_file)}', and as "
-                f"'{there}' in '{self._shown(bound.importer)}'."
+                f"'{here_at}' and '{there_at}' are one file, imported as "
+                f"'{here}' through two directories: through '{here_at}' in "
+                f"'{mine}', and through '{there_at}' in '{theirs}'."
             ),
             location=self._location_from_node(imp, importing_file),
             source_line=self._source_line(importing_file, imp),
             rationale=(
-                "A file is one module, under one path. Imported by two "
-                "paths, it would be checked and compiled twice, as two "
-                "modules, and a data type it declares would be two types "
-                "that no value passes between."
+                "A module's imports are looked up from the directory that "
+                "holds its file. A file with entries in two directories (two "
+                "hard links) has two such directories, and which one its "
+                "imports were looked up from would depend on which import "
+                "reached it first."
             ),
-            # Composed after resolution, from the final tables
-            # (`_e015_fix`); this is its first sentence.
-            fix="Import the file by one path everywhere.",
+            fix=(
+                f"Give the file one directory: import it through one of "
+                f"`{here_at}` and `{there_at}` from both '{mine}' and "
+                f"'{theirs}', or make the two names two files under two "
+                f"module paths."
+            ),
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
             severity="error",
             error_code="E015",
-        )
-
-    # -----------------------------------------------------------------
-    # Repairs: composed after resolution, offered only when verified
-    # -----------------------------------------------------------------
-
-    def _compose_fixes(self) -> None:
-        """Give each E014 and E015 its fix, now that resolution has
-        finished and every binding the program makes is known (#1904).
-
-        A concrete repair is offered only when it keeps the invariant of
-        spec §8.6.2, which :meth:`_verified` checks: applied as written, the
-        conflict this diagnostic reports is gone, every import the repair
-        does not edit reaches the file it reached before (by identity),
-        every import it edits reaches the file it reached before, and no
-        import is refused that resolution did not already refuse.  It is
-        composed only inside the domain where that can be
-        checked without modelling links (:meth:`_in_domain`).  Elsewhere,
-        and whenever composing it meets a filesystem error, the fix is the
-        rule in prose, and the diagnostic is as resolution recorded it."""
-        # Taken before any repair is composed: composing reads refused
-        # files' programs, which resolution never read.
-        self._read = frozenset(self._programs) | {_DOCUMENT}
-        self._reported = frozenset(
-            ("path", r.imp.path) if r.diagnostic.error_code == "E014"
-            else ("file", r.bound.ident)
-            for r in self._refusals)
-        for refusal in self._refusals:
-            e014 = refusal.diagnostic.error_code == "E014"
-            try:
-                fix = (self._e014_fix(refusal) if e014
-                       else self._e015_fix(refusal))
-            except OSError:
-                fix = None
-            refusal.diagnostic.fix = (
-                fix if fix is not None
-                else self._e014_prose(refusal) if e014
-                else self._e015_prose(refusal))
-
-    def _key(self, importer: Path) -> tuple[int, int]:
-        """*importer*'s key in :meth:`_walk`: the document's, or its file's
-        identity."""
-        if self._document is not None and str(importer) == str(self._document):
-            return _DOCUMENT
-        return file_identity(importer)
-
-    def _program_of(
-        self, ident: tuple[int, int], place: Path,
-    ) -> ast.Program | None:
-        """The program of the file *ident*, at *place*: as resolution read
-        it, else read now (a refused import's file is never read during
-        resolution).  None when it does not read or parse."""
-        if ident == _DOCUMENT:
-            return self._document_program
-        if ident not in self._programs:
-            try:
-                self._programs[ident] = transform(
-                    parse(read_source(place), file=str(place)))
-            except (SourceEncodingError, ParseError, TransformError,
-                    OSError):
-                self._programs[ident] = None
-        return self._programs[ident]
-
-    def _walk(
-        self, rename: _Rename | None = None,
-        rewrites: _Rewrites | None = None,
-    ) -> _Walk:
-        """Every import of every file the document reaches, a refused
-        import's file included, looked up by the lookup of spec §8.6.1 from
-        the directory of the file it is written in (resolved, as resolution
-        looks a module's imports up), with *rename* applied to the names the
-        lookups see and *rewrites* to the imports.  A filesystem error
-        propagates: the caller gives the prose fix."""
-        rewrites = rewrites or {}
-
-        def find(
-            mod_path: tuple[str, ...], importer: Path,
-        ) -> tuple[Path, tuple[int, int]] | None:
-            relative = Path(*mod_path).with_suffix(".vera")
-            for place in (importer.parent / relative, self._root / relative):
-                if rename is not None and _name(place) == rename[1]:
-                    return place, rename[2]
-                if rename is not None and _name(place) == rename[0]:
-                    continue
-                if place.is_file():
-                    return place, file_identity(place)
-            return None
-
-        edges: _Edges = {}
-        missing: set[tuple[int, int]] = set()
-        entries: dict[tuple[int, int], set[Path]] = {}
-        paths: dict[tuple[str, ...], set[tuple[int, int]]] = {}
-        files: dict[tuple[int, int], set[tuple[str, ...]]] = {}
-        seen: set[tuple[int, int]] = set()
-        if self._document is None:  # resolve_imports sets it first
-            return _Walk({}, frozenset(), {}, frozenset())
-        queue = [(_DOCUMENT, self._document, self._document_imports)]
-        while queue:
-            key, importer, imports = queue.pop(0)
-            for written in imports:
-                path = rewrites.get((key, written), written)
-                hit = find(path, importer)
-                if hit is None:
-                    missing.add(key)
-                    continue
-                place, ident = hit
-                edges[(key, written)] = ident
-                entries.setdefault(ident, set()).add(place)
-                paths.setdefault(path, set()).add(ident)
-                files.setdefault(ident, set()).add(path)
-                if ident in seen:
-                    continue
-                seen.add(ident)
-                # A renamed file's program is read before the walk, from
-                # its old name (`_e014_fix`); every other is read here.
-                program = self._program_of(ident, place)
-                # A renamed file's new name does not exist; resolving it
-                # resolves its directory and keeps the name.
-                queue.append((ident, place.resolve(), tuple(
-                    imp.path for imp in program.imports) if program else ()))
-        conflicts: set[tuple[object, ...]] = {
-            ("path", p) for p, s in paths.items() if len(s) > 1}
-        conflicts |= {("file", f) for f, s in files.items() if len(s) > 1}
-        return _Walk(edges, frozenset(missing),
-                     {i: frozenset(e) for i, e in entries.items()},
-                     frozenset(conflicts))
-
-    def _base(self) -> _Walk:
-        if self._baseline is None:
-            self._baseline = self._walk()
-        return self._baseline
-
-    def _verified(
-        self, conflict: tuple[object, ...], rename: _Rename | None,
-        rewrites: _Rewrites,
-    ) -> bool:
-        """Whether the repair keeps the invariant of spec §8.6.2: the
-        conflict is gone; every import, edited or not, reaches the file it
-        reached before (so none that found a file finds none); and no
-        import is refused that resolution did not already refuse.
-
-        The walk reads further than resolution did: a refused import's
-        file, and the files it imports.  A repair makes resolution read
-        them, so the comparison of files reached covers them, but what the
-        repair may leave is only what resolution SHOWED: a conflict one of
-        its refusals reported, and an import finding no file in a file it
-        read (an E012 it reported).  A conflict or a missing import met
-        only through a refused import would be refused for the first time
-        once the repair is applied (#1904)."""
-        base, after = self._base(), self._walk(rename, rewrites)
-        if conflict in after.conflicts:
-            return False
-        if after.edges != base.edges:
-            return False
-        if any(key not in self._read for key in after.missing):
-            return False
-        return after.conflicts <= self._reported  # pragma: no mutate (< is equivalent: the refusal's own conflict is in _reported and not in after)
-
-    def _in_domain(self, ident: tuple[int, int]) -> bool:
-        """Whether a repair of the file *ident* can be checked without
-        modelling links: every entry any import of the program reaches it
-        by is a plain file under its own name, with no second hard link
-        and no spelling that differs only in case.  A file NOT in play may
-        be a link, or have a second hard link: that is outside this test."""
-        for entry in self._base().entries.get(ident, frozenset()):
-            if entry.is_symlink() or os.stat(entry).st_nlink != 1:
-                return False
-            if entry.name not in os.listdir(entry.parent):
-                return False
-        return True
-
-    def _call_edits(
-        self, key: tuple[int, int], importer: Path, old: tuple[str, ...],
-        new: tuple[str, ...],
-    ) -> str | None:
-        """The sentence naming each qualified call in *importer* by the old
-        path, written by the new; "" when there is none; None when the
-        importer's program cannot be read, so the calls cannot be named."""
-        program = self._program_of(key, importer)
-        if program is None:
-            return None
-        calls = _module_calls(program, old)
-        if not calls:
-            return ""
-        was, now = self._spelled(old), self._spelled(new)
-        return (f" In '{self._shown(importer)}', write "
-                + ", and ".join(f"`{now}::{c}` in place of `{was}::{c}`"
-                                for c in calls) + ".")
-
-    #: The guarantee a concrete repair carries, said where it is offered.
-    _GUARANTEE = (
-        " Applied as written, this clears this conflict, every other "
-        "import reaches the file it reaches now, and no import is refused "
-        "that is not refused now. It is about imports, not errors: a "
-        "module this lets an import bind, and each call into it, may show "
-        "errors of its own.")
-
-    def _e014_fix(self, refusal: _Refusal) -> str | None:
-        """Rename the file this import found, beside itself, and change the
-        import: the first name, of *path* suffixed 2 to 99 then
-        ``_renamed``, that :meth:`_verified` passes; None outside the
-        domain or where the calls cannot be named (the prose fix)."""
-        imp, entry = refusal.imp, refusal.entry
-        old = imp.path
-        if not self._in_domain(refusal.ident):
-            return None
-        here = self._shown(entry)
-        key = self._key(refusal.importer)
-        program = self._program_of(refusal.ident, entry)
-        names = [f"{old[-1]}{n}" for n in range(2, 100)]
-        for last in [*names, f"{old[-1]}_renamed"]:
-            renamed = entry.with_name(last + entry.suffix)
-            # A file at the new name would be replaced by the rename.  The
-            # walk sees only files some import reaches, so a file no
-            # import reaches is ruled out here.
-            if os.path.lexists(renamed):
-                continue
-            new = (*old[:-1], last)
-            if not self._verified(
-                    ("path", old), (_name(entry), _name(renamed), refusal.ident),
-                    {(key, old): new}):
-                continue
-            calls = self._call_edits(key, refusal.importer, old, new)
-            if calls is None:
-                return None
-            return (
-                f"Give one of the two modules another path: rename "
-                f"`{here}` to `{self._shown(renamed)}` and write "
-                f"`import {self._spelled(new)}` here in place of "
-                f"`import {self._spelled(old)}`."
-                + calls + self._own_path_edits(program, old, new, renamed)
-                + self._GUARANTEE)
-        return (
-            f"Give one of the two modules another path. No rename of "
-            f"`{here}` to `{old[-1]}2` through `{old[-1]}99`, or to "
-            f"`{old[-1]}_renamed`, with this import changed to match, "
-            f"clears the conflict and leaves every other import reaching "
-            f"the file it reaches now, so rename `{here}` or "
-            f"`{self._shown(refusal.bound.entry)}` to a name no file and no "
-            f"module of the program takes, and change its imports to match."
-        )
-
-    def _e014_prose(self, refusal: _Refusal) -> str:
-        here = self._shown(refusal.entry)
-        there = self._shown(refusal.bound.entry)
-        return (
-            f"Give one of the two modules another path: rename `{here}` or "
-            f"`{there}` to a name no file and no module of the program "
-            f"takes, and change each import of it, and each qualified call "
-            f"by its old path, to match, so that every other import still "
-            f"reaches the file it reaches now. A repair is not composed "
-            f"here: a symbolic link, a second hard link or a spelling that "
-            f"differs only in case reaches the file, or the files could not "
-            f"be read."
-        )
-
-    def _own_path_edits(
-        self, program: ast.Program | None, old: tuple[str, ...],
-        new: tuple[str, ...], renamed: Path,
-    ) -> str:
-        """The edits a renamed file needs where it names itself by its old
-        path: its ``module`` declaration and its self-qualified calls
-        (spec §8.2, §8.5.3), which the lookups cannot see."""
-        if (program is None or program.module is None
-                or tuple(program.module.path) != old):
-            return ""
-        was, now = self._spelled(old), self._spelled(new)
-        edits = [f"`module {now};` in place of `module {was};`"]
-        edits += [f"`{now}::{name}` in place of `{was}::{name}`"
-                  for name in _module_calls(program, old)]
-        return (f" In `{self._shown(renamed)}`, write "
-                + ", and ".join(edits) + ".")
-
-    def _e015_fix(self, refusal: _Refusal) -> str | None:
-        """Import the file by one path everywhere: this import changed to
-        the other's path, else the other changed to this one's; the first
-        that :meth:`_verified` passes.  None outside the domain or where
-        the calls cannot be named (the prose fix)."""
-        imp, bound = refusal.imp, refusal.bound
-        here, there = self._spelled(imp.path), self._spelled(bound.path)
-        shown = self._shown(refusal.entry.resolve())
-        other = self._shown(bound.importer)
-        if not self._in_domain(bound.ident):
-            return None
-        mine, theirs = self._key(refusal.importer), self._key(bound.importer)
-        conflict = ("file", bound.ident)
-        if self._verified(conflict, None, {(mine, imp.path): bound.path}):
-            calls = self._call_edits(
-                mine, refusal.importer, imp.path, bound.path)
-            if calls is None:
-                return None
-            return (
-                f"Import `{shown}` by one path everywhere: write "
-                f"`import {there}` here in place of `import {here}`, the "
-                f"path '{other}' imports it by, which reaches it from this "
-                f"file too." + calls + self._GUARANTEE
-            )
-        if self._verified(conflict, None, {(theirs, bound.path): imp.path}):
-            calls = self._call_edits(
-                theirs, bound.importer, bound.path, imp.path)
-            if calls is None:
-                return None
-            return (
-                f"Import `{shown}` by one path everywhere: write "
-                f"`import {here}` in '{other}' in place of "
-                f"`import {there}`, the path this file imports it by, "
-                f"which reaches it from there too." + calls + self._GUARANTEE
-            )
-        return (
-            f"Import `{shown}` by one path everywhere. Neither '{here}' "
-            f"nor '{there}', written in the other file, reaches it there "
-            f"and leaves every other import reaching the file it reaches "
-            f"now, so move it to a directory both files reach by one path, "
-            f"such as the project root, and import it by that path in both."
-        )
-
-    def _e015_prose(self, refusal: _Refusal) -> str:
-        shown = self._shown(refusal.entry.resolve())
-        return (
-            f"Import `{shown}` by one path everywhere: choose one path that "
-            f"reaches it from '{self._shown(refusal.importer)}' and from "
-            f"'{self._shown(refusal.bound.importer)}', and write it in both "
-            f"imports, and in each qualified call by the other path, so "
-            f"that every other import still reaches the file it reaches "
-            f"now. A repair is not composed here: a symbolic link, a second "
-            f"hard link or a spelling that differs only in case reaches the "
-            f"file, or the files could not be read."
         )
 
     def _lookup(
