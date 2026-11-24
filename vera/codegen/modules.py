@@ -393,17 +393,19 @@ class CrossModuleMixin:
                 _owned_tp = temp._adt_ctor_tp_indices.get(adt_name, {})
                 for _ctor_name in layouts:
                     if _ctor_name in _owned_tp:
-                        # Not mutated: no mutant of this copy changes a
-                        # module (2,960 tests green under each).  The
-                        # equality gate and generator and the show and hash
-                        # plans fall back to substituting the type
+                        _per_owner = self._adt_ctor_tp_indices
+                        if adt_name not in _per_owner:
+                            _per_owner[adt_name] = {}
+                        # The entry is not mutated: what it holds changes no
+                        # module.  The equality gate and generator and the
+                        # show and hash plans fall back to substituting the
                         # parameters' names, carried over above, into the
-                        # declared field type, which gives the same type for
-                        # a bare-parameter field; the wildcard-width reader
-                        # was not reached by a match on an imported type.
-                        self._adt_ctor_tp_indices.setdefault(  # pragma: no mutate
-                            adt_name, {}).setdefault(
-                                _ctor_name, _owned_tp[_ctor_name])
+                        # declared field type; the wildcard-width reader
+                        # runs only for a field whose type is still a type
+                        # variable, whose width is the placeholder either
+                        # way.
+                        _per_owner[adt_name].setdefault(  # pragma: no mutate
+                            _ctor_name, _owned_tp[_ctor_name])
                     if (
                         # ctor-owner-exempt: the flat mirror, rebuilt per
                         # namespace by `_namespace_ctor_projection`.  The
