@@ -3554,7 +3554,7 @@ class ContractVerifier:
             # this instance, don't synthesize a spurious one — the obligation is
             # already counted/guarded, so there is no soundness loss.
             return
-        # pragma: no mutate start — unreached: every .vera program in the tree, verified, and the verifier's tests leave this synthesis unrun
+        # pragma: no mutate start — no program reaches this synthesis (every .vera program in the tree, verified); only test_1451_a_diagnostic_survives_the_generic_collapse calls it, on a verifier built by hand
         # A violation MUST never be silently dropped (a false Tier-1).  No
         # diagnostic matched, so surface it straight from the obligation.  A
         # violated `ensures` records no error_code (its canonical diagnostic
