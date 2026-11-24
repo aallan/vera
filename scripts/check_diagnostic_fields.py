@@ -1093,9 +1093,22 @@ def placement_violations(paths: Iterable[Path]) -> list[Violation]:
 # module-level code or a method names, or one a reachable function names.
 # What Python evaluates when a function is defined (its decorators, its
 # defaults, its annotations unless the module defers them) is module-level
-# code, whether or not the function is ever called.  Static and
-# conservative: a name reached only through `getattr` is not seen, and such a
-# code would be reported.
+# code, whether or not the function is ever called.
+#
+# A name is resolved to the definitions it is bound to before what names it
+# is walked.  The scan matches by name across vera/, so a function is
+# reached through each binding the language gives that holds one: an import
+# with or without `as` (`from m import f as g` binds g to f), a module's
+# attribute (`n.f` after `import m as n`), an assignment, plain, annotated or
+# `:=`, and a `for` target, each of which names the function in an
+# expression.  Rows of each are in tests/test_diagnostic_placement_1636.py
+# (BINDING_SHAPES, RAISE_SHAPES).
+#
+# What it cannot see: a function reached only through a name no code writes
+# (`getattr` with a computed name, a string, a dispatch table built at run
+# time).  Such a function is dead to the scan, its code IS reported, and the
+# report says to name the function from module-level code or a method; one
+# row pins it (test_the_raise_rule_reports_a_name_it_cannot_see).
 
 def _rel(p: Path) -> str:
     """*p* relative to the repository, or as given when outside it."""
@@ -1164,6 +1177,10 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
     """The module-level functions under *paths* no live code reaches."""
     defs: set[tuple[str, str]] = set()
     users: dict[str, set[tuple[str, str | None]]] = {}
+    # `from m import f as g` binds g to f: a use of g is a use of f.  Every
+    # other binding names its function in an expression (`g = f`, `n.f`
+    # after `import m as n`), which the walk below records as a use.
+    bound_to: dict[str, set[str]] = {}
     for p in paths:
         rel = _rel(p)
         tree = ast.parse(p.read_text(encoding="utf-8"), filename=rel)
@@ -1177,6 +1194,11 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
                             else None)
                     if name is not None:
                         users.setdefault(name, set()).add((rel, owner))
+                    if isinstance(node, ast.ImportFrom):
+                        for alias in node.names:
+                            if alias.asname and alias.asname != alias.name:
+                                bound_to.setdefault(
+                                    alias.asname, set()).add(alias.name)
     # Reachability from the live roots: module-level code (a table, a class
     # and its methods, which are dispatched by name) names functions, and a
     # function a live one names is live.  Pruning by remaining users instead
@@ -1191,8 +1213,14 @@ def _dead_functions(paths: Iterable[Path]) -> set[tuple[str, str]]:
     live: set[tuple[str, str]] = set()
     frontier = [name for (_, owner), names in names_used.items()
                 if owner is None for name in names]
+    seen: set[str] = set()
     while frontier:
-        for d in by_name.get(frontier.pop(), set()) - live:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        frontier.extend(bound_to.get(name, set()))
+        for d in by_name.get(name, set()) - live:
             live.add(d)
             frontier.extend(names_used.get(d, set()))
     return defs - live
@@ -1213,7 +1241,10 @@ def unraised_code_violations(paths: Iterable[Path],
                 "vera/errors.py", 0, "unraised",
                 [f"{code} is registered in ERROR_CODES, but no live site in "
                  f"vera/ can raise it: remove its entry (and vera/_since.py's), "
-                 f"or raise it"], None))
+                 f"or raise it.  A site the scan cannot see (a function "
+                 f"reached only through getattr, a string, or a table built "
+                 f"at run time) is reported too: name that function from "
+                 f"module-level code or a method"], None))
     return out
 
 

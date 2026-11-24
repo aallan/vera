@@ -635,6 +635,90 @@ def test_the_gate_refuses_a_code_nothing_can_raise(
     assert (found == []) == raisable, (shape, found)
 
 
+#: A name bound to a function under another file's or another name's
+#: binding, one row per binding form the language reference gives that can
+#: hold a function (an import, with and without `as`, of a module or of a
+#: name; an assignment, plain, annotated and `:=`; a `for` target): the
+#: modules, by file, and whether E999, which `a.py`'s `emit` returns, is
+#: raisable.  The scan resolves each name to the definitions it is bound to
+#: before it walks what names them.
+_EMIT = {"a.py": "def emit():\n    return 'E999'\n"}
+BINDING_SHAPES: dict[str, tuple[dict[str, str], bool]] = {
+    "from a import emit, then emit()": (
+        {**_EMIT, "b.py": "from a import emit\n\nX = emit()\n"}, True),
+    "from a import emit as report, then report()": (
+        {**_EMIT, "b.py": "from a import emit as report\n\nX = report()\n"},
+        True),
+    "from a import emit as report, never used": (
+        {**_EMIT, "b.py": "from a import emit as report\n"}, False),
+    "from a import emit as report, used only by a dead function": (
+        {**_EMIT, "b.py": "from a import emit as report\n\n"
+                          "def dead():\n    return report()\n"}, False),
+    "from a import emit as report inside a live function": (
+        {**_EMIT, "b.py": "def go():\n    from a import emit as report\n"
+                          "    return report()\n\nX = go()\n"}, True),
+    "a renamed import of a renamed import": (
+        {**_EMIT, "b.py": "from a import emit as r1\n",
+         "c.py": "from b import r1 as r2\n\nX = r2()\n"}, True),
+    "two imports that rename each other, and no definition": (
+        {"a.py": "from b import g as f\n", "b.py": "from a import f as g\n"
+         "\nX = g()\n\nY = 'E999'.lower\n"}, True),
+    "import a as n, then n.emit()": (
+        {**_EMIT, "b.py": "import a as n\n\nX = n.emit()\n"}, True),
+    "import a, then a.emit()": (
+        {**_EMIT, "b.py": "import a\n\nX = a.emit()\n"}, True),
+    "from a import *, then emit()": (
+        {**_EMIT, "b.py": "from a import *\n\nX = emit()\n"}, True),
+    "report = emit at module scope": (
+        {**_EMIT, "b.py": "from a import emit\n\nreport = emit\n"}, True),
+    "report: object = emit at module scope": (
+        {**_EMIT, "b.py": "from a import emit\n\nreport: object = emit\n"},
+        True),
+    "(report := emit) at module scope": (
+        {**_EMIT, "b.py": "from a import emit\n\nX = (report := emit)\n"},
+        True),
+    "for report in (emit,) at module scope": (
+        {**_EMIT, "b.py": "from a import emit\n\n"
+                          "for report in (emit,):\n    report()\n"}, True),
+    "report = emit inside a dead function": (
+        {**_EMIT, "b.py": "from a import emit\n\n"
+                          "def dead():\n    report = emit\n    return report()\n"},
+        False),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(BINDING_SHAPES))
+def test_the_raise_rule_follows_a_name_to_its_definition(
+        shape: str, tmp_path: Path) -> None:
+    files, raisable = BINDING_SHAPES[shape]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    found = _gate().unraised_code_violations(
+        [tmp_path / name for name in sorted(files)], {"E999"})
+    assert (found == []) == raisable, (shape, found)
+
+
+def test_the_raise_rule_reports_a_name_it_cannot_see() -> None:
+    """The scan's stated limit: a function reached only through a name no
+    code writes (`getattr` with a string here; a string, a table built at
+    run time) is dead to it, so its code IS reported, and the report says
+    how to make the site visible."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = Path(tmp) / "a.py", Path(tmp) / "b.py"
+        a.write_text(_EMIT["a.py"], encoding="utf-8")
+        b.write_text("import a\n\nX = getattr(a, 'em' + 'it')()\n",
+                     encoding="utf-8")
+        (found,) = _gate().unraised_code_violations([a, b], {"E999"})
+    assert found.missing == [
+        "E999 is registered in ERROR_CODES, but no live site in vera/ can "
+        "raise it: remove its entry (and vera/_since.py's), or raise it.  "
+        "A site the scan cannot see (a function reached only through "
+        "getattr, a string, or a table built at run time) is reported too: "
+        "name that function from module-level code or a method"]
+
+
 def test_every_registered_code_can_be_raised() -> None:
     root = Path(__file__).resolve().parent.parent
     gate = _gate()

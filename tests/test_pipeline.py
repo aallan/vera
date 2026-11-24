@@ -182,6 +182,24 @@ def test_the_off_corpus_shapes_are_the_ones_named() -> None:
     assert dropped.envelope()["ok"] is False
 
 
+def test_repro_a_trap_run_from_a_compile_result_has_its_envelope() -> None:
+    """`run` takes a `CompileResult` too, which holds no source: its trap's
+    envelope is the one `trap_envelope` builds with no sources (the
+    location, no quote), where a run from source quotes the line."""
+    from vera.cli import trap_envelope
+
+    compiled = pipeline.compile(_OFF_CORPUS["trap-divide-by-zero"],
+                                file="main.vera")
+    from_source = pipeline.run(compiled, stdin="")
+    from_result = pipeline.run(compiled._result, stdin="")
+    assert from_result.trap is not None
+    assert from_result.envelope() == trap_envelope(None, from_result.trap)
+    (quoted,) = from_source.envelope()["diagnostics"]
+    (bare,) = from_result.envelope()["diagnostics"]
+    assert (quoted["error_code"], bare["error_code"]) == ("E800", "E800")
+    assert quoted["source_line"] and "source_line" not in bare
+
+
 # =====================================================================
 # Every obligation status reaches `vera verify --json` as itself
 # =====================================================================
