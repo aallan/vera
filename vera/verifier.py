@@ -5268,6 +5268,7 @@ class ContractVerifier:
         probe.set("timeout", smt._timeout_ms)
         kept: list[object] = []
         totality: list[tuple[object, str]] = []
+        element: list[tuple[object, str]] = []
         for fact in (*smt.solver.assertions(), *assumed):
             if not self._has_quantifier(fact):
                 kept.append(fact)
@@ -5275,8 +5276,14 @@ class ContractVerifier:
             record = smt.registered_axiom(fact)
             if record is not None and record.kind is AxiomKind.TOTALITY:
                 totality.append((fact, record.symbol))
+            elif record is not None and record.kind is AxiomKind.ELEMENT:
+                element.append((fact, record.symbol))
         if not kept:
             return None
+        # An ELEMENT axiom is instantiated at every index term the kept
+        # premises read (#1814), before the TOTALITY axioms, whose instances
+        # then cover the `length(s)` its guard reads.
+        kept.extend(self._element_instances(element, kept))
         for fact in kept:
             probe.add(fact)
         # A TOTALITY axiom is not dropped: it is INSTANTIATED on the ground
@@ -5291,6 +5298,32 @@ class ContractVerifier:
         for instance in self._totality_instances(totality, kept):
             probe.add(instance)
         return self._verdict(probe.check())
+
+    @staticmethod
+    def _element_instances(
+        axioms: list[tuple[object, str]], ground: list[object],
+    ) -> list[object]:
+        """Ground instances of each ELEMENT axiom at the index terms *ground*
+        reads: for `forall i. B(i)` over `index` and every `index(_, t)` in
+        the kept premises, `B(t)` (`AxiomKind.ELEMENT`).  *ground* is
+        quantifier-free."""
+        indices: dict[str, dict[int, object]] = {
+            symbol: {} for _q, symbol in axioms}
+        stack: list[object] = list(ground)
+        seen: set[int] = set()
+        while stack:
+            expr = cast("z3.ExprRef", stack.pop())
+            if expr.get_id() in seen or not z3.is_app(expr):
+                continue
+            seen.add(expr.get_id())
+            children = expr.children()
+            if expr.decl().name() in indices and len(children) == 2:
+                indices[expr.decl().name()][children[1].get_id()] = children[1]
+            stack.extend(children)
+        return [
+            z3.substitute_vars(cast("z3.QuantifierRef", quantifier).body(), t)
+            for quantifier, symbol in axioms
+            for t in indices[symbol].values()]
 
     @staticmethod
     def _totality_instances(
@@ -5403,9 +5436,10 @@ class ContractVerifier:
         free: set[str] = set()
         for fact in (*smt.solver.assertions(), *assumed):
             record = smt.registered_axiom(fact)
-            if record is not None and record.kind is AxiomKind.TOTALITY:
+            if record is not None and record.kind is not AxiomKind.RANK:
                 # Instantiated rather than dropped, so nothing about it has to
-                # be disjoint from the kept half (#1457 review, ruling C).
+                # be disjoint from the kept half (#1457 review, ruling C): a
+                # TOTALITY axiom, and an ELEMENT one (#1814).
                 continue
             symbols = self._uninterpreted_symbols(fact)
             if _TRUNCATED_SCAN in symbols:
@@ -5518,8 +5552,9 @@ class ContractVerifier:
 
         A quantified premise is inside the fragment exactly when the screen
         installed it with a REGIME — `AxiomKind.RANK`, dropped by stage 2 and
-        gated on symbol disjointness, or `AxiomKind.TOTALITY`, instantiated by
-        stage 2 on the ground terms the kept premises mention.  Either way the
+        gated on symbol disjointness, or `AxiomKind.TOTALITY` or
+        `AxiomKind.ELEMENT`, instantiated by stage 2 on the ground terms the
+        kept premises mention.  Either way the
         screen can answer about it.  An UNTAGGED quantifier is foreign and
         puts the premises outside: §2.6.1 lists quantifiers outside the
         fragment for a refinement predicate, and a premise the screen has no
@@ -11311,18 +11346,32 @@ class ContractVerifier:
         refinement over a primitive base is stated where it was before (`declare_nat`,
         `_type_facts`, `_nested_refinement_facts`); this walk states the rest,
         so a fact is never missing at a position, and a duplicate is
-        harmless."""
-        return self._invariant_at(smt, ty, term, head=True, seen=frozenset())
+        harmless.
+
+        An element range standing as a fact of its own is tagged
+        `AxiomKind.ELEMENT` for the premise screen (#1451); one under a
+        constructor's recognizer is not, and stays foreign to it."""
+        ranged: dict[int, tuple[z3.ExprRef, str]] = {}
+        facts = self._invariant_at(
+            smt, ty, term, head=True, seen=frozenset(), ranged=ranged)
+        for fact in facts:
+            if fact.get_id() in ranged:
+                smt.tag_axiom(fact, AxiomKind.ELEMENT,
+                              ranged[fact.get_id()][1])
+        return facts
 
     def _invariant_at(
         self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
         head: bool, seen: frozenset[str],
+        ranged: dict[int, tuple[z3.ExprRef, str]] | None = None,
     ) -> list[z3.ExprRef]:
-        """One position of :py:meth:`_type_invariant`'s walk."""
+        """One position of :py:meth:`_type_invariant`'s walk.  With
+        *ranged* None the walk states ranges alone: no refinement over a
+        data type, no array's elements."""
         if ty is None or not smt.type_is_regular(ty):
             return []
         facts: list[z3.ExprRef] = []
-        if isinstance(ty, RefinedType) and not head:
+        if ranged is not None and isinstance(ty, RefinedType) and not head:
             # A refinement over a data type: `_nested_refinement_facts`
             # states a nested refinement over a primitive base only.
             chain = self._refined_chain(ty)
@@ -11344,8 +11393,9 @@ class ContractVerifier:
         if not isinstance(base, AdtType):
             return facts
         if base.name == "Array" and len(base.type_args) == 1:
-            facts.extend(self._element_invariant(
-                smt, base.type_args[0], term, seen))
+            if ranged is not None:
+                facts.extend(self._element_invariant(
+                    smt, base.type_args[0], term, seen, ranged))
             return facts
         if not isinstance(sort, z3.DatatypeSortRef):
             return facts
@@ -11370,18 +11420,21 @@ class ContractVerifier:
             for j, field_ty in enumerate(field_types):
                 for fact in self._invariant_at(
                         smt, field_ty, sort.accessor(i, j)(term),
-                        head=False, seen=deeper):
+                        head=False, seen=deeper, ranged=ranged):
                     facts.append(fact if recognizer is None
                                  else z3.Implies(recognizer, fact))
         return facts
 
     def _element_invariant(
         self, smt: SmtContext, element_ty: Type, term: z3.ExprRef,
-        seen: frozenset[str],
+        seen: frozenset[str], ranged: dict[int, tuple[z3.ExprRef, str]],
     ) -> list[z3.ExprRef]:
         """An `Array`'s element positions: the bounded index quantifier
         `_element_facts` states for a refined element, over what the
-        element's type states."""
+        element's type states.  The ranges stand in a quantifier of their
+        own, recorded in *ranged* with its `index` symbol (`AxiomKind.ELEMENT`);
+        the rest, a refinement over a data type or a nested array's
+        elements, in a second."""
         if not self._states_anything(element_ty, frozenset()):
             return []
         observers = smt.carrier_elements(term, None, element_ty)
@@ -11391,13 +11444,23 @@ class ContractVerifier:
         idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
         element = index_fn(sequence, idx)
         body = [fact for fact in self._invariant_at(
-            smt, element_ty, element, head=False, seen=seen)
+            smt, element_ty, element, head=False, seen=seen, ranged=ranged)
             if self._per_element(fact, element)]
-        if not body:
-            return []
-        inner = z3.And(*body) if len(body) > 1 else body[0]
-        return [z3.ForAll([idx], z3.Implies(
-            z3.And(idx >= 0, idx < length_fn(sequence)), inner))]
+        ranges = {fact.get_id() for fact in self._invariant_at(
+            smt, element_ty, element, head=False, seen=seen)}
+        in_range = z3.And(idx >= 0, idx < length_fn(sequence))
+        out: list[z3.ExprRef] = []
+        for part, tag in (
+                ([f for f in body if f.get_id() in ranges], True),
+                ([f for f in body if f.get_id() not in ranges], False)):
+            if not part:
+                continue
+            inner = z3.And(*part) if len(part) > 1 else part[0]
+            axiom = z3.ForAll([idx], z3.Implies(in_range, inner))
+            if tag:
+                ranged[axiom.get_id()] = (axiom, index_fn.name())
+            out.append(axiom)
+        return out
 
     @staticmethod
     def _per_element(fact: z3.ExprRef, element: z3.ExprRef) -> bool:

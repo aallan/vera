@@ -2645,6 +2645,135 @@ public fn f(@Array<Int> -> @Int)
     assert result.summary.tier1_verified > 0, result.summary  # type: ignore[attr-defined]
 
 
+# An `Array<Int>` or `Array<Nat>` parameter's type states each element's range
+# under a bounded index quantifier (#1814).  The screen handles it under the
+# ELEMENT regime: stage 2 instantiates it at the index terms the kept premises
+# read.  Untagged, the quantifier was foreign, and a slice holding one left
+# the fragment.
+
+def _measure_over(ty: str, requires: str) -> str:
+    """A recursive measure, whose rank axioms leave stage 1 undecided, beside
+    an array parameter the precondition reads."""
+    return f"""\
+private data List<T> {{
+  Nil,
+  Cons(T, List<T>)
+}}
+
+public fn f(@List<Int>, @{ty} -> @Nat)
+  requires({requires})
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{{
+  match @List<Int>.0 {{
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + f(@List<Int>.0, @{ty}.0)
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("ty", [
+    "Array<Int>", "Array<Nat>", "Array<Option<Nat>>"])
+def test_1451_an_element_range_keeps_an_undecided_slice_inside(
+    tmp_path: Path, ty: str,
+) -> None:
+    """RED with the element quantifier untagged: stage 1 gives up on the rank
+    axioms, stage 2 finds a model, the halves share the array, and a foreign
+    quantifier read the slice as outside the fragment, withholding Tier 1
+    (`E540`) from a function main's tree certified.  The verdict is asserted
+    beside it, so the cell cannot pass on a stage-1 `sat`."""
+    seen, result = _premise_verdicts(_write(
+        tmp_path, _measure_over(ty, f"array_length(@{ty}.0) > 2")))
+    assert "unknown" in seen, seen
+    assert not [
+        d for d in result.diagnostics  # type: ignore[attr-defined]
+        if d.error_code in ("E538", "E539", "E540")
+    ], [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert result.summary.tier1_verified > 0, result.summary  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("ty", "below"), [
+    ("Array<Int>", "0 - 9223372036854775807 - 1"), ("Array<Nat>", "0")])
+def test_1451_a_premise_below_an_element_range_is_refused_on_stage_two(
+    tmp_path: Path, ty: str, below: str,
+) -> None:
+    """A precondition that puts an element below its type's range has no
+    model, and stage 2 refutes it through the ELEMENT axiom's instance at
+    `index(a, 0)`.  Stage 1 is forced undecided so the verdict comes from
+    stage 2.  RED with the instances dropped (stage 2 finds a model of the
+    quantifier-free part, and the axiom asks for no disjointness: a vacuous
+    Tier 1) and with the quantifier untagged (`E540`, not the refusal)."""
+    from vera import verifier as vmod
+
+    source = f"""\
+public fn f(@{ty} -> @Int)
+  requires(array_length(@{ty}.0) > 0 && @{ty}.0[0] < {below})
+  ensures(@Int.result == 42)
+  effects(pure)
+{{
+  0
+}}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E538" in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+
+
+def test_1451_an_element_refinement_is_not_an_element_range(
+    tmp_path: Path,
+) -> None:
+    """Only ranges are ELEMENT.  `Box`'s field is a refinement no value has,
+    so an `Array<Box>` of positive length admits no argument.  Its predicate
+    is stated of the elements under quantifiers the screen has no regime for
+    (the refinement walk's, `_element_facts`, and the invariant walk's
+    second one), so an undecided screen withholds Tier 1 (`E540`).  Tagged
+    ELEMENT, the predicate would be instantiated at no index term (the
+    premises read none), stage 2 would find a model, and a vacuous Tier 1
+    would stand: an ELEMENT body may not hold a predicate that can have no
+    value."""
+    from vera import verifier as vmod
+
+    source = """\
+private data Color {
+  Red,
+  Green
+}
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+private data Box {
+  MkBox(NoColor)
+}
+
+public fn f(@Array<Box> -> @Int)
+  requires(array_length(@Array<Box>.0) > 0)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E540" in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------------------
 # MD-9 / R2: a Tier-1 proof needs its premises SHOWN satisfiable, where they
 # leave the decidable fragment

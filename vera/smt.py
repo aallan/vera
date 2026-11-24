@@ -307,6 +307,22 @@ class AxiomKind(enum.Enum):
     its refutation-completeness for the slice without needing disjointness.
     """
 
+    ELEMENT = "element"
+    """Constrains each element of ONE sequence, pointwise, by ranges alone:
+    `forall i. 0 <= i < length(s) => lo <= index(s, i) <= hi`, the range an
+    `Array<Int>` or `Array<Nat>` parameter's type states of its elements
+    (#1814), at any depth of a data type the element holds.
+
+    Stage 2 carries its instances at every index term `index(_, t)` the kept
+    premises read.  A model of the kept premises and those instances extends
+    to the axiom: `index` is uninterpreted, so its value at a point no ground
+    term names is free, and an element whose every `Int` position is `0`
+    satisfies every range at once, whichever sequences share the point.  The
+    symbol is the `index` function the instances are taken at.  Only a body
+    of ranges qualifies: a refinement's predicate may have no value, and a
+    nested array's quantifier is not ground once instantiated.
+    """
+
 
 @dataclass(frozen=True)
 class QuantifiedAxiom:
@@ -1835,6 +1851,17 @@ class SmtContext:
         self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
             kind=kind, symbol=symbol,
         )
+
+    def tag_axiom(
+        self, axiom: z3.ExprRef, kind: AxiomKind, symbol: str,
+    ) -> None:
+        """Record the regime of a quantified fact the verifier asserts
+        itself, through the gate its facts pass (an element range, #1814).
+        The term is held, so its id names it until the next reset."""
+        self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
+            kind=kind, symbol=symbol,
+        )
+        self._id_holders.append(axiom)
 
     def registered_axiom(self, fact: object) -> QuantifiedAxiom | None:
         """The axiom record for *fact*, or ``None`` if this context did not
