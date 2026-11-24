@@ -11437,11 +11437,18 @@ class ContractVerifier:
         elements, in a second."""
         if not self._states_anything(element_ty, frozenset()):
             return []
-        observers = smt.carrier_elements(term, None, element_ty)
+        observers = smt.carrier_elements(
+            term, None,
+            element_ty,  # pragma: no mutate — equivalent: `carrier_elements` reads the element type only for a projection, and this call takes none (the sequence's sort gives the element sort)
+        )
         if observers is None:
             return []
         sequence, index_fn, length_fn, _element_sort = observers
-        idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
+        idx = z3.Const(
+            self._fresh_quantifier_name(  # pragma: no mutate — equivalent: the quantifier binds the constant object, so its name changes no fact (measured: a `None` name passes the instruments)
+                "elt_idx",  # pragma: no mutate — equivalent: as above, the stem only names the bound constant
+            ),
+            z3.IntSort())
         element = index_fn(sequence, idx)
         body = [fact for fact in self._invariant_at(
             smt, element_ty, element, head=False, seen=seen, ranged=ranged)
@@ -11455,8 +11462,7 @@ class ContractVerifier:
                 ([f for f in body if f.get_id() not in ranges], False)):
             if not part:
                 continue
-            inner = z3.And(*part) if len(part) > 1 else part[0]
-            axiom = z3.ForAll([idx], z3.Implies(in_range, inner))
+            axiom = z3.ForAll([idx], z3.Implies(in_range, z3.And(*part)))
             if tag:
                 ranged[axiom.get_id()] = (axiom, index_fn.name())
             out.append(axiom)
