@@ -208,7 +208,6 @@ class FunctionCompilationMixin:
         if not tags:
             return None
         self._needs_trap = True
-        self._needs_memory = True
         name = decl.name
         n_params = sum(part.count("(param ") for part in param_parts)
         result_spec = result_part.strip()
@@ -1336,7 +1335,6 @@ class FunctionCompilationMixin:
         # assembly — so the move is purely additive in correctness.
         if ctx.needs_alloc:
             self._needs_alloc = True
-            self._needs_memory = True
         self._host_imports_used.update(ctx._host_imports_used)
         # #1744: and the State cells and Exn tags its code uses, so a
         # function dropped before this line declares none.
