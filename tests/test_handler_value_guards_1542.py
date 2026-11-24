@@ -160,6 +160,22 @@ JOIN_POSITIONS: dict[str, str] = {
     "match_in_body": (
         "let @{T} = " + _STATE_BOOL + " in {{\n    match @Int.0 > 100 {{\n"
         "      true -> {V},\n      false -> {V}\n    }}\n  }};\n  rd(@{T}.0)"),
+    # Each arm on its own: the arm is chosen by the cell (opaque to the
+    # verifier, so both arms stay a join), not by the tested value, so the
+    # satisfying and the violating argument both run the arm holding it.
+    "if_then_arm": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n"
+        "    if get(()) then {{ {V} }} else {{ {G} }}\n  }};\n  rd(@{T}.0)"),
+    "if_else_arm": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    put(false);\n"
+        "    if get(()) then {{ {G} }} else {{ {V} }}\n  }};\n  rd(@{T}.0)"),
+    "match_true_arm": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    match get(()) {{\n"
+        "      true -> {V},\n      false -> {G}\n    }}\n  }};\n  rd(@{T}.0)"),
+    "match_false_arm": (
+        "let @{T} = " + _STATE_BOOL + " in {{\n    put(false);\n"
+        "    match get(()) {{\n      true -> {G},\n      false -> {V}\n"
+        "    }}\n  }};\n  rd(@{T}.0)"),
     "block_in_body": (
         "let @{T} = " + _STATE_BOOL + " in {{\n    put(false);\n    {V}\n"
         "  }};\n  rd(@{T}.0)"),
@@ -266,9 +282,13 @@ def _verdicts() -> dict[tuple[str, str], str]:
 
 #: The join positions the verifier decides a narrowing at: every one bar a
 #: handle nested in a handle (an `Exn` handle's value, which it does not
-#: read).
+#: read) and an arm chosen by the cell (a refutation under a premise over
+#: `get`'s stand-in is no violation, spec §6.4.2, so the narrowing is left to
+#: its run-time check).
 _NESTED = ("exn_in_state", "state_in_exn")
-_JOIN_DECIDED = tuple(p for p in JOIN_POSITIONS if p not in _NESTED)
+_ARMS = ("if_then_arm", "if_else_arm", "match_true_arm", "match_false_arm")
+_UNDECIDED = _NESTED + _ARMS
+_JOIN_DECIDED = tuple(p for p in JOIN_POSITIONS if p not in _UNDECIDED)
 
 
 def _joins() -> dict[tuple[str, str, str], str]:
@@ -283,22 +303,22 @@ def _joins() -> dict[tuple[str, str, str], str]:
     v: dict[tuple[str, str, str], str] = {}
     j = tuple(JOIN_POSITIONS)
     for shape in ("nat", "small"):
-        v.update({(shape, "call", p): CHECKED if p in _NESTED else REFUSED for p in j})
+        v.update({(shape, "call", p): CHECKED if p in _UNDECIDED else REFUSED for p in j})
     for shape in ("short", "tuple_nat", "option_nat"):
         v.update({(shape, "call", p): CHECKED for p in j})
     v.update({("option_short", "call", p): DISCLOSED for p in j})
-    v.update({("option_small", "call", p): DISCLOSED if p in _NESTED
+    v.update({("option_small", "call", p): DISCLOSED if p in _UNDECIDED
               else REFUSED_UNCHECKED for p in j})
     v.update({("tuple_short", "call", p): OPEN for p in j})
     v[("tuple_short", "call", "call_argument")] = CHECKED
     v[("tuple_short", "call", "ctor_field")] = DISCLOSED
-    v.update({("tuple_small", "call", p): OPEN if p in _NESTED
+    v.update({("tuple_small", "call", p): OPEN if p in _UNDECIDED
               else REFUSED_UNCHECKED for p in j})
     v[("tuple_small", "call", "call_argument")] = REFUSED
     for shape in ("tuple_nat", "option_nat", "tuple_short", "option_short"):
         v.update({(shape, "built", p): CHECKED for p in j})
     for shape in ("tuple_small", "option_small"):
-        v.update({(shape, "built", p): CHECKED if p in _NESTED else REFUSED
+        v.update({(shape, "built", p): CHECKED if p in _UNDECIDED else REFUSED
                   for p in j})
     return v
 
@@ -661,6 +681,94 @@ def test_a_get_resume_runs_the_predicate_before_the_sign() -> None:
     assert ran.trap is not None, ran.value
     assert "Refinement violation in State get resume" in str(ran.trap), ran.trap
     assert pipeline.run(_RESUME_REFINED_NAT, fn="g", args=[3]).value == 3
+
+
+_RESUME_NAT = _RESUME_REFINED_NAT.replace(
+    "type SmallNat = { @Nat | @Nat.0 < 10 };\n\n", "").replace("SmallNat", "Nat")
+
+
+def _two_tuple_sites() -> str:
+    """One function with two handle values at `Tuple<Short, Int>`: one in a
+    constructor's field (disclosed: a store checks no tuple component below
+    it) and one at a call's argument (checked by the callee's boundary)."""
+    field = _program("tuple_short", "ctor_field")
+    arg = _program("tuple_short", "call_argument")
+    take = arg[arg.index("private fn take"):arg.index("public fn go")]
+    call = arg.split("public fn go")[1].split("{", 1)[1].rsplit("}", 1)[0].strip()
+    return field.replace("public fn go", take + "public fn go").replace(
+        "  match @Option<Tuple<Short, Int>>.0 {",
+        "  " + call + " + match @Option<Tuple<Short, Int>>.0 {")
+
+
+def test_two_handle_values_in_one_function_keep_their_own_rows() -> None:
+    """Each value's record is keyed to its own component rows: the field's
+    is disclosed where its leaf stands, the argument's is a run-time check
+    noted at its own leaf, not at the other value's handle.  (A record
+    that took every path row of its function moved the argument's note to
+    its handle, line 48.)"""
+    src = _two_tuple_sites()
+    lines = src.splitlines()
+    leaves = [i for i, text in enumerate(lines, 1) if text.strip() == "mk(@Int.0)"]
+    verified = pipeline.verify(src, reconcile=True)
+    assert verified.ok, [d.error_code for d in verified.errors]
+    notes = sorted(d.location.line for d in verified.warnings
+                   if d.error_code == "E506")
+    assert notes == leaves, (notes, leaves)
+    statuses = sorted((o.line, o.status) for o in verified.obligations
+                      if o.kind in _NARROWING and o.line in leaves)
+    assert statuses == [(leaves[0], "tier3_unguarded"), (leaves[1], "tier3")], statuses
+
+
+def test_a_block_tail_hands_the_store_its_own_component_type() -> None:
+    """A `Tuple<Nat, Int>` built as a handle's value in a constructor's
+    field: the handle body's block tail is handed the store's own component
+    type, so the field's `Nat` row is the store's sign check, answered by
+    the `Nat` guard, not by a composite coercion."""
+    src = _program("tuple_nat", "ctor_field", "built")
+    verified = pipeline.verify(src, reconcile=True)
+    assert verified.ok, [d.error_code for d in verified.errors]
+    reconciled = verified.reconciled
+    assert reconciled is not None and reconciled.reconciliation is not None
+    rc = reconciled.reconciliation
+    emitters = [c.emitter for o, c in rc.pairs if o.kind == "nat_bind"]
+    assert emitters == ["wasm/operators.py:_emit_nat_bind_guard"], emitters
+    assert rc.mismatches == [], rc.mismatches
+
+
+@pytest.mark.parametrize("shape", ["nat", "short"])
+def test_a_clause_check_is_answered_at_each_inlined_site(shape: str) -> None:
+    """A `with` override inlined at two `get` sites lists a row per site,
+    each under its site's evaluation, and the join pairs each with its own
+    emitted check: none unanswered (E541), none unrecorded (W004).  The
+    clause's lowering ties the check to the site it is inlined at."""
+    src = _program(shape, "with_override")
+    verified = pipeline.verify(src, reconcile=True)
+    assert verified.ok, [d.error_code for d in verified.errors]
+    codes = {d.error_code for d in verified.errors} | {
+        d.error_code for d in verified.warnings}
+    assert not codes & {"E541", "W004"}, codes
+    reconciled = verified.reconciled
+    assert reconciled is not None and reconciled.reconciliation is not None
+    rc = reconciled.reconciliation
+    assert rc.mismatches == [], rc.mismatches
+    line = next(i for i, text in enumerate(src.splitlines(), 1)
+                if " with @" in text)
+    paired = sorted(c.row for o, c in rc.pairs
+                    if o.kind in _NARROWING and o.line == line)
+    assert len(paired) == 2 and len(set(paired)) == 2, paired
+
+
+def test_a_get_resume_at_a_nat_cell_runs_the_sign_check() -> None:
+    """The sign check is the only one at a `Nat` cell: -5 traps there, not
+    at a refinement.  (At a refinement over `Nat` the predicate's check
+    holds the base's sign too: -5 satisfies `@Nat.0 < 10` above and still
+    traps at the refinement, so the sign check after it is reached only
+    here.)"""
+    ran = pipeline.run(_RESUME_NAT, fn="g", args=[-5])
+    assert ran.trap is not None, ran.value
+    assert "Negative value bound into a @Nat slot" in str(ran.trap), ran.trap
+    assert "Refinement violation" not in str(ran.trap), ran.trap
+    assert pipeline.run(_RESUME_NAT, fn="g", args=[3]).value == 3
 
 
 _JOIN_NOT_A_HANDLE = """\

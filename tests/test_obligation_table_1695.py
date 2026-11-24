@@ -2894,3 +2894,45 @@ def test_no_record_is_made_at_a_site_with_no_row() -> None:
     assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
     assert [d for d in v.result.diagnostics
             if (d.location.line, d.location.column) == site] == []
+
+
+_PIPED = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn inc(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0 + 1
+}
+
+private fn half(@Int, @Nat -> @Int)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / nat_to_int(@Nat.0)
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+    |> half(2)
+    |> inc()
+}
+"""
+
+
+def test_a_piped_calls_row_is_keyed_at_its_stage_1641() -> None:
+    """A piped call's row stands at its stage, where it is written (#1641):
+    its content key carries the stage's line and column, not the pipe's."""
+    from vera.obligations import table as obligation_table
+    table = obligation_table.build(pipeline.typed(_PIPED))
+    keyed = sorted((r.kind, r.content_key[3], r.content_key[4])
+                   for r in table.rows if r.fn == "go"
+                   and r.kind in ("call_pre", "refine_bind"))
+    assert keyed == [("call_pre", 25, 8), ("refine_bind", 25, 8)], keyed

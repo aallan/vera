@@ -1862,17 +1862,18 @@ class _Builder:
         return stmt.constructor
 
     def handle_rows(self, expr: ast.HandleExpr, d: ast.FnDecl | None,
-                    in_closure: bool, *, handed: Type | None = None,
-                    under_join: bool = False, store: bool = False,
-                    inplace: Type | None = None, fallback: bool = False,
-                    nat_handed: Type | None = None,
+                    in_closure: bool, *, handed: Type | None,
+                    under_join: bool, store: bool,
+                    inplace: Type | None, fallback: bool,
+                    nat_handed: Type | None,
                     ) -> None:
         """The rows of a `handle`: its initial value's, its body's and its
         clauses'.  The handle's value (its body's, and a non-resuming `Exn`
         clause's) is a join's leaf: it is handed the requirement and the
-        `Nat` requirement (*nat_handed*) as a block's tail is."""
+        `Nat` requirement (*nat_handed*) as a block's tail is.  `walk`, the
+        one caller, passes every keyword."""
         eff = expr.effect
-        cell: Type | None = None
+        cell: Type | None = None  # pragma: no mutate — equivalent: every handler that checks names its cell (`State` and `Exn` without one are E337, a user effect's handler E340), so the default is always replaced
         if isinstance(eff, ast.EffectRef) and eff.type_args:
             cell = self.sem(eff.type_args[0])
         is_state = isinstance(eff, ast.EffectRef) and eff.name == "State"
@@ -1891,7 +1892,11 @@ class _Builder:
             fallback=fallback,  # pragma: no mutate
             nat_handed=nat_handed)
         try:
-            self.walk(expr.body, d, in_closure=in_closure, **value)
+            # `d` and `in_closure` are passed down the walk and read by no
+            # row (the tables of the corpus, the #1542 instrument and probes
+            # with a recursive call and a closure inside a handle are equal
+            # with either one None or dropped).
+            self.walk(expr.body, d, in_closure=in_closure, **value)  # pragma: no mutate — equivalent, as above
         finally:
             if is_state:
                 self._handler_stack.pop()
