@@ -2536,13 +2536,15 @@ def test_repro_lane_an_unprojected_binder_after_a_wildcard_is_left_to_its_check(
 
 def test_repro_lane_a_literal_destructure_binder_is_left_to_its_check() -> None:
     """A literal `Tuple` destructure's refined binder: the component's
-    record is the component's row (disclosed, E506), and the binder's row is
-    left to the destructure's check, `tier3`, as at base (the lane's
-    `_leave_binder_rows` survivors on PR #1843; the `_1466` cells that pin it
-    run at `--matrix=full` only)."""
+    record is the component's row, and the binder's row is left to the
+    destructure's check, `tier3`, as at base (the lane's `_leave_binder_rows`
+    survivors on PR #1843; the `_1466` cells that pin it run at
+    `--matrix=full` only).  The component's row is decided from the literal,
+    a refinement over a data type being decided where a value is given the
+    type (#1814), where it was disclosed (E506)."""
     records = _narrowing_records(_LITERAL_DESTRUCTURE_BINDER)
     assert records[:2] == [
-        ("f", "refine_bind", "tier3_unguarded", 8, 34, "E506", "Some(1)"),
+        ("f", "refine_bind", "verified", 8, 34, "", "Some(1)"),
         ("f", "refine_bind", "tier3", 8, 20, "", "@R"),
     ], records
 
@@ -2758,12 +2760,16 @@ def test_repro_lane_a_refined_closure_return_keeps_its_nat_components() -> None:
     `Nat` component of each value leaf and of the return type is left to the
     boundary's check, `tier3`, as at base (the Mutation (diff) lane's
     `_binding_closure` survivors on PR #1843: no cell held a closure's
-    boundary components beside a refined return)."""
+    boundary components beside a refined return).  The function's own return
+    of the closure's value is proved: that value is the closure return's,
+    checked there, and `PT`'s predicate (`true`) is decided over it, a
+    refinement over a data type being decided as one over a primitive is
+    (#1814), where it was disclosed (E506)."""
     assert _narrowing_records(_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT) == [
         ("c", "nat_bind", "tier3", 16, 44, "", "mk(@Int.0) [Tuple.1]"),
         ("c", "refine_bind", "tier3", 16, 44, "E506", "{ mk(@Int.0) }"),
         ("c", "refine_bind", "tier3", 16, 24, "", "@PT [Tuple.1]"),
-        ("c", "refine_bind", "tier3", 16, 3, "E506",
+        ("c", "refine_bind", "verified", 16, 3, "",
          "{ apply_fn(fn(@Int -> @PT) effects(pure) { mk(@Int.0) }, @Int.0) }"),
         ("c", "refine_bind", "tier3", 11, 22, "", "@PT [Tuple.1]"),
         ("d", "nat_bind", "tier3", 24, 65, "", "mk(@Int.0) [Tuple.1]"),
@@ -2771,23 +2777,15 @@ def test_repro_lane_a_refined_closure_return_keeps_its_nat_components() -> None:
         ("d", "refine_bind", "tier3", 24, 44, "E506",
          "{ if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }"),
         ("d", "refine_bind", "tier3", 24, 24, "", "@PT [Tuple.1]"),
-        ("d", "refine_bind", "tier3", 24, 3, "E506",
+        ("d", "refine_bind", "verified", 24, 3, "",
          "{ apply_fn(fn(@Int -> @PT) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0) }"),
         ("d", "refine_bind", "tier3", 19, 22, "", "@PT [Tuple.1]"),
         ("E506", "Refinement predicate at a closure return in 'c' could not "
                  "be verified statically; it will be checked at run time. To "
                  "prove it statically, add a `requires(...)` implying the "
                  "predicate or guard the binding with an `if`."),
-        ("E506", "Refinement predicate at a return type in 'c' could not be "
-                 "verified statically; it will be checked at run time. To "
-                 "prove it statically, add a `requires(...)` implying the "
-                 "predicate or guard the binding with an `if`."),
         ("E506", "Refinement predicate at a closure return in 'd' could not "
                  "be verified statically; it will be checked at run time. To "
-                 "prove it statically, add a `requires(...)` implying the "
-                 "predicate or guard the binding with an `if`."),
-        ("E506", "Refinement predicate at a return type in 'd' could not be "
-                 "verified statically; it will be checked at run time. To "
                  "prove it statically, add a `requires(...)` implying the "
                  "predicate or guard the binding with an `if`."),
     ]
