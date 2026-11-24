@@ -2286,6 +2286,14 @@ def mutant_seconds(tree: Path, paths: Iterable[str]) -> dict[str, tuple[float | 
     return out
 
 
+def listed_after_stop(ended: float, stop_at: float | None) -> bool:
+    """Whether a listing whose child exited at ``ended`` reads as after the
+    budget's stop, sent at ``stop_at`` (None: not sent): by the two times,
+    not by which thread took the lock first, so a listing that ended just
+    before the stop keeps what it saw (#1838, the 12 November line)."""
+    return stop_at is not None and ended >= stop_at
+
+
 def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: list[str],
               today: str, live: Path | None = None, bound: Mapping[str, Any] | None = None,
               ) -> dict[str, Any]:
@@ -2425,20 +2433,21 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     # earlier one did (mutmut writes a meta file with a plain open and dump,
     # so a listing can meet one mid-write).
     last_read: dict[str, Any] = {"results": {}, "at": None}
-    # Set once the budget's stop is about to be sent (before_stop): a
-    # listing read after it takes a status a stop can leave (CUT_SHORT) only
-    # where the engine had recorded it before the stop, as the final one does.
+    # Set once the budget's stop is about to be sent (before_stop), with the
+    # time it was sent (``stop_at``): a listing whose child exited after it
+    # takes a status a stop can leave (CUT_SHORT) only where the engine had
+    # recorded it before the stop, as the final one does.  A listing whose
+    # child exited before it saw only what the engine recorded before the
+    # stop, whichever thread then takes the lock first (listed_after_stop):
+    # the names it showed with such a status are kept, whatever a meta file
+    # mid-write hid from before_stop.  One lock orders the stop with every
+    # listing's reading and every partial record's publishing.  It is taken
+    # only in read_partial, on_beat's publish and before_stop, never while
+    # another is held, and none of them waits on a thread that may hold it:
+    # the heartbeat's exit (Heartbeat.stop) is joined from the main thread
+    # after run_dropping returns, holding nothing.
     stop_sent = threading.Event()
-    # The names a listing completed before the stop showed with a status a
-    # stop can leave: the engine recorded them before it, whatever a meta
-    # file mid-write hid from before_stop.  One lock orders the stop with
-    # every listing's reading and every partial record's publishing, so each
-    # is wholly before the stop or wholly after it.  It is taken only in
-    # read_partial, on_beat's publish and before_stop, never while another
-    # is held, and none of them waits on a thread that may hold it: the
-    # heartbeat's exit (Heartbeat.stop) is joined from the main thread after
-    # run_dropping returns, holding nothing.
-    pre_stop: set[str] = set()
+    stop_at: dict[str, float] = {}
     stop_lock = threading.Lock()
 
     def read_partial(elapsed_s: float) -> dict[str, Any] | None:
@@ -2446,6 +2455,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         replaced by this one, or None with ``last_read`` kept and why."""
         try:
             listed = md._engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
+            ended = time.time()  # the listing child's exit
             if listed is None:
                 return {"at": round(elapsed_s, 1), "why": "the listing did not end in time"}
             if listed.returncode != 0:
@@ -2454,11 +2464,11 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
                 return {"at": round(elapsed_s, 1), "why": "the engine's count of its mutants was not read"}
             parsed = md.parse_results(listed.stdout)
             with stop_lock:
-                # A listing that ended before the stop was sent saw only what
-                # the engine recorded before it.
-                after = stop_sent.is_set()
+                # A listing whose child exited before the stop was sent saw
+                # only what the engine recorded before it.
+                after = listed_after_stop(ended, stop_at.get("at"))
                 if not after:
-                    pre_stop.update(n for n, status in parsed.items() if status in CUT_SHORT)
+                    kept.update(n for n, status in parsed.items() if status in CUT_SHORT)
                 last_read["results"] = read(parsed, cut_short=after, finished=False)
             last_read["at"] = round(elapsed_s, 1)
             return None
@@ -2494,7 +2504,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         that copies it from now on charges no loss."""
         with stop_lock:
             kept.update(name for name, code in meta_exit_codes(tree, files).items() if code is not None)
-            kept.update(pre_stop)
+            stop_at["at"] = time.time()
             stop_sent.set()
             if published["record"] is not None:
                 published["record"] = {**published["record"], "budget_stopped": True}

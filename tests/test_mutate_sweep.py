@@ -3940,6 +3940,16 @@ class TestTheStopsEdges:
         assert at_exit["budget_stopped"] is True, at_exit.get("elapsed_s")
         assert sw.charged_in_flight({**at_exit, "leg": 4}) == []
 
+    def test_repro_a_listing_is_ordered_with_the_stop_by_its_childs_exit_time(self) -> None:
+        """#1838 (the 12 November line): a listing whose child exited before
+        the stop was sent saw only what the engine recorded before it, even
+        when the stop took the lock first; it was read as after the stop and
+        lost the statuses a stop can leave.  The two times decide."""
+        assert sw.listed_after_stop(100.0, None) is False  # no stop sent
+        assert sw.listed_after_stop(99.9, 100.0) is False  # exited before; the lock order does not matter
+        assert sw.listed_after_stop(100.0, 100.0) is True
+        assert sw.listed_after_stop(100.1, 100.0) is True
+
     def test_the_report_says_a_cancelled_run_charges_no_loss(self) -> None:
         record = _record(0, 1, {}, stopped="engine", counts={})
         record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
