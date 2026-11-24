@@ -688,6 +688,117 @@ def test_repro_read_back_from_a_store(store: str) -> None:
     verified = _verify(source)
     ensures = _line(source, "ensures(@Int.result < 10)")
     assert _at_line(verified, ensures, "ensures") == ["tier3/E534"]
+    if store == "array_literal":
+        # The Tier 3 note says whose fact it is: a narrowing in this very
+        # function, not a disclosed call.
+        [note] = [d for d in verified.warnings if d.error_code == "E534"]
+        assert "a narrowing in this function" in note.rationale, note.rationale
+
+
+POS_MK_OPTION = textwrap.dedent("""\
+    type Pos = { @Int | @Int.0 > 0 };
+
+    private fn mk(@Int -> @Option<Int>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      Some(@Int.0)
+    }
+
+    """)
+
+
+def test_repro_a_handle_value_whose_leaves_narrow_is_narrowed() -> None:
+    """A `handle` whose value a narrowing takes: the requirement is handed
+    down to the clause's and the body's leaves, and the handle's own term is
+    a stand-in that holds neither by occurrence, so only the join's record
+    carries the narrowing to the reader after it.  The leaves are `Option`
+    payloads, whose rows no check covers, so the `ensures` the reader's fact
+    proves is Tier 3 (E534), and each leaf's narrowing discloses (E506)."""
+    source = POS_MK_OPTION + textwrap.dedent("""\
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(@Int.result > 0)
+          effects(pure)
+        {
+          let @Option<Pos> = handle[Exn<Int>] { throw(@Int) -> mk(@Int.0) } in { mk(@Int.0) };
+          match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }
+        }
+        """)
+    verified = _verify(source)
+    let = _line(source, "let @Option<Pos> = handle[Exn<Int>] "
+                        "{ throw(@Int) -> mk(@Int.0) } in { mk(@Int.0) };")
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"] * 2
+    ensures = _line(source, "ensures(@Int.result > 0)")
+    assert _at_line(verified, ensures, "ensures") == ["tier3/E534"]
+
+
+def test_repro_a_clause_binder_the_walk_cannot_read_is_narrowed() -> None:
+    """A `let` narrowing inside a handler clause binds a stand-in (the
+    clause's parameter does not translate), and the stand-in is the
+    narrowed value: the `Option` payload's row is unchecked, so the `@Nat`
+    narrowing the reader's fact would prove is Tier 3, never `verified`."""
+    source = POS_MK_OPTION + textwrap.dedent("""\
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          handle[Exn<Option<Int>>] {
+            throw(@Option<Int>) -> {
+              let @Option<Pos> = @Option<Int>.0;
+              match @Option<Pos>.0 {
+                Some(@Int) -> {
+                  let @Nat = @Int.0;
+                  nat_to_int(@Nat.0)
+                },
+                None -> 1
+              }
+            }
+          } in {
+            throw(mk(@Int.0))
+          }
+        }
+        """)
+    verified = _verify(source)
+    let = _line(source, "let @Option<Pos> = @Option<Int>.0;")
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"]
+    nat = _line(source, "let @Nat = @Int.0;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
+
+
+def test_a_built_in_over_a_call_on_a_narrowed_value_is_not_narrowed() -> None:
+    """A built-in's part is read off the term its translation made: a call's
+    result over a narrowed value is the callee's, whose own return type
+    establishes it, so an array literal holding it is not narrowed and the
+    reader of its element keeps the fact.  Read by the part's nodes instead,
+    the part would hold the narrowed argument, and the `ensures` would be
+    Tier 3 for a fact the callee proves."""
+    source = POS_MK_OPTION + textwrap.dedent("""\
+        private fn idp(@Option<Pos>, @Int -> @Option<Pos>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          if @Int.0 > 3 then { @Option<Pos>.0 } else { Some(7) }
+        }
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(@Int.result > 0)
+          effects(pure)
+        {
+          let @Option<Pos> = mk(@Int.0);
+          let @Array<Option<Pos>> = [idp(@Option<Pos>.0, @Int.0)];
+          match @Array<Option<Pos>>.0[0] { Some(@Int) -> @Int.0, None -> 1 }
+        }
+        """)
+    verified = _verify(source)
+    assert _at_line(verified, _line(source, "let @Option<Pos> = mk(@Int.0);")) \
+        == ["violated/E505"]
+    ensures = _line(source, "ensures(@Int.result > 0)")
+    assert _at_line(verified, ensures, "ensures") == ["verified"]
 
 
 # =====================================================================
