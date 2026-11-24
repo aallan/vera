@@ -351,16 +351,13 @@ class FunctionCompilationMixin:
         from vera.errors import Diagnostic
 
         self._harvest_interp_inference_failures(ctx)
-        loc, source_line = self._diag_location(
-            nde.node if nde.node is not None else decl
-        )
         self.diagnostics.append(Diagnostic(
             description=(
                 f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
                 f"`==` requires both operands to be Eq."
             ),
-            location=loc,
-            source_line=source_line,
+            **self._diag_location(
+                nde.node if nde.node is not None else decl),
             rationale=(
                 "Structural Eq derivation requires every constructor "
                 "field to be itself Eq; this type has a field with no "

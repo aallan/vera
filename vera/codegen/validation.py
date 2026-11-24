@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 import wasmtime
 
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, locate
 from vera.skip import CodegenInvariantError
 
 if TYPE_CHECKING:
@@ -121,7 +121,7 @@ def assembly_error(msg: str, file: str | None) -> Diagnostic:
         description=(
             f"Internal compiler error while assembling the module: {msg}"
         ),
-        location=SourceLocation(file=file),
+        **locate(file, ""),
         rationale=(
             "Code generation produced a module WebAssembly "
             "cannot load. That is a bug in the compiler, not "

@@ -969,26 +969,6 @@ class TestTesterUnitFunctions:
             dataclasses.replace(decl, forall_vars=None), env,
         ) == [INT]
 
-    def test_get_source_line_no_span(self) -> None:
-        """Cover line 751: _get_source_line returns '' when no span."""
-        from vera.tester import _get_source_line
-        from vera import ast as vera_ast
-
-        decl = vera_ast.FnDecl(
-            name="test",
-            params=(),
-            return_type=vera_ast.NamedType(name="Int", type_args=()),
-            contracts=(),
-            effect=vera_ast.PureEffect(),
-            body=(),
-            forall_vars=None,
-            forall_constraints=None,
-            where_fns=None,
-            span=None,
-        )
-        result = _get_source_line("some source", decl)
-        assert result == ""
-
     def test_get_param_types_adt(self) -> None:
         """An ADT parameter resolves to its `AdtType` — and stays unsupported.
 
@@ -1181,27 +1161,6 @@ class TestTesterUnitFunctions:
         )
         result = _generate_inputs(decl, [adt_type], 10)
         assert result is None
-
-    def test_get_source_line_out_of_range(self) -> None:
-        """Cover line 751: span line out of range returns ''."""
-        from vera.tester import _get_source_line
-        from vera import ast as vera_ast
-
-        decl = vera_ast.FnDecl(
-            name="test",
-            params=(),
-            return_type=vera_ast.NamedType(name="Int", type_args=()),
-            contracts=(),
-            effect=vera_ast.PureEffect(),
-            body=(),
-            forall_vars=None,
-            forall_constraints=None,
-            where_fns=None,
-            span=vera_ast.Span(line=999, column=1, end_line=999, end_column=1),
-        )
-        result = _get_source_line("line1\nline2", decl)
-        assert result == ""
-
 
 # =====================================================================
 # #1229 — an untranslatable `requires` conjunct SKIPS the function

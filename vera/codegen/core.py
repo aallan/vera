@@ -27,7 +27,7 @@ from vera import ast, naming
 from vera.binding import source_name, symbol
 from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
-from vera.errors import Diagnostic, SourceLocation, source_lines
+from vera.errors import Diagnostic, Placed, locate, locate_at
 from vera.monomorphize import (
     Monomorphizer,
     NamespaceFnNames,
@@ -739,8 +739,9 @@ class CodeGenerator(
 
     def _diag_location(
         self, node: ast.Node,
-    ) -> tuple[SourceLocation, str]:
-        """Resolve a diagnostic node to (location, source_line).
+    ) -> Placed:
+        """Resolve a diagnostic node to its location and source line
+        (:func:`vera.errors.locate_at`).
 
         User-origin nodes resolve against the user's file and source
         text as before.  Prelude-origin nodes resolve against the
@@ -748,19 +749,8 @@ class CodeGenerator(
         a prelude span can never render user source (#851).
         """
         if self._is_prelude_origin(node):
-            loc = SourceLocation(file=PRELUDE_FILE)
-            source = self._prelude_source
-        else:
-            loc = SourceLocation(file=self.file)
-            source = self.source
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
-        lines = source_lines(source)
-        source_line = (
-            lines[loc.line - 1] if 1 <= loc.line <= len(lines) else ""
-        )
-        return loc, source_line
+            return locate_at(PRELUDE_FILE, self._prelude_source, node.span)
+        return locate_at(self.file, self.source, node.span)
 
     def _warning(
         self,
@@ -772,11 +762,9 @@ class CodeGenerator(
         error_code: str = "",
     ) -> None:
         """Record a compilation warning (function skipped)."""
-        loc, source_line = self._diag_location(node)
         self.diagnostics.append(Diagnostic(
             description=description,
-            location=loc,
-            source_line=source_line,
+            **self._diag_location(node),
             rationale=rationale,
             spec_ref=spec_ref,
             severity="warning",
@@ -806,11 +794,9 @@ class CodeGenerator(
         `vera/skip.py::CodegenInvariantError` for the raise
         contract.
         """
-        loc, source_line = self._diag_location(node)
         self.diagnostics.append(Diagnostic(
             description=description,
-            location=loc,
-            source_line=source_line,
+            **self._diag_location(node),
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
@@ -844,7 +830,7 @@ class CodeGenerator(
         its own file, PR #1224 review), and two DIFFERENT errors that happen
         to land on one span both survive.
         """
-        loc, _source_line = self._diag_location(node)
+        loc = self._diag_location(node)["location"]
         key = (error_code, description, loc.file, loc.line, loc.column)
         if key in self._error_once_sites:
             return
@@ -919,13 +905,6 @@ class CodeGenerator(
             raise CodegenInvariantError(
                 f"{stray} record marker(s) outside every function body", None)
         return out
-
-    def _get_source_line(self, line: int) -> str:
-        """Extract a line from the source text."""
-        lines = source_lines(self.source)
-        if 1 <= line <= len(lines):
-            return lines[line - 1]
-        return ""
 
     def _referenced_prelude_fns(self, program: ast.Program) -> set[str]:
         """Prelude-injected function names the program references (#851).
@@ -1796,16 +1775,12 @@ class CodeGenerator(
         holes = _find_holes(program)
         if holes:
             for hole in holes:
-                loc = SourceLocation(file=self.file)
-                if hole.span:
-                    loc.line = hole.span.line
-                    loc.column = hole.span.column
                 self.diagnostics.append(Diagnostic(
                     description=(
                         "Program contains a typed hole (?); "
                         "fill all holes before compiling."
                     ),
-                    location=loc,
+                    **self._diag_location(hole),
                     rationale=(
                         "Typed holes are placeholders for incomplete "
                         "expressions. They are allowed by vera check but "
@@ -2545,7 +2520,7 @@ class CodeGenerator(
             else:
                 self.diagnostics.append(Diagnostic(
                     description=f"WAT compilation failed: {exc}",
-                    location=SourceLocation(file=self.file),
+                    **locate(self.file, ""),
                     rationale=(
                         "Code generation produced WebAssembly text the "
                         "assembler refuses. That is a bug in the compiler, "
