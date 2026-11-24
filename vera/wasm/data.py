@@ -706,6 +706,21 @@ class DataMixin:
     # Match expressions
     # -----------------------------------------------------------------
 
+    @classmethod
+    def _irrefutable_over_nothing(cls, pattern: ast.Pattern) -> bool:
+        """Whether *pattern* matches the one value of a type with no
+        WebAssembly value (#1870): a wildcard, a binder, or the built-in
+        `Future`'s constructor, which wraps its payload transparently, over
+        one of these (`Future(_)`, `Future(@Unit)`).  No such pattern binds
+        a local: a binder of a zero-size type has no read (E182)."""
+        if isinstance(pattern, (ast.WildcardPattern, ast.BindingPattern)):
+            return True
+        return (isinstance(pattern, ast.ConstructorPattern)  # pragma: no mutate — equivalent: over a zero-size scrutinee the checker admits a wildcard, a binder, or the built-in `Future`'s constructor with one sub-pattern, and nothing else
+                and pattern.name == "Future"  # pragma: no mutate — equivalent: as the line above
+                and len(pattern.sub_patterns) == 1
+                and cls._irrefutable_over_nothing(pattern.sub_patterns[0])  # pragma: no mutate — equivalent: the checker admits no refutable sub-pattern over a zero-size payload (`()` is no pattern, `Future(Future(_))` is E314)
+                )
+
     def _translate_match(
         self, expr: ast.MatchExpr, env: WasmSlotEnv
     ) -> list[str] | None:
@@ -729,6 +744,31 @@ class DataMixin:
             return None
 
         scr_wasm_type = self._expr_width(expr.scrutinee)
+        nothing = self._holds_nothing(expr.scrutinee)
+        if nothing == "never":
+            # #1870: a scrutinee that does not complete (a `throw`) has no
+            # value to store and reaches no arm.  Its code already ends
+            # where control stops (`WasmContext._end_never`).
+            return scr_instrs
+        if nothing == "unit":
+            # #1870: a scrutinee with no WebAssembly value (`Unit`, a
+            # `Future` of one, a refinement of one) is evaluated for its
+            # effects and stored nowhere.  Every pattern over such a value
+            # is irrefutable (a wildcard, a binder, whose read is E182, or
+            # the `Future` constructor over one of these; `()` is not a
+            # pattern), so the first arm is the match, and no arm binds a
+            # local.
+            if not expr.arms:
+                raise CodegenSkip(expr, "match expression has no arms")
+            first = expr.arms[0]
+            if not self._irrefutable_over_nothing(first.pattern):
+                raise CodegenInvariantError(
+                    "a refutable pattern over a value with no WebAssembly "
+                    "value reached code generation", first.pattern)
+            body = self.translate_expr(first.body, env)
+            if body is None:
+                return None
+            return scr_instrs + self._guard_nat_return_leaf(first.body, body)
         if scr_wasm_type is None:
             raise CodegenSkip(
                 expr.scrutinee,

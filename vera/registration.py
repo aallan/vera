@@ -7,22 +7,43 @@ This module extracts that shared logic to avoid duplication.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from vera import ast
 from vera.environment import FunctionInfo, TypeAliasInfo, TypeEnv
-from vera.naming import alias_env_of_decls, alias_mentions, alias_visible
+from vera.naming import (
+    EMPTY_ALIAS_ENV,
+    AliasEnv,
+    alias_env_from_environment,
+    alias_env_of_decls,
+    alias_mentions,
+    alias_visible,
+    resolve_type_expr,
+)
 from vera.obligations.cache import walk_nodes
-from vera.types import PRIMITIVES, EffectRowType, Type, TypeVar
+from vera.types import (
+    PRIMITIVES,
+    UNIT,
+    EffectRowType,
+    Type,
+    TypeVar,
+    erases_to_unit,
+    substitute,
+)
 
 if TYPE_CHECKING:
     pass
 
 
-def _forall_vars_read(decl: ast.FnDecl) -> frozenset[str]:
-    """Which of ``decl``'s forall type-vars are READ via a `@T.n` slot anywhere
-    that lowers to WASM — the *body* OR a `requires` / `ensures` contract clause.
+def _forall_vars_read(
+    decl: ast.FnDecl,
+    aliases: AliasEnv | None = None,
+) -> frozenset[str]:
+    """Which of ``decl``'s forall type-vars are READ via a `@T.n` slot, or a
+    `@T.result` reference (#1870), anywhere that lowers to WASM — the *body*
+    OR a `requires` / `ensures` contract clause.
 
     A `@T.n` ``SlotRef`` lowers to a `local.get` (#900): the body lowers to the
     function body, and a `requires` / `ensures` clause lowers to the *runtime*
@@ -43,15 +64,48 @@ def _forall_vars_read(decl: ast.FnDecl) -> frozenset[str]:
     if not decl.forall_vars:
         return frozenset()
     fvars = set(decl.forall_vars)
+    alias_env = dataclasses.replace(
+        aliases or EMPTY_ALIAS_ENV, type_params=frozenset(fvars))
     nodes = list(walk_nodes(decl.body))
     for contract in decl.contracts:
         if isinstance(contract, (ast.Requires, ast.Ensures)):
             nodes.extend(walk_nodes(contract.expr))
-    return frozenset(
-        n.type_name
-        for n in nodes
-        if isinstance(n, ast.SlotRef) and n.type_name in fvars
-    )
+    read: set[str] = set()
+    for n in nodes:
+        # #1870: a result reference reads the result as a slot reference
+        # reads a binding, so `@T.result` in an `ensures` reads `T`.
+        if isinstance(n, (ast.SlotRef, ast.ResultRef)):
+            read |= _vars_a_reference_erases(
+                n.type_name, n.type_args, fvars, alias_env)
+    return frozenset(read)
+
+
+def _vars_a_reference_erases(
+    name: str,
+    args: tuple[ast.TypeExpr, ...] | None,
+    fvars: set[str],
+    alias_env: AliasEnv,
+) -> set[str]:
+    """The type variables at which a reference of type *name* with *args*
+    reads a value that erases when the variable is zero-size (#1870).
+
+    The reference's type is resolved by the namespace's own resolution
+    (:func:`vera.naming.resolve_type_expr`, which the checker's
+    ``_resolve_type`` agrees with: every alias chain, however long, each
+    parameter substituted into compound arguments too), and a variable is
+    read when the resolved type erases with the variable at `Unit`
+    (:func:`vera.types.erases_to_unit`): the variable itself, the built-in
+    `Future` of a type that erases, at any depth, or a refinement of one.
+    A variable named anywhere else in the type, as `Option<T>`'s or
+    `Array<Future<T>>`'s argument, stands inside a value that has a local
+    of its own (a pointer), so the read does not dangle at `Unit` and is not
+    a read of the variable.  A slot reference and a result reference are
+    decided here alike.
+    """
+    ty = resolve_type_expr(
+        ast.NamedType(name=name, type_args=args), alias_env)
+    return {var for var in fvars
+            if erases_to_unit(substitute(ty, {var: UNIT}))}
 
 
 def build_fn_info(
@@ -86,7 +140,8 @@ def build_fn_info(
             param_type_exprs=decl.params,
             visibility=visibility,
             forall_constraints=decl.forall_constraints or (),
-            forall_vars_read=_forall_vars_read(decl),
+            forall_vars_read=_forall_vars_read(
+                decl, alias_env_from_environment(env)),
         )
     finally:
         env.type_params = saved_params
