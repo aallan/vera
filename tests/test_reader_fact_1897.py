@@ -421,14 +421,17 @@ def _at_line(verified: pipeline.Verified, line: int,
 
 def _site_records(verified: pipeline.Verified, source: str, line: int,
                   position: str) -> list[str]:
-    """The narrowing's `refine_bind` records.  A return's stand at the
-    body (column 3, the block it returns); an `apply_fn` argument's at the
-    argument, after the closure on the same line, whose own records stand
-    inside it; every other position's at its line."""
+    """The narrowing's `refine_bind` records.  A return's are every one in
+    `inner`, whose only narrowings are the return's and the `let` a reader
+    before it reads (of the same value, or, for a `handle`, of the same
+    expression evaluated again): at the body (column 3), at the leaves a
+    join hands the requirement down to (a `handle`'s, whose value is its
+    clauses' and its body's), and at the `let`; an `apply_fn` argument's
+    at the argument, after the closure on the same line, whose own records
+    stand inside it; every other position's at its line."""
     if position == "return":
         return sorted(_status(o) for o in verified.obligations
-                      if o.kind == "refine_bind" and o.fn_name == "inner"
-                      and o.column == 3)
+                      if o.kind == "refine_bind" and o.fn_name == "inner")
     first = 0
     if position == "apply":
         text = source.splitlines()[line - 1]
