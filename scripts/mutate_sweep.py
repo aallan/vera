@@ -708,13 +708,66 @@ def empty_state(today: str) -> dict[str, Any]:
     never match an earlier state's, even for a cycle of the same number
     begun on the same day.  A state that predates the field has none."""
     state: dict[str, Any] = {"schema": SCHEMA, "engine": None, "cycle": 1, "cycle_started": today,
-                             "calibration": 1.0, "units": {}, "last_complete": None, "nights": []}
+                             "calibration": 1.0, "units": {}, "last_complete": None, "nights": [],
+                             "oracle_rule": md.ORACLE_RULE}
     generation = os.environ.get(GENERATION_ENV, "")
     if _GENERATION.fullmatch(generation):
         state["generation"] = generation
     return state
 
 
+#: How a slice samples the matrices its oracle holds: each at its sample,
+#: under the seed ``cycle-<N>`` (:func:`run_slice`).  A part of each
+#: module's oracle digest, so a change to it reopens every window.
+SEED_RULE = "cycle-<N>/sample"
+
+
+def oracle_digests(oracle: Mapping[str, Any]) -> dict[str, str]:
+    """Each module's oracle digest: its declared oracle's rule, its test
+    files and the seed rule (``SEED_RULE``), hashed."""
+    return {module: hashlib.sha256(json.dumps([oracle["rule"], list(files), SEED_RULE]).encode("utf-8")
+                                   ).hexdigest()[:16]
+            for module, files in sorted(oracle["modules"].items())}
+
+
+def adopt_oracle(state: dict[str, Any], oracle: Mapping[str, Any], today: str) -> list[str]:
+    """The state under the declared oracle ``oracle`` (``oracle_map``'s, at
+    the night's head), as every slice plans and the stitch folds it: a rule
+    other than the state's (or a state from before the rule, which ran each
+    mutant against the tests that cover it) leaves the open cycle and
+    starts the next, every window undecided and the calibration at 1.0,
+    since every mutant's cost changes; under the same rule, a module whose
+    oracle digest changed has its windows reopened, decided as they were
+    against other tests.  What it did, as the night's notes."""
+    notes: list[str] = []
+    digests = oracle_digests(oracle)
+    old_rule = state.get("oracle_rule")
+    if old_rule != oracle["rule"]:
+        notes.append(f"the oracle rule {old_rule or '(each mutant against the tests that cover it)'} gave way to "
+                     f"{oracle['rule']}: cycle {state['cycle']} is left open and cycle {state['cycle'] + 1} "
+                     "starts, every window undecided, at calibration 1.0")
+        reopen = set(state["units"])
+        state["cycle"] = int(state["cycle"]) + 1
+        state["cycle_started"] = today
+        state["calibration"] = 1.0
+        state.pop("calibration_cycle", None)
+    else:
+        before = state.get("oracles") or {}
+        changed = sorted(m for m, d in digests.items() if m in before and before[m] != d)
+        reopen = {ident for ident in state["units"] if ident.split("::", 1)[0] in changed}
+        if changed:
+            notes.append(f"the declared oracle of {_listed(changed)} changed: "
+                         f"{'its' if len(changed) == 1 else 'their'} windows reopen")
+    for ident in reopen:
+        rec = state["units"][ident]
+        rec["window"] = rec["partial"] = None
+        rec.pop("losses", None)
+    state["oracle_rule"] = oracle["rule"]
+    state["oracles"] = digests
+    return notes
+
+
+_RULE = re.compile(r"[A-Za-z0-9+/_.-]{1,80}")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _NUMBER = re.compile(r"[1-9][0-9]{0,8}")
 _HEX16 = re.compile(r"[0-9a-f]{16}")
@@ -1046,7 +1099,26 @@ def check_state(data: Any) -> dict[str, Any]:
         keys.add("generation")  # the creating run's id, since the results loop (empty_state)
     if isinstance(data, dict) and "comments" in data:
         keys.add("comments")  # the closed cycles kept since the results loop, with their comments' parts
+    # The declared oracle's rule and digests, the cycle's calibration sums
+    # and a redraw (#1838).
+    keys.update(k for k in ("oracle_rule", "oracles", "calibration_cycle", "redraw")
+                if isinstance(data, dict) and k in data)
     state = _keys(data, keys, "the state")
+    if "oracle_rule" in state:
+        _text(state["oracle_rule"], _RULE, "the oracle rule")
+    if "oracles" in state:
+        _check(isinstance(state["oracles"], dict) and len(state["oracles"]) <= MAX_FILES, "the oracle digests")
+        for module, digest in state["oracles"].items():
+            _text(module, _PATH, f"oracle digest module {module!r}")
+            _text(digest, _HEX16, f"{module}'s oracle digest")
+    if "calibration_cycle" in state:
+        sums = _keys(state["calibration_cycle"], {"cycle", "spent", "estimate"}, "the cycle's calibration sums")
+        _int(sums["cycle"], 1, 10**6, "the calibration sums' cycle")
+        for part in ("spent", "estimate"):
+            _check(type(sums[part]) in (int, float) and math.isfinite(sums[part]) and 0 <= sums[part] <= 1e12,
+                   f"the calibration sums' {part}")
+    if "redraw" in state:
+        check_redraw(state["redraw"])
     _check(state["schema"] == SCHEMA and type(state["schema"]) is int, f"not a schema {SCHEMA} state")
     if "converted_from" in state:
         _int(state["converted_from"], 1, SCHEMA - 1, "the schema the state was converted from")
@@ -1073,6 +1145,16 @@ def check_state(data: Any) -> dict[str, Any]:
     for night in state["nights"]:
         _check_night(night)
     return dict(state)
+
+
+def check_redraw(redraw: Any) -> None:
+    """A redraw (:func:`redraw_state`): the closed cycle it draws again, and
+    the units it compares, by ident."""
+    rec = _keys(redraw, {"cycle", "units"}, "the redraw")
+    _int(rec["cycle"], 1, 10**6, "the redrawn cycle")
+    _check(isinstance(rec["units"], list) and len(rec["units"]) <= MAX_MUTANTS, "the redraw's units")
+    for ident in rec["units"]:
+        _text(ident, _IDENT, "a redrawn unit")
 
 
 def check_record(record: Any) -> None:
@@ -2238,6 +2320,11 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     sources = vera_sources(repo, head)
     units = inventory(sources)
     state = reconcile(load_state(state_path, today), units, version)
+    # The declared oracle at the head, read from the checkout (its tests and
+    # vera/ are the head's), as the stitch reads it: the plan is the state's
+    # under it (adopt_oracle).
+    oracle = md.oracle_map(repo)
+    adopt_oracle(state, oracle, today)
     counts = engine_counts(engine, env, sources, uncounted(state, units))
     apply_counts(state, counts)
     bins = plan(state, units, jobs=args.of, budget_s=args.budget)
@@ -2288,7 +2375,6 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     plugin = Path(__file__).resolve().parent.parent / "tests" / "mutation_oracle.py"
     if plugin.is_file() and (tree / "tests").is_dir():
         shutil.copyfile(plugin, tree / "tests" / "mutation_oracle.py")
-    oracle = md.oracle_map(tree)
     selection = md.oracle_of(oracle, files)
     map_file = workdir / "oracle-map.json"
     map_file.write_text(json.dumps(oracle, indent=1) + "\n", encoding="utf-8")
@@ -2800,6 +2886,9 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
     keep_closed(state, state["last_complete"])
     state["cycle"] += 1
     state["cycle_started"] = today
+    # The next cycle starts at this one's whole ratio, the factor as it
+    # stands after the night's calibration (:func:`calibrate`), its sums anew.
+    state["calibration_cycle"] = {"cycle": int(state["cycle"]), "spent": 0.0, "estimate": 0.0}
     for rec in state["units"].values():
         rec["window"] = rec["partial"] = None
         rec.pop("losses", None)  # a loss is the cycle's: the next draws another sample
@@ -2810,10 +2899,18 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
               units: Mapping[str, SweepUnit]) -> None:
     """Fold the night's measured cost into ``calibration``, the factor on
     ``rate``: each decided mutant's recorded duration over the slice's
-    workers (a job's seconds) against its estimate, moved halfway to it.  A
-    duration of zero is no measure, and is left out: mutmut's fork server
+    workers (a job's seconds) against its estimate, summed over the cycle
+    (``calibration_cycle``), the factor the cycle's ratio so far.  A cycle's
+    last nights decide the dearest mutants of their windows, so a factor
+    moved night by night carried a closed cycle's tail into the next one's
+    first night (on 22 November 2026 five of seven slices finished early);
+    a new cycle starts at the closed one's whole ratio (:func:`close_cycle`).
+    A duration of zero is no measure, and is left out: mutmut's fork server
     reports every mutant's as zero, and a night of them halved the factor
     (#1838)."""
+    sums = dict(state.get("calibration_cycle") or {})
+    if sums.get("cycle") != state["cycle"]:
+        sums = {"cycle": int(state["cycle"]), "spent": 0.0, "estimate": 0.0}
     spent = estimate = 0.0
     for record in records:
         workers = int(record.get("workers", WORKERS))
@@ -2826,9 +2923,11 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
                     spent += float(seconds) / workers
                     estimate += rate(unit)
     if estimate > 0:
+        sums["spent"] = round(float(sums["spent"]) + spent, 3)
+        sums["estimate"] = round(float(sums["estimate"]) + estimate, 3)
+        state["calibration_cycle"] = sums
         low, high = CALIBRATION_RANGE
-        old = float(state.get("calibration") or 1.0)
-        state["calibration"] = round(min(max((old + spent / estimate) / 2, low), high), 3)
+        state["calibration"] = round(min(max(sums["spent"] / sums["estimate"], low), high), 3)
 
 
 def _listed(numbers: Sequence[Any]) -> str:
@@ -2931,6 +3030,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
            jobs: int, head: str, units: Sequence[SweepUnit], today: str,
            legs: Sequence[Mapping[str, Any]] = (), cancelled: bool = False,
            at_import: frozenset[str] = frozenset(), report: dict[str, Any] | None = None,
+           oracle: Mapping[str, Any] | None = None,
            ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The night's records folded into the state: the new state and the
     night's line (what each slice did, and what the night failed at).
@@ -2949,7 +3049,11 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     survivor of a unit of ``at_import`` (the rule's, :func:`at_import_units`)
     counts as evaluated at import.  The rule decides nothing in the state.
     A cycle the night closes is kept in the state's ``comments`` too
-    (:func:`close_cycle`)."""
+    (:func:`close_cycle`).
+
+    With ``oracle`` (``oracle_map``'s at the head, as every slice read it),
+    the state is first taken under it (:func:`adopt_oracle`), as each slice
+    planned it."""
     problems: list[str] = []
     taken: list[tuple[str, int, str]] = []
     valid: list[Mapping[str, Any]] = []
@@ -3023,6 +3127,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
                      "starts afresh, and so does the cycle")
         state["cycle_started"] = today
+    if oracle is not None:
+        notes.extend(adopt_oracle(state, oracle, today))
     for record in [*valid, *taken_legs]:
         merge_counts(state, record, problems)
     by_ident = {u.ident: u for u in units}
@@ -3975,7 +4081,7 @@ def cmd_stitch(args: argparse.Namespace) -> int:
     at_import = at_import_at(repo, head, sources)
     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
                           units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled",
-                          at_import=at_import, report=taken)
+                          at_import=at_import, report=taken, oracle=md.oracle_map(repo))
     out = Path(args.out)
     save_state(state, out)
     (out / REPORT_FILE).write_text(json.dumps(taken, indent=1) + "\n", encoding="utf-8")

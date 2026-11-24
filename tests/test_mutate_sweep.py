@@ -1557,17 +1557,86 @@ class TestStitch:
 
     def test_the_calibration_follows_what_the_mutants_cost(self) -> None:
         """Ten mutants estimated at 2.5 s of a job each took 20 s on one of
-        the slice's two workers, 10 s of the job: the factor moves halfway
-        from 1 to 4.  It moves past the old ceiling of 5.0, which it sat at
-        from 4 to 10 November 2026 (#1838)."""
+        the slice's two workers, 10 s of the job: the cycle's ratio is 4.  It
+        moves past the old ceiling of 5.0, which it sat at from 4 to 10
+        November 2026 (#1838)."""
         result = _res(A, killed=10)
         result["durations"] = {str(n): 20.0 for n in range(1, 11)}
         record = {**_record(0, 1, {A.ident: result}), "workers": 2}
         state, _ = _stitch([record], jobs=1)
-        assert state["calibration"] == 2.5
-        result["durations"] = {str(n): 500.0 for n in range(1, 11)}
+        assert state["calibration"] == 4.0
+        result["durations"] = {str(n): 400.0 for n in range(1, 11)}
         state, _ = _stitch([record], jobs=1)
-        assert state["calibration"] == 50.5
+        assert state["calibration"] == 80.0
+
+    def test_repro_a_state_from_before_the_declared_oracle_starts_the_next_cycle(self) -> None:
+        """#1838: a state whose windows were decided against each mutant's
+        covering tests (no ``oracle_rule``) leaves its open cycle; the next
+        starts, every window undecided, at calibration 1.0, and the slice and
+        the stitch take the state so alike, so the night's results fold."""
+        oracle = {"rule": sw.md.ORACLE_RULE, "modules": {"vera/a.py": ["tests/test_a.py"],
+                                                         "vera/b.py": ["tests/test_b.py"]}}
+        state = _state(f=2, m=2, g=2)
+        del state["oracle_rule"]
+        _decide(state, A, killed=2)
+        state["calibration"], state["calibration_cycle"] = 7.239, {"cycle": 1, "spent": 9.0, "estimate": 1.0}
+        planned = json.loads(json.dumps(state))
+        notes = sw.adopt_oracle(planned, oracle, "2026-10-17")
+        assert planned["cycle"] == 2 and planned["calibration"] == 1.0 and "calibration_cycle" not in planned
+        assert all(r["window"] is None and r["partial"] is None for r in planned["units"].values())
+        assert planned["oracle_rule"] == sw.md.ORACLE_RULE and set(planned["oracles"]) == {"vera/a.py", "vera/b.py"}
+        assert notes and "gave way to" in notes[0]
+        (bin_,) = sw.plan(planned, UNITS, jobs=1, budget_s=1e9)
+        assert [p.unit for p in bin_] == UNITS  # A's window open again
+        out, night = sw.stitch(state, "none", [_record(0, 1, {A.ident: _res(A, killed=2)})], jobs=1, head=HEAD,
+                               units=UNITS, today="2026-10-17", oracle=oracle)
+        assert night["problems"] == [] and out["cycle"] == 2 and out["units"][A.ident]["window"] == _window(killed=2)
+        assert any("gave way to" in note for note in night["notes"])
+        sw.check_state(json.loads(json.dumps(out)))
+
+    def test_repro_a_modules_changed_oracle_reopens_its_windows_alone(self) -> None:
+        """#1838: under the same rule, a module whose declared oracle changed
+        (a test file joins it) has its decided windows reopened; every other
+        module's stand; a module new to the digests reopens nothing."""
+        oracle = {"rule": sw.md.ORACLE_RULE, "modules": {"vera/a.py": ["tests/test_a.py"],
+                                                         "vera/b.py": ["tests/test_b.py"]}}
+        state = _state(f=2, m=2, g=2)
+        sw.adopt_oracle(state, oracle, "2026-10-16")
+        for unit in UNITS:
+            _decide(state, unit, killed=2)
+        moved = {"rule": oracle["rule"], "modules": {**oracle["modules"], "vera/b.py": ["tests/test_b.py",
+                                                                                        "tests/test_x.py"],
+                                                     "vera/c.py": []}}
+        notes = sw.adopt_oracle(state, moved, "2026-10-17")
+        assert state["cycle"] == 1 and notes == ["the declared oracle of vera/b.py changed: its windows reopen"]
+        assert [state["units"][u.ident]["window"] is None for u in UNITS] == [False, False, True]
+        assert sw.adopt_oracle(state, moved, "2026-10-18") == []
+
+    def test_repro_the_calibration_is_the_cycles_ratio_and_a_new_cycle_starts_at_the_closed_ones(self) -> None:
+        """#1838: the factor moved halfway each night, so a cycle's tail (each
+        window's dearest mutants) inflated the next cycle's first night.  It
+        is now the cycle's summed spent over its summed estimate: two nights
+        of ratio 4 and 2 over equal estimates give 3, whatever the factor
+        before; the night that closes the cycle leaves the next one at the
+        closed cycle's whole ratio with its sums anew."""
+        state = _state(f=10, m=10, g=10)
+        state["calibration"] = 7.0
+        first = _res(A, killed=10)
+        first["durations"] = {str(n): 20.0 for n in range(1, 11)}  # ratio 4
+        state, _ = _stitch([{**_record(0, 1, {A.ident: first}), "workers": 2}], state, jobs=1)
+        assert state["calibration"] == 4.0 and state["calibration_cycle"] == {
+            "cycle": 1, "spent": 100.0, "estimate": 25.0}
+        second = _res(B, killed=10)
+        second["durations"] = {str(n): 10.0 for n in range(1, 11)}  # ratio 2
+        state, _ = _stitch([{**_record(0, 1, {B.ident: second}), "workers": 2}], state, jobs=1)
+        assert state["calibration"] == 3.0
+        last = _res(C, killed=10)
+        last["durations"] = {str(n): 10.0 for n in range(1, 11)}  # ratio 2
+        state, night = _stitch([{**_record(0, 1, {C.ident: last}), "workers": 2}], state, jobs=1)
+        assert night["closed"] and state["cycle"] == 2
+        assert state["calibration"] == round(200.0 / 75.0, 3)  # the closed cycle's whole ratio
+        assert state["calibration_cycle"] == {"cycle": 2, "spent": 0.0, "estimate": 0.0}
+        sw.check_state(json.loads(json.dumps(state)))
 
 
 # ---------------------------------------------------------------------------
@@ -3309,7 +3378,7 @@ class TestDurations:
         state = _state(f=10)
         state["calibration"] = 5.0
         state, _ = _stitch([record], state, jobs=1)
-        assert state["calibration"] == 4.5  # halfway from 5 to 4
+        assert state["calibration"] == 4.0  # the cycle's ratio
 
     def test_a_zero_duration_is_not_recorded(self) -> None:
         out = sw.slice_results([PICK_A], {A1: "killed", A2: "killed", A3: "killed"}, GENERATED, cut_short=False,
