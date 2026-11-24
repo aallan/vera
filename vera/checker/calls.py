@@ -56,6 +56,7 @@ from vera.types import (
     erases_to_unit,
     is_effect_subtype,
     is_subtype,
+    read_open_as_unknown,
     pretty_effect,
     pretty_type,
     pretty_inferred_type,
@@ -693,6 +694,18 @@ class CallsMixin:
                 and _compatible_modulo_typevars(
                     ty, other, frozenset(self.env.type_params))
                 and unfit_function_value(ty, other) is None)
+
+    def _read_open(self, ty: Type) -> Type:
+        """*ty* as `is_subtype` judges it where it binds or flows (#1896):
+        each variable a call left open read as unknown where no compiled
+        behaviour depends on it, the enclosing function's own kept rigid,
+        and a function type or a data type's behaviour position
+        (`_behaviour_params`, the positions `_Join._kept` keeps) kept
+        whole."""
+        data_types = self.env.data_types
+        return read_open_as_unknown(
+            ty, self.env.type_params,
+            lambda name: _behaviour_params(name, data_types))
 
     def _rigid_variable(self, ty: Type) -> str | None:
         """The name of the enclosing function's own type parameter *ty* is,

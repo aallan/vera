@@ -139,6 +139,74 @@ def test_repro_a_binder_over_an_open_variable_inside_a_function_type_1896(
         "but the scrutinee has type fn(? -> Int) effects(pure)."), error.description
 
 
+_CALLBACK = (
+    "private data Callback<A> {\n  MkCb(fn(A -> Int) effects(pure))\n}\n\n"
+    "type CI = fn(Int -> Int) effects(pure);\n\n"
+    + _fn("mk(@Unit -> @Callback<X>)",
+          "MkCb(fn(@X -> @Int) effects(pure) { 40 })").replace(
+              "private fn", "private forall<X> fn")
+    + _fn("main(@Unit -> @Int)",
+          "match Some(mk(())) {\n    Some(@Callback<Int>) -> match "
+          "@Callback<Int>.0 {\n      MkCb(@CI) -> apply_fn(@CI.0, 3)\n    },\n"
+          "    None -> 7\n  }", visibility="public"))
+
+
+def test_repro_a_binder_over_a_data_type_holding_behaviour_open_1896(
+        ) -> None:
+    """Was accepted, verified clean, and trapped at the indirect call: the
+    variable `mk(())` left open in `Callback<X>`, a parameter a constructor
+    field holds inside a function type, was read as unknown, so the value
+    held at `Callback<Int>`."""
+    (error,) = pipeline.check(_CALLBACK).errors
+    assert error.error_code == "E314", _CALLBACK
+    assert error.description.endswith(
+        "but the scrutinee has type Callback<?>."), error.description
+
+
+def test_a_nested_match_leaves_the_outer_scrutinee_to_a_later_arm() -> None:
+    """The fix names the scrutinee of the `match` whose arm it is in: an
+    arm's body holding a `match` of its own leaves the outer one's for the
+    arms after it."""
+    source = _OPEN_IN_FN + _fn(
+        "main(@Int -> @Int)",
+        "match mk(()) {\n    None -> match @Int.0 {\n      _ -> 1\n    },\n"
+        "    Some(@II) -> apply_fn(@II.0, 3)\n  }", visibility="public")
+    (error,) = pipeline.check(source).errors
+    assert "`let @Instance = mk(());`" in error.fix, error.fix
+
+
+def test_the_fix_s_alias_takes_a_name_nothing_declares() -> None:
+    source = ("type Instance = Int;\n\n" + _OPEN_IN_FN + _fn(
+        "main(@Unit -> @Int)",
+        "match mk(()) {\n    Some(@II) -> apply_fn(@II.0, 3),\n    None -> 7\n  }",
+        visibility="public"))
+    (error,) = pipeline.check(source).errors
+    assert "`type Instance2 = Option<fn(Int -> Int) effects(pure)>;`" in (
+        error.fix), error.fix
+
+
+def test_the_fix_s_alias_passes_over_a_data_type_of_its_name() -> None:
+    source = ("private data Instance {\n  Inst\n}\n\n" + _OPEN_IN_FN + _fn(
+        "main(@Unit -> @Int)",
+        "match mk(()) {\n    Some(@II) -> apply_fn(@II.0, 3),\n    None -> 7\n  }",
+        visibility="public"))
+    (error,) = pipeline.check(source).errors
+    assert "`type Instance2 = " in error.fix, error.fix
+
+
+def test_a_refinement_of_a_data_type_holding_behaviour_open_is_refused(
+        ) -> None:
+    """The reading goes through a refinement to the data type under it."""
+    source = (
+        "type CR = { @Cb<Int> | true };\n" + _PRELUDE + _OPEN_PRODUCERS
+        + _fn("mk_cr(@Unit -> @{ @Cb<X> | true })", f"MkCb({_FX})").replace(
+            "private fn", _G)
+        + _fn("main(@Unit -> @Int)",
+              "match Some(mk_cr(())) {\n    Some(@CR) -> 0,\n    None -> 1\n  }",
+              visibility="public"))
+    assert _codes(source) == ["E314"], source
+
+
 def test_an_open_variable_inside_a_function_type_its_context_fixes_runs(
         ) -> None:
     """Where the context fixes the variable (a `let`'s type, a parameter's),
@@ -283,6 +351,21 @@ MISMATCHES: dict[str, tuple[str, str, str]] = {
         "?", "fn(fn(Int -> Int) effects(pure) -> Int) effects(pure)",
         "mk_nested(())"),
     "open-in-row": ("?", "fn(Int -> Int) effects(<Exn<Int>>)", "mk_row(())"),
+    # The same variable at a data type's parameter that a constructor field
+    # holds inside a function type (`_behaviour_params`): the data type
+    # carries compiled behaviour over it, as a function type does.
+    "open-in-data-field": ("?", "Cb<Int>", "mk_cb(())"),
+    "open-in-data-option-field": ("?", "Ho<Int>", "mk_ho(())"),
+    "open-in-data-array-field": ("?", "Ar<Int>", "mk_ar(())"),
+    "open-in-data-tuple-field": ("?", "Tu<Int>", "mk_tu(())"),
+    "open-in-data-two-levels": ("?", "Wr<Int>", "mk_wr(())"),
+    "open-in-data-recursive": ("?", "Ls<Int>", "mk_ls(())"),
+    "open-in-data-plain-and-function": ("?", "Pr<Int>", "mk_pr(None)"),
+    "open-in-data-alias": ("?", "CbA<Int>", "mk_al(())"),
+    "open-in-data-behaviour-parameter": ("?", "Two<Int, Int>", "mk_bp(Some(1))"),
+    # Its plain parameter open beside a closed behaviour parameter: an
+    # ordinary open container, accepted wherever it stands.
+    "open-in-data-plain-parameter": ("?", "Two<Int, Int>", "mk_tp(None)"),
 }
 
 POSITIONS = (
@@ -304,6 +387,7 @@ _PRELUDE = (
     + _fn("idt(@Y -> @Y)", "@Y.0").replace("private fn", "private forall<Y> fn"))
 
 _G = "private forall<X> fn"
+_FX = "fn(@X -> @Int) effects(pure) { 40 }"
 
 #: Each shape's generic producer: its result holds `X` inside a function
 #: type, and `mk(())` (`mk_res([])`) leaves `X` open.
@@ -325,7 +409,31 @@ _OPEN_PRODUCERS = (
           "fn(@GX<X> -> @Int) effects(pure) { 40 }").replace("private fn", _G)
     + _fn("mk_row(@Unit -> @fn(Int -> Int) effects(<Exn<X>>))",
           "fn(@Int -> @Int) effects(<Exn<X>>) { 40 }").replace(
-              "private fn", _G))
+              "private fn", _G)
+    + "private data Cb<A> {\n  MkCb(fn(A -> Int) effects(pure))\n}\n\n"
+    "private data Ho<A> {\n  MkHo(Option<fn(A -> Int) effects(pure)>)\n}\n\n"
+    "private data Ar<A> {\n  MkAr(Array<fn(A -> Int) effects(pure)>)\n}\n\n"
+    "private data Tu<A> {\n  MkTu(Tuple<Int, fn(A -> Int) effects(pure)>)\n}\n\n"
+    "private data Wr<A> {\n  MkWr(Cb<A>)\n}\n\n"
+    "private data Ls<A> {\n  Nil,\n  Cons(fn(A -> Int) effects(pure), Ls<A>)\n}\n\n"
+    "private data Pr<A> {\n  MkPr(Option<A>, fn(A -> Int) effects(pure))\n}\n\n"
+    "private data Two<A, B> {\n  MkTwo(Option<A>, fn(B -> Int) effects(pure))\n}\n\n"
+    "type CbA<A> = Cb<A>;\n\n"
+    + "".join(
+        _fn(sig, body).replace("private fn", _G) for sig, body in (
+            ("mk_cb(@Unit -> @Cb<X>)", f"MkCb({_FX})"),
+            ("mk_ho(@Unit -> @Ho<X>)", f"MkHo(Some({_FX}))"),
+            ("mk_ar(@Unit -> @Ar<X>)", f"MkAr([{_FX}])"),
+            ("mk_tu(@Unit -> @Tu<X>)", f"MkTu(Tuple(1, {_FX}))"),
+            ("mk_wr(@Unit -> @Wr<X>)", f"MkWr(MkCb({_FX}))"),
+            ("mk_ls(@Unit -> @Ls<X>)", f"Cons({_FX}, Nil)"),
+            ("mk_pr(@Option<X> -> @Pr<X>)", f"MkPr(@Option<X>.0, {_FX})"),
+            ("mk_al(@Unit -> @CbA<X>)", f"MkCb({_FX})"),
+            ("mk_tp(@Option<X> -> @Two<X, Int>)",
+             "MkTwo(@Option<X>.0, fn(@Int -> @Int) effects(pure) { 40 })")))
+    + _fn("mk_bp(@Option<X> -> @Two<X, Y>)",
+          "MkTwo(@Option<X>.0, fn(@Y -> @Int) effects(pure) { 40 })").replace(
+              "private fn", "private forall<X, Y> fn"))
 
 _OPEN_SHAPES = frozenset(m for m in MISMATCHES
                          if m.startswith(("open-in-", "open-under-")))
@@ -427,7 +535,12 @@ def _open_shape_codes(position: str, mismatch: str) -> list[str]:
     over `Some(...)`), the call is instantiated there and the program runs
     at that type: no refusal.  The join's positions refuse the pair, as on
     `main`: a variable inside a function type is not open at the join
-    (#1684), and an effect row holding one is compared as written."""
+    (#1684), and an effect row holding one is compared as written.  A data
+    type's behaviour parameter reads as a function type does; its plain
+    parameter, beside a closed behaviour one, is an ordinary open container
+    and is accepted everywhere."""
+    if mismatch == "open-in-data-plain-parameter":
+        return []
     row = mismatch == "open-in-row"
     if position.startswith("binder-") and position != "binder-whole":
         return ["E314"]
@@ -643,7 +756,7 @@ _SPAN = re.compile(r"`([^`]+)`")
                  id=f"{position}-{shape}-{'generic' if generic else 'plain'}")
     for position in ("binder-top", "binder-some", "binder-tuple",
                      "binder-ctor", "binder-nested")
-    for shape in sorted(_OPEN_SHAPES - {"open-in-row"})
+    for shape in sorted(_OPEN_SHAPES - {"open-in-row", "open-in-data-plain-parameter"})
     for generic in (False, True)])
 def test_the_open_variable_fix_applied_as_written_clears_e314(
         position: str, shape: str, generic: bool) -> None:
@@ -691,7 +804,7 @@ def test_the_open_variable_fix_writes_a_let_only_where_one_type_fixes_it(
               + _fn("main(@Unit -> @Int)", body, visibility="public"))
     (error,) = pipeline.check(source).errors
     assert error.error_code == "E314", source
-    assert error.fix.startswith("The scrutinee holds a function type"), error.fix
+    assert error.fix.startswith("The scrutinee holds a function whose"), error.fix
     assert ("`type Instance = " in error.fix) is writes, error.fix
     if writes:
         given = _SPAN.findall(error.fix)

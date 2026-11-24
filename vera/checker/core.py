@@ -73,7 +73,6 @@ from vera.types import (
     holds_function,
     is_formal_subtype,
     is_subtype,
-    read_open_as_unknown,
     unfit_function_value,
     pretty_type,
     pretty_inferred_type,
@@ -940,9 +939,7 @@ class TypeChecker(
         enclosing function's own kept rigid (#1896): the `let`'s judgement,
         which a handler clause's parameter, a `match` binder and a fit the
         join gives are held to as well."""
-        rigid = self.env.type_params
-        return is_subtype(read_open_as_unknown(value_ty, rigid),
-                          read_open_as_unknown(written, rigid))
+        return is_subtype(self._read_open(value_ty), self._read_open(written))
 
     def _refuse_unfit_function_value(
         self,

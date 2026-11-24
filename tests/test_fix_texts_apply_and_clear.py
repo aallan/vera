@@ -464,6 +464,25 @@ CASES: dict[str, _Case] = {
         + _fn("@Unit", "@Int", "match mk(()) {\n    Some(@II) -> "
               "apply_fn(@II.0, 3),\n    None -> 7\n  }"),
         lambda source, given: _instance_applied(source, given)),
+    # The alias is source: a refinement in the scrutinee is written whole.
+    "E314-binder-over-an-open-function-type-beside-a-refinement": _Case(
+        "E314", "check", POS + "type II = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @fn(X -> Int) effects(pure)",
+                  "fn(@X -> @Int) effects(pure) { 40 }", "X")
+        + _fn("@Pos", "@Int", "match Tuple(@Pos.0, mk(())) {\n"
+              "    Tuple(@Pos, @II) -> apply_fn(@II.0, 3)\n  }"),
+        lambda source, given: _instance_applied(source, given)),
+    # A data type whose parameter a field holds inside a function type.
+    "E314-binder-over-a-data-type-holding-behaviour-open": _Case(
+        "E314", "check",
+        "private data Callback<A> {\n  MkCb(fn(A -> Int) effects(pure))\n}\n\n"
+        "type CI = fn(Int -> Int) effects(pure);\n\n"
+        + _helper("mk", "@Unit -> @Callback<X>",
+                  "MkCb(fn(@X -> @Int) effects(pure) { 40 })", "X")
+        + _fn("@Unit", "@Int", "match Some(mk(())) {\n    Some(@Callback<Int>) -> "
+              "match @Callback<Int>.0 {\n      MkCb(@CI) -> apply_fn(@CI.0, 3)\n"
+              "    },\n    None -> 7\n  }"),
+        lambda source, given: _instance_applied(source, given)),
 }
 
 
