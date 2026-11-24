@@ -1461,6 +1461,12 @@ CI matrix draws the same sample, which the shards divide between them, and the n
 `--matrix-seed` names a past week to reproduce its sample, and
 `--matrix=sample` samples every marked file whatever changed.
 
+The marker has a second reading: the files whose marker names a module are
+part of that module's mutation oracle, the only tests the mutation lanes run
+its mutants against (MUTATION.md § Oracle).  A cell that kills a surviving
+mutant of a module belongs in one of them, or in another file the module's
+oracle holds.
+
 The sample keeps every test that is not parametrised, and every cell of a
 parametrised function of at most twenty cells or one named for a `repro`.  Of
 each larger function it keeps at least a tenth of the cells and never fewer
