@@ -57,7 +57,7 @@ from vera.obligations.session import (
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.parser import source_text
-from vera.resolver import ResolvedModule, own_module_path
+from vera.resolver import ResolvedModule, accepted_imports, own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -334,9 +334,15 @@ def _placement(analysis: Analysis, related: bool) -> _Placement:
     if analysis.program is None:
         return place
     by_path = {m.path: m for m in analysis.modules}
+    # An import the resolver refused binds nothing, whatever module another
+    # importer bound its path to, so it carries no module's diagnostics
+    # (#1904); a module's own refused imports are already out of its
+    # program.
+    program = accepted_imports(analysis.program, analysis.path,
+                               analysis.modules)
     heads = [
         (imp.path, span_to_range(imp.span, analysis.index))
-        for imp in analysis.program.imports if imp.span is not None
+        for imp in program.imports if imp.span is not None
     ]
     # The document's own imports first: a module the document names is
     # published on that import, wherever else the walk meets it.

@@ -168,6 +168,11 @@ def _check(checker: TypeChecker, program: ast.Program,
     checker.node_target_types = tables.target
     checker.instantiations = tables.instantiations
     checker.handler_cells = tables.cells
+    # An import the resolver refused binds nothing, though another
+    # importer bound its path (#1904): checked without it.
+    from vera.resolver import accepted_imports
+    program = accepted_imports(
+        program, checker.file, checker._resolved_modules)
     checker.check_program(program)
     # The prelude is checked clean, so an error here is a defect of the
     # compiler's own source, reported on every program it reaches; a

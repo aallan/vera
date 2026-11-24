@@ -597,9 +597,9 @@ def test_the_import_that_names_a_module_carries_its_diagnostics(
 def _bound_tree(tmp_path: pathlib.Path, unread: bool) -> tuple[pathlib.Path, str]:
     """`main` imports `a.mid` then `lib`; `a/mid.vera` imports `lib`, which
     resolves beside it to `a/lib.vera`, the module that fails; a root
-    `lib.vera` reads.  The resolver binds a path once, so a read
-    `a/lib.vera` is what `main`'s `import lib` is bound to; an unread one
-    is cached by nobody, and `main`'s `import lib` reads the root file."""
+    `lib.vera` reads.  `a.mid`'s import binds the path `lib` to
+    `a/lib.vera`, read or not, so `main`'s `import lib`, which finds the
+    root file, is refused (E014) and binds nothing (#1904)."""
     (tmp_path / "a").mkdir(exist_ok=True)
     write(tmp_path / "lib.vera", lib_program("").replace("missing(1)", "1"))
     bad = lib_program("")
@@ -620,8 +620,11 @@ def test_a_module_is_placed_by_the_resolvers_binding(
     unread: bool, tmp_path: pathlib.Path,
 ) -> None:
     """Placement reads what the resolver bound and repeats no lookup: a
-    read `a/lib.vera` is `main`'s `import lib` (line 1), and an unread one
-    is only `a.mid`'s, by the resolver's record (line 0)."""
+    read `a/lib.vera` is bound by `a.mid`'s `import lib`, and `main`'s
+    `import lib`, which finds the root `lib.vera` under the same path, is
+    refused (E014) and binds nothing (#1904); an unread one is only
+    `a.mid`'s, by the resolver's record.  Either way the module's
+    diagnostic is on `import a.mid` (line 0)."""
     path, main = _bound_tree(tmp_path, unread)
     a = analysed(path, main)
     code = "E024" if unread else "E200"
@@ -629,7 +632,7 @@ def test_a_module_is_placed_by_the_resolvers_binding(
     assert pathlib.Path(want["location"]["file"]).parts[-2:] == (
         "a", "lib.vera")
     (got,) = [d for d in to_lsp_diagnostics(a) if d.code == code]
-    line = 0 if unread else 1
+    line = 0
     head = lsp_lines(main)[line]
     assert rng(got.range) == (line, 0, line, utf16(head))
 
@@ -637,24 +640,25 @@ def test_a_module_is_placed_by_the_resolvers_binding(
 def test_repro_cr4_placement_reads_the_resolvers_binding(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The second review's shape: the compiler binds `main`'s `import lib`
-    to `a/lib.vera`; a second lookup resolved it to the root `lib.vera`,
-    and `a/lib.vera`'s E200 was published on `import a.mid`."""
+    """The second review's shape: the compiler binds the path `lib` to
+    `a/lib.vera` (by `a.mid`'s import); placement reads that binding and
+    repeats no lookup.  `main`'s `import lib` is refused (E014, #1904) and
+    binds nothing, so `a/lib.vera`'s E200 is published on `import a.mid`,
+    the import that reaches it."""
     path, main = _bound_tree(tmp_path, unread=False)
     a = analysed(path, main)
     bound = {m.path: m.file_path for m in a.modules}
     assert bound[("lib",)] == (tmp_path / "a" / "lib.vera").resolve()
     (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E200"]
-    assert rng(got.range) == (1, 0, 1, len("import lib(word);"))
+    assert rng(got.range) == (0, 0, 0, len("import a.mid(w2);"))
 
 
 def test_repro_cr4_an_unread_module_is_placed_by_the_resolvers_record(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The same tree with `a/lib.vera` not UTF-8: only `a.mid`'s import
-    failed (the resolver records that importer, path and file), and
-    `main`'s `import lib` read the root file, so the E024 is on
-    `import a.mid`."""
+    """The same tree with `a/lib.vera` not UTF-8: `a.mid`'s import failed
+    (the resolver records that importer, path and file), and `main`'s
+    `import lib` is refused (E014), so the E024 is on `import a.mid`."""
     path, main = _bound_tree(tmp_path, unread=True)
     a = analysed(path, main)
     (got,) = [d for d in to_lsp_diagnostics(a) if d.code == "E024"]

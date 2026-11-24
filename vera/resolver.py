@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -48,6 +48,12 @@ class ResolvedModule:
     program: ast.Program  # parsed + transformed AST
     source: str  # raw source text
     direct: bool = True  # imported by the top-level program (vs transitive)
+    #: The importing files (``str`` of each one's ``Path``) whose import of
+    #: this path the resolver refused (#1904): the import binds nothing,
+    #: though another importer's import of the path bound this module.  A
+    #: module's own refused imports are already dropped from its
+    #: ``program``; the document's are dropped by :func:`accepted_imports`.
+    refused_by: frozenset[str] = frozenset()
 
 
 #: A name one part of a module path can be (the grammar's ``LOWER_IDENT``).
@@ -81,6 +87,9 @@ class _Binding:
     ident: tuple[int, int]
     file: Path
     importer: Path
+    #: The name the importer's lookup found (a symbolic link stays a link):
+    #: the file a fix renames.
+    entry: Path
 
 
 @dataclass
@@ -123,6 +132,10 @@ class ModuleResolver:
     _unread: dict[tuple[Path, tuple[str, ...]], Path] = field(
         default_factory=dict,
     )
+    #: Each refused import, by its importing file (``str`` of its ``Path``)
+    #: and module path: whatever another importer bound the path to, this
+    #: import binds nothing (#1904).
+    _refused: set[tuple[str, tuple[str, ...]]] = field(default_factory=set)
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -165,15 +178,14 @@ class ModuleResolver:
         # Direct imports first — resolving each also recursively resolves and
         # caches its own imports (``_resolve_single``), so after this loop the
         # cache holds the full reachable closure.
-        direct_paths: set[tuple[str, ...]] = set()
-        for imp in program.imports:
-            mod = self._resolve_single(imp, file)
-            if mod is not None:
-                direct_paths.add(mod.path)
+        # A direct import is one this program's own import resolved to: an
+        # import the resolver refused binds nothing, whatever module another
+        # importer bound its path to (#1904).
+        direct = [self._resolve_single(imp, file) for imp in program.imports]
 
-        # Assemble the closure from the cache.  Emit direct imports (in source
-        # order) first, then the transitive-only modules, deduplicated by path
-        # so a diamond (two importers of one base) yields the base once.
+        # Assemble the closure.  Emit direct imports (in source order) first,
+        # then the transitive-only modules from the cache, deduplicated by
+        # path so a diamond (two importers of one base) yields the base once.
         resolved: list[ResolvedModule] = []
         seen: set[tuple[str, ...]] = set()
 
@@ -186,14 +198,36 @@ class ModuleResolver:
             # direct import by the importer's namespace injection.
             resolved.append(mod if direct else replace(mod, direct=False))
 
-        for imp in program.imports:
-            mod = self._cache.get(imp.path)
+        for mod in direct:
             if mod is not None:
                 _emit(mod, direct=True)
-        for path, mod in self._cache.items():
-            _emit(mod, direct=path in direct_paths)
+        for mod in self._cache.values():
+            _emit(mod, direct=False)
 
-        return resolved
+        # A refused import of a path the program still binds (another
+        # importer's import of it was accepted) binds nothing for its own
+        # importer: dropped from a module's program here, and marked on the
+        # module for the document's (:func:`accepted_imports`).  Every later
+        # stage reads visibility from a program's import list by path, so
+        # this is the one place the refusal can be kept (#1904).
+        emitted = {mod.path for mod in resolved}
+        refused = {(f, p) for f, p in self._refused if p in emitted}
+        return [self._as_accepted(mod, refused) for mod in resolved]
+
+    def _as_accepted(
+        self, mod: ResolvedModule,
+        refused: set[tuple[str, tuple[str, ...]]],
+    ) -> ResolvedModule:
+        own = str(mod.file_path)
+        drop = {p for f, p in refused if f == own}
+        by = frozenset(f for f, p in refused if p == mod.path)
+        if not drop and not by:
+            return mod
+        program = mod.program
+        if drop:
+            program = replace(program, imports=tuple(
+                imp for imp in program.imports if imp.path not in drop))
+        return replace(mod, program=program, refused_by=by)
 
     # -----------------------------------------------------------------
     # Internal
@@ -206,15 +240,26 @@ class ModuleResolver:
     ) -> ResolvedModule | None:
         """Resolve a single import declaration.
 
-        Returns the ResolvedModule or None on failure (error recorded).
+        Returns the ResolvedModule, or None on failure (error recorded, and
+        the import recorded as refused: it binds nothing).
         """
+        mod = self._resolve_one(imp, importing_file)
+        if mod is None:
+            self._refused.add((str(importing_file), imp.path))
+        return mod
+
+    def _resolve_one(
+        self,
+        imp: ast.ImportDecl,
+        importing_file: Path,
+    ) -> ResolvedModule | None:
         mod_path = imp.path
 
         # Look the path up from THIS importer first (spec §8.6.1), so the
         # file it names is the importer's own, whatever an earlier import
         # of the same path found (#1904).
-        file_path = self._resolve_path(mod_path, importing_file)
-        if file_path is None:
+        entry = self._lookup(mod_path, importing_file)
+        if entry is None:
             self._errors.append(
                 Diagnostic(
                     description=(
@@ -241,8 +286,14 @@ class ModuleResolver:
                 ),
             )
             return None
-
-        ident = file_identity(file_path)
+        try:
+            file_path = entry.resolve()
+            ident = file_identity(file_path)
+        except OSError as exc:
+            # Found, and gone or unreadable before it could be identified:
+            # the import cannot read it, as a failed read below is E013.
+            self._errors.append(self._unreadable(imp, importing_file, exc))
+            return None
 
         # Circular import detection, by the file: a cycle through two
         # spellings of one file is a cycle.
@@ -280,7 +331,7 @@ class ModuleResolver:
         by_path = self._path_binding.get(mod_path)
         if by_path is not None and by_path.ident != ident:
             self._errors.append(self._one_path_two_files(
-                imp, importing_file, file_path, by_path))
+                imp, importing_file, entry, by_path))
             return None
         by_file = self._file_binding.get(ident)
         if by_file is not None and by_file.path != mod_path:
@@ -289,16 +340,14 @@ class ModuleResolver:
             return None
 
         if mod_path in self._cache:
-            # Equivalent as None: resolve_imports emits each direct import
-            # from the cache, and the recursion discards the value.
-            return self._cache[mod_path]  # pragma: no mutate
+            return self._cache[mod_path]
         if ident in self._undecodable:
             # Read once and reported once; this import is placed by its
             # record (#1788).
             self._unread[(importing_file, mod_path)] = file_path
             return None
 
-        binding = _Binding(mod_path, ident, file_path, importing_file)
+        binding = _Binding(mod_path, ident, file_path, importing_file, entry)
         self._path_binding.setdefault(mod_path, binding)
         self._file_binding.setdefault(ident, binding)
 
@@ -340,40 +389,49 @@ class ModuleResolver:
             # OSError from the read.  Any other exception is an internal
             # compiler bug and must propagate, not be relabeled as the
             # user's module failing to parse.
-            self._errors.append(
-                Diagnostic(
-                    description=(
-                        f"Error parsing imported module "
-                        f"'{'.'.join(mod_path)}': {exc}"
-                    ),
-                    location=self._location_from_node(imp, importing_file),
-                    source_line=self._source_line(importing_file, imp),
-                    rationale=(
-                        "An imported module must itself parse and "
-                        "transform successfully before its declarations "
-                        "can be used by the importing program."
-                    ),
-                    fix=(
-                        f"Run `vera check {'/'.join(mod_path)}.vera` "
-                        f"directly to see the detailed syntax diagnostic, "
-                        f"then correct the imported module."
-                    ),
-                    spec_ref=(
-                        'Chapter 8, Section 8.6.5 "Resolution Errors"'
-                    ),
-                    severity="error",
-                    error_code="E013",
-                ),
-            )
+            self._errors.append(self._unreadable(imp, importing_file, exc))
             return None
         finally:
             self._in_progress.discard(ident)
 
+    def _unreadable(
+        self, imp: ast.ImportDecl, importing_file: Path, exc: Exception,
+    ) -> Diagnostic:
+        """E013: the file *imp* found could not be read, parsed or
+        transformed."""
+        mod_path = imp.path
+        return Diagnostic(
+            description=(
+                f"Error parsing imported module "
+                f"'{'.'.join(mod_path)}': {exc}"
+            ),
+            location=self._location_from_node(imp, importing_file),
+            source_line=self._source_line(importing_file, imp),
+            rationale=(
+                "An imported module must itself parse and "
+                "transform successfully before its declarations "
+                "can be used by the importing program."
+            ),
+            fix=(
+                f"Run `vera check {'/'.join(mod_path)}.vera` "
+                f"directly to see the detailed syntax diagnostic, "
+                f"then correct the imported module."
+            ),
+            spec_ref=(
+                'Chapter 8, Section 8.6.5 "Resolution Errors"'
+            ),
+            severity="error",
+            error_code="E013",
+        )
+
     def _shown(self, path: Path) -> str:
         """*path* as a diagnostic names it: relative to the project root
-        when it lies under it, in ``/`` form on every platform."""
+        when it lies under it, in ``/`` form on every platform.  Its
+        directory is resolved and its own name is not, so a symbolic link
+        is shown as the link, the name the lookup found."""
         try:
-            return path.resolve().relative_to(self._root.resolve()).as_posix()
+            return (path.parent.resolve() / path.name).relative_to(
+                self._root.resolve()).as_posix()
         except ValueError:
             return path.as_posix()
 
@@ -382,15 +440,32 @@ class ModuleResolver:
 
     def _one_path_two_files(
         self, imp: ast.ImportDecl, importing_file: Path,
-        file_path: Path, bound: _Binding,
+        entry: Path, bound: _Binding,
     ) -> Diagnostic:
         """E014: *imp* finds another file for a path the program has
         already bound (spec §8.6.2)."""
         path = self._spelled(imp.path)
-        here, there = self._shown(file_path), self._shown(bound.file)
-        renamed = self._free_path(imp.path, file_path, importing_file)
-        new_file = self._shown(
-            file_path.with_name(renamed[-1] + file_path.suffix))
+        here, there = self._shown(entry), self._shown(bound.entry)
+        renamed = self._free_path(imp.path, entry, importing_file)
+        if renamed is None:
+            fix = (
+                f"Give one of the two modules another path. No name from "
+                f"`{imp.path[-1]}2` to `{imp.path[-1]}99`, nor "
+                f"`{imp.path[-1]}_renamed`, is free beside `{here}` and "
+                f"reached from this file by its own lookup, so rename "
+                f"`{here}` or `{there}` to a name no file and no module of "
+                f"the program takes, and change its import to match."
+            )
+        else:
+            new_file = self._shown(entry.with_name(renamed[-1] + entry.suffix))
+            fix = (
+                f"Give one of the two modules another path. Rename "
+                f"`{here}` to `{new_file}` and write "
+                f"`import {self._spelled(renamed)}` here in place of "
+                f"`import {path}`; or rename `{there}` and change the "
+                f"import of it in '{self._shown(bound.importer)}' the same "
+                f"way."
+            )
         return Diagnostic(
             description=(
                 f"Module path '{path}' names two files in this program: "
@@ -406,14 +481,7 @@ class ModuleResolver:
                 "cannot both be compiled, and taking either one would run a "
                 "module that the other import does not name."
             ),
-            fix=(
-                f"Give one of the two modules another path. Rename "
-                f"`{here}` to `{new_file}` and write "
-                f"`import {self._spelled(renamed)}` here in place of "
-                f"`import {path}`; or rename `{there}` and change the "
-                f"import of it in '{self._shown(bound.importer)}' the same "
-                f"way."
-            ),
+            fix=fix,
             spec_ref='Chapter 8, Section 8.6.2 "Caching"',
             severity="error",
             error_code="E014",
@@ -433,19 +501,39 @@ class ModuleResolver:
         return None
 
     def _free_path(
-        self, mod_path: tuple[str, ...], file_path: Path,
-        importing_file: Path,
-    ) -> tuple[str, ...]:
-        """A path for *file_path* renamed beside itself that no file takes
-        yet and no module of the program is bound to: *mod_path* with its
-        last name suffixed."""
-        for n in range(2, 100):
-            candidate = (*mod_path[:-1], f"{mod_path[-1]}{n}")
-            taken = file_path.with_name(candidate[-1] + file_path.suffix)
-            if (not taken.exists() and candidate not in self._path_binding
-                    and self._resolve_path(candidate, importing_file) is None):
+        self, mod_path: tuple[str, ...], entry: Path, importing_file: Path,
+    ) -> tuple[str, ...] | None:
+        """A path for *entry*, renamed beside itself, that no file takes
+        yet, that no module of the program is bound to, and that the
+        importer's lookup would find at the renamed entry: *mod_path* with
+        its last name suffixed by 2 to 99, else by ``_renamed``; None when
+        none of them is."""
+        names = [f"{mod_path[-1]}{n}" for n in range(2, 100)]
+        for last in [*names, f"{mod_path[-1]}_renamed"]:
+            candidate = (*mod_path[:-1], last)
+            renamed = entry.with_name(last + entry.suffix)
+            if (not os.path.lexists(renamed)
+                    and candidate not in self._path_binding
+                    and self._finds(candidate, importing_file, renamed)):
                 return candidate
-        return (*mod_path[:-1], f"{mod_path[-1]}_renamed")
+        return None
+
+    def _finds(
+        self, mod_path: tuple[str, ...], importing_file: Path, target: Path,
+    ) -> bool:
+        """Whether the lookup of *mod_path* from *importing_file* (spec
+        §8.6.1) would stop at *target*, a name that does not exist yet:
+        each place it looks, in order, until one holds a file."""
+        relative = Path(*mod_path).with_suffix(".vera")
+        want = target.parent.resolve() / target.name
+        for place in (importing_file.parent / relative, self._root / relative):
+            if place.parent.resolve() / place.name == want:
+                return True
+            if place.is_file():
+                return False
+        # Unreached: the renamed entry is one of the lookup's places, the
+        # importer's directory or the root, as the entry itself is.
+        return False  # pragma: no mutate
 
     def _one_file_two_paths(
         self, imp: ast.ImportDecl, importing_file: Path,
@@ -456,11 +544,16 @@ class ModuleResolver:
         here, there = self._spelled(imp.path), self._spelled(bound.path)
         shown = self._shown(file_path)
         other = self._shown(bound.importer)
-        ident = file_identity(file_path)
+        ident = bound.ident
 
         def reaches(mod_path: tuple[str, ...], importer: Path) -> bool:
-            found = self._resolve_path(mod_path, importer)
-            return found is not None and file_identity(found) == ident
+            # A file that cannot be identified is not offered: the fix
+            # names only an import it has checked (#1904).
+            found = self._lookup(mod_path, importer)
+            try:
+                return found is not None and file_identity(found) == ident
+            except OSError:
+                return False
 
         if reaches(bound.path, importing_file):
             fix = (
@@ -515,28 +608,24 @@ class ModuleResolver:
             error_code="E015",
         )
 
-    def _resolve_path(
+    def _lookup(
         self,
         mod_path: tuple[str, ...],
         importing_file: Path,
     ) -> Path | None:
-        """Map a module path to a file on disk.
-
-        Tries:
-        1. Relative to the importing file's parent directory
-        2. Relative to the project root (if different)
-        """
+        """The name the lookup of spec §8.6.1 finds for *mod_path* from
+        *importing_file*, unresolved (a symbolic link stays a link)."""
         relative = Path(*mod_path).with_suffix(".vera")
 
         # Try relative to importing file's directory
         candidate = importing_file.parent / relative
         if candidate.is_file():
-            return candidate.resolve()
+            return candidate
 
         # Try relative to the project root
         root_candidate = self._root / relative
         if root_candidate.is_file():
-            return root_candidate.resolve()
+            return root_candidate
 
         return None
 
@@ -579,6 +668,24 @@ class ModuleResolver:
             return ""
         idx = node.span.line - 1
         return lines[idx] if 0 <= idx < len(lines) else ""
+
+
+def accepted_imports(
+    program: ast.Program, file: str | Path | None,
+    modules: Sequence[ResolvedModule],
+) -> ast.Program:
+    """*program*, the document at *file*, without the imports the resolver
+    refused while another importer's import of the same path bound a module
+    (#1904): a refused import binds nothing, and every later stage reads a
+    program's visibility from its import list by path."""
+    if file is None:
+        return program
+    own = str(Path(file))
+    drop = {m.path for m in modules if own in m.refused_by}
+    if not drop:
+        return program
+    return replace(program, imports=tuple(
+        imp for imp in program.imports if imp.path not in drop))
 
 
 def merged_import_filters(

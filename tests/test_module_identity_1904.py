@@ -137,6 +137,16 @@ def check_json(path: pathlib.Path, command: str = "check") -> list[dict]:
 CODE = {"one_path_two_files": "E014", "two_paths_one_file": "E015", "plain": None}
 
 
+def refusals(diags: list[dict]) -> list[dict]:
+    """The resolver's refusals among *diags*; every other diagnostic is an
+    E200, a call into the module a refused import would have bound (a
+    refused import binds nothing)."""
+    out = [d for d in diags if d["error_code"] in ("E011", "E014", "E015")]
+    rest = [d["error_code"] for d in diags if d not in out]
+    assert set(rest) <= {"E200"}, diags
+    return out
+
+
 @pytest.mark.parametrize("q_first", [False, True], ids=["p_first", "q_first"])
 @pytest.mark.parametrize("relation", list(CODE))
 @pytest.mark.parametrize("layout", list(LAYOUTS))
@@ -401,7 +411,7 @@ def test_a_refusal_in_the_document_stands_at_its_import(tmp_path: pathlib.Path) 
     `vera check` locates it at that import, and the server publishes it
     there."""
     entry = _issue_tree(tmp_path, a_mid_first=True)
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     assert (pathlib.Path(d["location"]["file"]).name, d["location"]["line"]) == ("main.vera", 2)
     assert _server_lines(entry, "E014") == [1]
 
@@ -411,7 +421,7 @@ def test_a_refusal_in_a_module_stands_at_its_import_there(tmp_path: pathlib.Path
     `a/mid.vera`'s import, as it locates that module's E012, and the server
     publishes it on the document's import of `a.mid` (the #1903 rule)."""
     entry = _issue_tree(tmp_path, a_mid_first=False)
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     assert pathlib.Path(d["location"]["file"]).parts[-2:] == ("a", "mid.vera")
     assert d["location"]["line"] == 3
     assert _server_lines(entry, "E014") == [1]
@@ -496,7 +506,7 @@ def test_e014s_fix_applied_clears_it(tmp_path: pathlib.Path) -> None:
     """Rename the file the diagnostic's import found, as the fix names it,
     and write the import it gives in place of the old one."""
     entry = _issue_tree(tmp_path, a_mid_first=True)
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     ticks = _TICKS.findall(d["fix"])
     old_file, new_file, new_import, old_import = ticks[:4]
     (tmp_path / old_file).rename(tmp_path / new_file)
@@ -618,7 +628,7 @@ def test_e014s_new_path_reaches_the_renamed_file_from_its_importer(
     write(tmp_path, "x/q.vera", "module x.q;\n\nimport lib(word);\n\n" + fn("wq", "word(())"))
     entry = write(tmp_path, "main.vera", "import y.p(wp);\nimport x.q(wq);\n\n"
                   + main_fn(["wp(())", "wq(())"]))
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     assert d["error_code"] == "E014"
     old_file, new_file, new_import, old_import = _TICKS.findall(d["fix"])[:4]
     assert new_file != "lib2.vera", d["fix"]
@@ -646,7 +656,7 @@ def _apply_e014(diag: dict, root: pathlib.Path) -> None:
 def test_e014s_fix_names_the_first_free_path(tmp_path: pathlib.Path) -> None:
     """The issue's tree, `main.vera` meeting the conflict: the fix renames
     `lib.vera` to `lib2.vera`, the first suffix no file and no module takes."""
-    (d,) = check_json(_issue_tree(tmp_path, a_mid_first=True))
+    (d,) = refusals(check_json(_issue_tree(tmp_path, a_mid_first=True)))
     assert d["fix"].startswith(
         "Give one of the two modules another path. Rename `lib.vera` to "
         "`lib2.vera` and write `import lib2` here in place of `import lib`;"), d["fix"]
@@ -659,12 +669,35 @@ def test_e014s_fix_skips_the_names_files_take(
     tmp_path: pathlib.Path, taken: range, expected: str,
 ) -> None:
     """Each `libN.vera` beside the renamed file is taken; the fix gives the
-    first free suffix up to 99, and past it a name with no number."""
+    first free suffix up to 99, and past it a name with no number.  Applied
+    as written, the program checks and runs, and no taken file changes."""
     entry = _issue_tree(tmp_path, a_mid_first=True)
     for n in taken:
         write(tmp_path, f"lib{n}.vera", fn("word", "0"))
     (d,) = [d for d in check_json(entry) if d["error_code"] == "E014"]
     assert f"`{expected}.vera` and write `import {expected}` here" in d["fix"], d["fix"]
+    _apply_e014(d, tmp_path)
+    assert check_json(entry) == []
+    assert pipeline.cli("run", entry).stdout.strip() == "12"
+    for n in taken:
+        assert (tmp_path / f"lib{n}.vera").read_text(encoding="utf-8") == fn("word", "0")
+
+
+def test_e014s_fix_offers_no_rename_when_every_name_is_taken(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`lib2.vera` to `lib99.vera` and `lib_renamed.vera` all taken: the
+    fix checks every name it can give, the last included, and finding none
+    free it says so and offers no rename and no import, so nothing it says
+    can replace a file."""
+    entry = _issue_tree(tmp_path, a_mid_first=True)
+    for n in range(2, 100):
+        write(tmp_path, f"lib{n}.vera", fn("word", "0"))
+    occupant = write(tmp_path, "lib_renamed.vera", fn("word", "77"))
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E014"]
+    assert "is free beside `lib.vera`" in d["fix"], d["fix"]
+    assert "`import" not in d["fix"] and ".vera` to `" not in d["fix"], d["fix"]
+    assert occupant.read_text(encoding="utf-8") == fn("word", "77")
 
 
 def test_e014s_fix_skips_a_path_a_module_is_bound_to(tmp_path: pathlib.Path) -> None:
@@ -679,7 +712,7 @@ def test_e014s_fix_skips_a_path_a_module_is_bound_to(tmp_path: pathlib.Path) -> 
     entry = write(tmp_path, "main.vera",
                   "import b.p(wp);\nimport a.mid(w2);\nimport lib(word);\n\n"
                   + main_fn(["word(())", "w2(())", "wp(())"]))
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     assert "`import lib3` here in place of `import lib`" in d["fix"], d["fix"]
     _apply_e014(d, tmp_path)
     assert check_json(entry) == []
@@ -694,7 +727,7 @@ def test_e014s_fix_keeps_a_dotted_paths_prefix(tmp_path: pathlib.Path) -> None:
     write(tmp_path, "x/p.vera", "import m.lib(word);\n\n" + fn("wp", "word(())"))
     entry = write(tmp_path, "main.vera", "import m.lib(word);\nimport x.p(wp);\n\n"
                   + main_fn(["word(())", "wp(())"]))
-    (d,) = check_json(entry)
+    (d,) = refusals(check_json(entry))
     assert "`x/m/lib2.vera` and write `import m.lib2` here" in d["fix"], d["fix"]
     _apply_e014(d, tmp_path)
     assert check_json(entry) == []
@@ -775,3 +808,212 @@ def test_a_document_named_relative_to_the_working_directory(
                 == [{k: d[k] for k in keep} for d in absolute]), relative
     if linked is not None:
         assert "`import y.z`" in relative[0]["fix"], relative
+
+
+# --- review round 1 -------------------------------------------------------
+
+def _stat_fails_for(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """`os.stat` of a file named *name* raises, as for a file removed or
+    made unreadable after the lookup found it, when `file_identity` asks;
+    the lookup's own `is_file` still sees the file."""
+    import sys
+
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if (pathlib.Path(path).name == name
+                and sys._getframe(1).f_code.co_name == "file_identity"):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+
+def test_a_file_that_cannot_be_identified_is_e013_at_its_import(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lookup finds `lib.vera`, and the file is gone before its identity
+    is read: the import cannot read it, which is E013 at the import, once,
+    and the resolver does not raise."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    entry = write(tmp_path, "main.vera", "import lib(word);\n\n" + main_fn(["word(())"]))
+    _stat_fails_for(monkeypatch, "lib.vera")
+    got = [(d["error_code"], pathlib.Path(d["location"]["file"]).name, d["location"]["line"])
+           for d in check_json(entry) if d["error_code"].startswith("E01")]
+    assert got == [("E013", "main.vera", 1)], got
+
+
+def test_e015s_fix_skips_a_file_it_cannot_identify(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_linked_pair` with the shadow: the root path `y.z`, looked up from
+    `x/p.vera`, finds `x/y/z.vera`, and that file cannot be identified.  It
+    is not the file, so the fix does not offer the path, and the
+    diagnostic is made, not raised."""
+    entry = _linked_pair(tmp_path, shadow=True)
+    if entry is None:
+        pytest.skip("this filesystem cannot make a hard link")
+    real = os.stat
+    shadow = (tmp_path / "x" / "y" / "z.vera").resolve()
+
+    def stat(path, *args, **kwargs):
+        import sys
+        if (pathlib.Path(path) == shadow
+                and sys._getframe(1).f_code.co_name == "file_identity"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    (d,) = [d for d in check_json(entry) if d["error_code"] == "E015"]
+    assert "`import" not in d["fix"], d["fix"]
+
+
+def _refused_import_tree(tmp: pathlib.Path, in_module: bool) -> pathlib.Path:
+    """One path, two files, and a call into the module the REFUSED import
+    would have bound, to a name only the other file declares.  With
+    *in_module*, `a/mid.vera` holds the refused import and the call;
+    else the document does."""
+    if in_module:
+        write(tmp, "lib.vera", fn("word", "1") + "\n" + fn("only_root", "5"))
+        write(tmp, "a/lib.vera", fn("word", "2"))
+        write(tmp, "a/mid.vera", "import lib;\n\n" + fn("w2", "word(())"))
+        return write(tmp, "main.vera", "import lib(word);\nimport a.mid(w2);\n\n"
+                     + main_fn(["word(())", "w2(())"]))
+    write(tmp, "lib.vera", fn("word", "1"))
+    write(tmp, "a/lib.vera", fn("word", "2") + "\n" + fn("only_a", "5"))
+    write(tmp, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    return write(tmp, "main.vera", "import a.mid(w2);\nimport lib;\n\n"
+                 + main_fn(["word(())", "w2(())"]))
+
+
+@pytest.mark.parametrize("in_module", [False, True], ids=["document", "module"])
+def test_repro_1904_a_refused_import_binds_nothing(
+    tmp_path: pathlib.Path, in_module: bool,
+) -> None:
+    """The refused import's own module would have supplied `word`; the
+    module another importer bound its path to also declares `word`, and
+    `only_a` / `only_root` beside it.  The refused import binds neither: its
+    importer's call of `word` is unresolved (E200), where the other file's
+    `word` was taken silently."""
+    entry = _refused_import_tree(tmp_path, in_module)
+    diags = check_json(entry)
+    where = ("a", "mid.vera") if in_module else ("main.vera",)
+    got = sorted((d["error_code"], pathlib.Path(d["location"]["file"]).parts[-len(where):])
+                 for d in diags)
+    assert got == [("E014", where), ("E200", where)], diags
+
+
+def test_a_refused_import_carries_no_modules_diagnostics_in_the_server(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The issue's tree, `a.mid` first, `a/lib.vera` holding a type error:
+    the document's own `import lib` is refused, so the server publishes the
+    module's error on the import that reaches it, `import a.mid` (line 0),
+    and not on the refused one."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("word", "true"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.mid(w2);\nimport lib;\n\n"
+                  + main_fn(["w2(())"]))
+    a = analyze(VerificationSession(), entry.as_uri(), entry.read_text(encoding="utf-8"))
+    lines = {d.code: d.range.start.line for d in to_lsp_diagnostics(a)}
+    assert lines.get("E014") == 1, lines
+    module_errors = [d for d in to_lsp_diagnostics(a) if d.code not in ("E014", "E200")]
+    assert module_errors and all(d.range.start.line == 0 for d in module_errors), lines
+
+
+@pytest.mark.parametrize("link_first", [False, True], ids=["link_meets", "link_bound"])
+def test_e014s_fix_renames_the_link_the_lookup_found(
+    tmp_path: pathlib.Path, link_first: bool,
+) -> None:
+    """`a/lib.vera` is a symbolic link to `shared/lib.vera`: E014 names the
+    link, the name `a/mid.vera`'s lookup found, on either side of the
+    conflict, and where the link's import meets the conflict the fix
+    renames the link, so `import lib2` reaches the module through it.
+    Applied, the program checks and runs, and the target is untouched."""
+    target = write(tmp_path, "shared/lib.vera", fn("word", "2"))
+    (tmp_path / "a").mkdir()
+    try:
+        os.symlink(target, tmp_path / "a" / "lib.vera")
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform or account cannot make a symbolic link")
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    lines = ["import lib(word);", "import a.mid(w2);"]
+    if link_first:
+        lines.reverse()
+    entry = write(tmp_path, "main.vera", "\n".join(lines) + "\n\n"
+                  + main_fn(["word(())", "w2(())"]))
+    (d,) = refusals(check_json(entry))
+    assert "as 'a/lib.vera'" in d["description"] and "shared" not in d["description"], d
+    if link_first:
+        assert "or rename `a/lib.vera` and change the import of it in 'a/mid.vera'" in d["fix"], d
+    else:
+        assert "Rename `a/lib.vera` to `a/lib2.vera` and write `import lib2` here" in d["fix"], d
+    _apply_e014(d, tmp_path)
+    assert check_json(entry) == []
+    assert pipeline.cli("run", entry).stdout.strip() == "12"
+    assert target.read_text(encoding="utf-8") == fn("word", "2")
+
+
+def test_e015s_fix_under_a_symbolic_link_applied_clears_it(tmp_path: pathlib.Path) -> None:
+    """`_two_names_one_file` by a symbolic link: the fix's import, written
+    as it says, checks, and the program runs."""
+    entry = _two_names_one_file(tmp_path, lambda t, n: os.symlink(t, n))
+    if entry is None:
+        pytest.skip("this platform or account cannot make a symbolic link")
+    (d,) = refusals(check_json(entry))
+    assert d["error_code"] == "E015"
+    _apply_import_edit(d, tmp_path)
+    assert check_json(entry) == []
+    assert pipeline.cli("run", entry).stdout.strip() == "22"
+
+
+def test_a_refused_import_is_not_qualified_callable(tmp_path: pathlib.Path) -> None:
+    """The document's refused `import lib` does not make `lib::` callable,
+    though the path `lib` names another file's module in the program: the
+    qualified call into it is E230, as for a module the document does not
+    import."""
+    write(tmp_path, "lib.vera", fn("word", "1"))
+    write(tmp_path, "a/lib.vera", fn("word", "2") + "\n" + fn("only_a", "5"))
+    write(tmp_path, "a/mid.vera", "import lib(word);\n\n" + fn("w2", "word(())"))
+    entry = write(tmp_path, "main.vera", "import a.mid(w2);\nimport lib;\n\n"
+                  + main_fn(["lib::only_a(())", "w2(())"]))
+    got = sorted(d["error_code"] for d in check_json(entry))
+    assert got == ["E014", "E230"], got
+
+
+def test_e014s_fix_skips_a_name_a_broken_link_takes(tmp_path: pathlib.Path) -> None:
+    """`lib2.vera` beside the renamed file is a symbolic link to nothing:
+    the name is taken (renaming onto it would replace the link), so the fix
+    gives `lib3`."""
+    entry = _issue_tree(tmp_path, a_mid_first=True)
+    try:
+        os.symlink(tmp_path / "nowhere.vera", tmp_path / "lib2.vera")
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform or account cannot make a symbolic link")
+    (d,) = refusals(check_json(entry))
+    assert "Rename `lib.vera` to `lib3.vera` and write `import lib3` here" in d["fix"], d
+
+
+def test_a_refusal_applies_to_the_document_however_its_name_is_spelled(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the library: the resolver is handed `Path("./main.vera")` and
+    the checker the string `"./main.vera"`.  They name one file, so the
+    document's refused import binds nothing (its call is E200)."""
+    from vera.checker import typecheck
+    from vera.parser import parse
+    from vera.resolver import ModuleResolver
+    from vera.transform import transform
+
+    entry = _refused_import_tree(tmp_path, in_module=False)
+    monkeypatch.chdir(tmp_path)
+    source = entry.read_text(encoding="utf-8")
+    program = transform(parse(source, file="./main.vera"))
+    resolver = ModuleResolver(_root=pathlib.Path("."))
+    resolved = resolver.resolve_imports(program, pathlib.Path("./main.vera"))
+    assert [d.error_code for d in resolver.errors] == ["E014"]
+    codes = [d.error_code for d in typecheck(program, source, file="./main.vera",
+                                              resolved_modules=resolved)]
+    assert codes == ["E200"], codes
