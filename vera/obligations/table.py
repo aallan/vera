@@ -1814,7 +1814,7 @@ class _Builder:
             for tree in narrowing.component_coercion(
                     sources, i, ctor_name, declared, self.effective, self.sem,
                     self.ftypes, self.ctors, self.narrows_nat):
-                self._tree_rows(tree, sub, source=source)
+                self._tree_rows(tree, sub, source=source)  # pragma: no mutate — equivalent: a composite walk's row is found by its node, and the verifier's lookups by source (`_rows_taking`, `_value_rows`) never take it (589 programs verify alike with source None)
 
     @staticmethod
     def _binder_of(
