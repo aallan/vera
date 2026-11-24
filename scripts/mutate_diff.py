@@ -92,13 +92,12 @@ changed function with mutants in its window had none decided (not
 measured); and 0 otherwise, a run that decided some of every function's
 mutants before the budget ran out included.
 An exit 0 says what it decided in the headline: every mutant killed or timed
-out, or how many functions no in-process test reaches, or, where the budget
-ran out or a mutant was left undecided (``not checked``, ``suspicious``,
-``segfault``, interrupted), that the run is incomplete, which a
-``::warning::`` annotation repeats on the pull request.
-A function no in-process test reaches has every mutant ``no tests``: it is
-reported as not observable in process, the rule MUTATION.md states for
-``cli.py``, and does not fail the run.
+out, or, where the budget ran out or a mutant was left undecided (``not
+checked``, ``suspicious``, ``segfault``, interrupted), that the run is
+incomplete, which a ``::warning::`` annotation repeats on the pull request.
+A function no test of its module's declared oracle reaches has every mutant
+``no tests``: it is not measured (exit 3), and its row names the module
+whose oracle reached nothing.
 
 Usage:
     python scripts/mutate_diff.py                      # origin/main...HEAD
@@ -1748,16 +1747,19 @@ def failed(stopped: str | None, failure: str) -> str:
 NOT_MEASURED = 3
 
 
-def decided(row: UnitResult) -> int:
-    """How many of a row's mutants the run decided."""
-    return sum(n for status, n in row.counts.items() if STATUSES[status] != "undecided")
+def measured(row: UnitResult) -> int:
+    """How many of a row's mutants a test measured: killed, timed out,
+    caught by the type checker, or survived.  A ``no tests`` mutant is
+    decided and measures nothing: no test of its module's declared oracle
+    reaches the function."""
+    return sum(n for status, n in row.counts.items() if STATUSES[status] in ("caught", "survived"))
 
 
 def not_measured(rows: Sequence[UnitResult]) -> list[UnitResult]:
-    """The changed functions with mutants in their window and none decided:
-    the run says nothing of them, whether it stopped before them or never
-    reached them."""
-    return [r for r in rows if (r.window or r.mutants) and not decided(r)]
+    """The changed functions with mutants in their window and none a test
+    measured: the run says nothing of them, whether it stopped before them,
+    never reached them, or no declared test reaches them."""
+    return [r for r in rows if (r.window or r.mutants) and not measured(r)]
 
 
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
@@ -1862,7 +1864,7 @@ def render(record: Mapping[str, Any]) -> str:
                               if s not in _COLUMNS)
             settled = sum(n for s, n in counts.items() if STATUSES.get(s) != "undecided")
             if row["mutants"] and not row["observable"]:
-                other = "not observable in process (no in-process test reaches it)"
+                other = (f"not measured: no test of `{row['path']}`'s declared oracle reaches it")
             elif (row["mutants"] or row.get("window")) and not settled:
                 other = ("not decided: the run stopped first" if not row["mutants"]
                          else f"not decided; {other}" if other else "not decided")
@@ -1985,23 +1987,23 @@ def _outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
     it says what was not tested, or that the run is incomplete."""
     unfinished = _incomplete(rows, stopped)
     if code == NOT_MEASURED:
-        n = len(not_measured(rows))
-        return (f"Not measured: {n} function(s) had no mutant decided"
-                + (f"; {unfinished}." if unfinished else "."))
+        gaps = not_measured(rows)
+        unreached = [r for r in gaps if r.mutants and not r.observable]
+        head = f"Not measured: {len(gaps)} function(s) had no mutant decided"
+        if unreached:
+            head += (f" by a test ({len(unreached)} reached by no test of their module's "
+                     "declared oracle)")
+        return head + (f"; {unfinished}." if unfinished else ".")
     if code == 0 and unfinished is not None:
         return f"Incomplete: {unfinished}."
     if code == 0:
         if not rows:
             return "Pass: nothing to mutate."
-        unobserved = [r for r in rows if r.mutants and not r.observable]
         empty = [r for r in rows if not r.mutants]
         skipped = sum(r.counts.get("skipped", 0) for r in rows)
-        if not unobserved and not empty and not skipped:
+        if not empty and not skipped:
             return "Pass: every mutant of the diff is killed or timed out."
         parts = []
-        if unobserved:
-            parts.append(f"{sum(r.mutants for r in unobserved)} mutant(s) in "
-                         f"{len(unobserved)} function(s) not observable in process")
         if empty:
             parts.append(f"{len(empty)} function(s) with no mutant")
         if skipped:

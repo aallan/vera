@@ -2335,7 +2335,8 @@ DECISIONS = [
     ("killed and timed out", ["killed", "timeout"], None, 0),
     ("caught by the type checker", ["caught by type check"], None, 0),
     ("one survivor", ["killed", "survived"], None, 1),
-    ("not observable in process", ["no tests", "no tests"], None, 0),
+    # No test of the module's declared oracle reaches it: not measured (#1838).
+    ("no declared test reaches it", ["no tests", "no tests"], None, 3),
     ("skipped by the engine", ["skipped", "killed"], None, 0),
     ("a mutant never run", ["killed", "not checked"], None, 0),
     # A function with mutants and none decided: not measured (#1838).
@@ -2399,18 +2400,22 @@ class TestOutcome:
         rows = self._rows({f"{F}1": "killed", f"{F}2": "timeout"}, "x_free")
         assert md.outcome(0, rows, None) == "Pass: every mutant of the diff is killed or timed out."
 
-    def test_one_function_caught_and_one_not_observable(self) -> None:
+    def test_repro_a_function_no_declared_test_reaches_is_not_measured(self) -> None:
+        """#1838: a changed function whose every mutant is `no tests` was a
+        green row with a note, the unmeasured diff by another door.  Under
+        the declared oracle it means no test of its module's oracle reaches
+        it: not measured, exit 3, whatever the other functions decided."""
         results = {f"{F}1": "killed", "vera.smt.x_far__mutmut_1": "no tests",
                    "vera.smt.x_far__mutmut_2": "no tests"}
         rows = self._rows(results, "x_free", "x_far")
-        assert md.exit_code(rows, stopped=None) == 0
-        assert md.outcome(0, rows, None) == (
-            "Pass: no mutant survived; 2 mutant(s) in 1 function(s) not observable in process.")
+        assert md.exit_code(rows, stopped=None) == 3
+        assert md.outcome(3, rows, None) == (
+            "Not measured: 1 function(s) had no mutant decided by a test (1 reached by no test "
+            "of their module's declared oracle).")
 
-    def test_no_function_observable(self) -> None:
+    def test_no_function_reached(self) -> None:
         rows = self._rows({f"{F}1": "no tests"}, "x_free")
-        assert md.outcome(0, rows, None) == (
-            "Pass: no mutant survived; 1 mutant(s) in 1 function(s) not observable in process.")
+        assert md.exit_code(rows, stopped=None) == 3
 
     def test_a_mutant_the_engine_skipped(self) -> None:
         """mutmut 3.8 assigns no mutant the `skipped` status (exit code 34),
@@ -3314,20 +3319,25 @@ class TestEndToEnd:
                 "one of those lines. 1 function(s) hold 5 mutant(s), 2 of them in the window; "
                 "mutmut generated 2, decided 2, and 1 survived.") in summary
 
-    def test_no_in_process_test_for_any_mutant_is_not_observable_and_passes(
+    def test_no_declared_test_for_any_mutant_is_not_measured(
         self, repo: Path, tmp_path: Path,
     ) -> None:
         """mutmut stops with exit 1 when no selected test reaches any
-        mutated function; every mutant of the diff is then not observable
-        in process, which is reported and does not fail the run."""
-        code, record, _ = _main(
+        mutated function; every mutant of the diff is then `no tests`, no
+        engine failure, and the diff is not measured (exit 3): the row
+        names the module whose declared oracle reached nothing."""
+        code, record, calls = _main(
             repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n", run_exit=1,
             run_output="Stopping early, because we could not find any test case for any mutant.")
-        assert code == 0 and record["stopped"] is None
+        assert code == 3 and record["stopped"] is None
         assert record["outcome"] == (
-            "Pass: no mutant survived; 1 mutant(s) in 1 function(s) not observable in process.")
+            "Not measured: 1 function(s) had no mutant decided by a test (1 reached by no test of "
+            "their module's declared oracle).")
         (unit,) = record["functions"]
         assert unit["counts"] == {"no tests": 1} and unit["observable"] is False
+        assert len([c for c in calls if c["args"][0] == "run"]) == 1  # no second pass
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert "not measured: no test of `vera/m.py`'s declared oracle reaches it" in summary
 
     def test_a_mutant_the_lane_cannot_place_stops_the_run_short(
         self, repo: Path, tmp_path: Path,
