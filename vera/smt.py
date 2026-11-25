@@ -4294,18 +4294,35 @@ class SmtContext:
 
     def _arm_source_facts(
         self, scrutinee_ast: ast.Expr, scrutinee_z3: z3.ExprRef,
-        pattern: ast.Pattern,
+        pattern: ast.Pattern, guard: z3.ExprRef | None,
     ) -> list[z3.ExprRef]:
         """Source-type facts to assume while translating *pattern*'s arm body —
         via the verifier-injected ``_subpattern_fact_hook`` — so a call
         precondition inside the arm sees a refined sub-pattern binding's
         invariant (CR PR-review).  Empty when no hook is set (pure-SMT tests)
-        or the pattern is not a constructor pattern."""
+        or the pattern is not a constructor pattern.  *guard* is the
+        condition the arm is taken under (None for an irrefutable one)."""
         if (self._subpattern_fact_hook is None
                 or not isinstance(pattern, ast.ConstructorPattern)):
             return []
+        withheld_from = len(self._tainted_facts)
         facts = self._subpattern_fact_hook(
             scrutinee_ast, scrutinee_z3, pattern, self)
+        # #1897: a fact the hook withholds because a narrowing gave the
+        # scrutinee its type is the fact the arm would assume, so it is
+        # held in the form the arm assumes it (below): under the arm's
+        # condition and the bindings of the calls being modelled.  Held
+        # bare, a callee's `requires` `match` read it of the argument
+        # outright on the second attempt, as #1706 closed for the first.
+        for i in range(withheld_from, len(self._tainted_facts)):
+            fact = self._tainted_facts[i]
+            owners = self._withheld_owners.get(fact.get_id())
+            if owners is None:
+                continue  # a disclosed producer's, held as #1363 holds it
+            held = self._under_call_bindings(
+                fact if guard is None else z3.Implies(guard, fact))
+            self._tainted_facts[i] = held
+            self._withheld_owners[held.get_id()] = owners
         return list(facts) if facts else []
 
     def _translate_match(
@@ -4356,7 +4373,9 @@ class SmtContext:
         for pc in preceding_conds:
             self.branch_premise(z3.Not(pc))
         last_facts = self._arm_source_facts(
-            expr.scrutinee, scrutinee, arms[-1].pattern)
+            expr.scrutinee, scrutinee, arms[-1].pattern,
+            z3.And(*[z3.Not(pc) for pc in preceding_conds])
+            if preceding_conds else None)
         for f in last_facts:
             self._path_conditions.append(f)
             # Global implication: the fact holds whenever THIS (default) arm is
@@ -4405,7 +4424,7 @@ class SmtContext:
             self.branch_premise(z3.And(*earlier, cond) if earlier else cond)
             self._reach_extras.append(self._arm_reach(conds, index))
             arm_facts = self._arm_source_facts(
-                expr.scrutinee, scrutinee, arm.pattern)
+                expr.scrutinee, scrutinee, arm.pattern, cond)
             for f in arm_facts:
                 # Global implication `arm-matched => fact` (see the default-arm
                 # note) so the refined-return goal sees it after the path
