@@ -2437,6 +2437,15 @@ def _placement_1928(place: str, clause: str) -> dict[str, str]:
             f"let @Option<Pos> = {_handle_1928(clause, 'get(())')};\n"
             f"  {_POS_READ_1928}") + "\n" + other + "\n" + _fn(
             "public", "main(@Unit -> @Bool)", "true", "g(7) && other(())")}
+    if place == "module_clone":
+        # An imported generic's clone: the handler and its `get` stand in
+        # the clone of `lib::g` that `main`'s call instantiates.
+        lib = ("module lib;\n\n" + _POS_1928 + _PICK_1928 + "\n" + _fn(
+            "public forall<T>", "g(@T -> @Bool)", "@Bool.result",
+            f"let @Option<Pos> = {_handle_1928(clause, 'get(())')};\n"
+            f"  {_POS_READ_1928}"))
+        return {"lib.vera": lib, "main.vera": "import lib;\n\n" + _fn(
+            "public", "main(@Unit -> @Bool)", "true", "lib::g(7)")}
     assert place == "module", place
     act = "type Act = fn(Unit -> Bool) effects(<State<Option<Pos>>>);\n\n"
     lib = ("module lib;\n\n" + _POS_1928 + act + _PICK_1928 + "\n" + _fn(
@@ -2456,7 +2465,9 @@ def _placement_1928(place: str, clause: str) -> dict[str, str]:
     return {"lib.vera": lib, "main.vera": main}
 
 
-_READER_1928 = {"function": "main", "clone": "g", "module": "reader"}
+#: An imported generic's clone reports under its linked name.
+_READER_1928 = {"function": "main", "clone": "g", "module": "reader",
+                "module_clone": "mod$lib$g"}
 
 
 def _placement_reader_1928(
@@ -2484,15 +2495,17 @@ def test_repro_1928_the_conservative_disclosure_crosses_a_module_boundary(
     assert reader == ("tier3", "E534"), reader
 
 
-@pytest.mark.parametrize("place", ["function", "clone", "module"])
+@pytest.mark.parametrize(
+    "place", ["function", "clone", "module", "module_clone"])
 @pytest.mark.parametrize("row", ["unchecked", "checked"])
 def test_1928_the_answering_clause_at_each_placement(
         tmp_path: Path, place: str, row: str) -> None:
     """A clause with no check at its `resume` leaves the reader unproved
     (E534), wherever it stands; a clause resuming the state it holds (a
     checked value) leaves the reader its facts (`verified`).  In the
-    function and clone placements the `get` stands in the handle's body,
-    the clause answers it, and the unchecked run does not return normally.
+    function and the two clone placements (a generic of the entry program,
+    and an imported module's) the `get` stands in the handle's body, the
+    clause answers it, and the unchecked run does not return normally.
     In the module placement the `get` stands outside every handler and
     reads the cell (spec 7.5.2): the clause does not answer it, and E534 is
     the name fallback's conservative disclosure, so no run is asserted."""
