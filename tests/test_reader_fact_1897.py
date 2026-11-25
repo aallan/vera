@@ -1612,10 +1612,10 @@ def test_repro_a_callee_whose_narrowing_has_no_row_is_not_trusted() -> None:
 # its facts).  What that leaves open: a `get` read inside the handle's body
 # after a `put` of the unchecked value.  (`acc_state` above reads the value
 # at the handle's own result, a stand-in the rule still notes.)
-_STATE_UNCHECKED_GET = ("a value written to a `State` cell by an unchecked "
-                        "narrowing and read back by `get` is read as "
-                        "established; deciding it needs a row's status, which "
-                        "is known only after the facts are assumed")
+_STATE_UNCHECKED_GET = ("#1931: a value written to a `State` cell by an "
+                        "unchecked narrowing and read back by `get` is read "
+                        "as established; deciding it needs a row's status, "
+                        "which is known only after the facts are assumed")
 _STATE_IN_BODY = POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n" + \
     textwrap.dedent("""\
     public fn go(@MkO, @Int -> @Int)

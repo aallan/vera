@@ -697,8 +697,10 @@ def test_kills_a_misaligned_zero_size_argument() -> None:
     assert NAT_TRAP in (_trap_text(_run(source, "f", [-1])) or "")
 
 
-def test_kills_a_result_without_its_nested_facts() -> None:
-    """A call's result carries the refinements inside its return type, as it
+def _nested_result_source() -> str:
+    """The program of the two tests below.
+
+    A call's result carries the refinements inside its return type, as it
     carries its head refinement: `mk`'s return slot established the payload,
     so the guard over `consume`'s argument holds and `f`'s postcondition still
     proves from `consume`'s.  Without the result's facts the solver held none
@@ -707,7 +709,7 @@ def test_kills_a_result_without_its_nested_facts() -> None:
     `mk` returns `Option<Big>` so the argument narrows (`Big` to `PosInt`) and
     is a row: since #1695 an argument at its formal's own type narrows
     nothing and has no record, which would leave the cell nothing to read."""
-    source = TYPES + "\n" + textwrap.dedent("""\
+    return TYPES + "\n" + textwrap.dedent("""\
         private fn mk(@Int -> @Option<Big>)
           requires(true)
           ensures(true)
@@ -735,15 +737,41 @@ def test_kills_a_result_without_its_nested_facts() -> None:
           consume(mk(@Int.0))
         }
         """)
+
+
+def _nested_result_rows(source: str) -> tuple[list[str], list[str]]:
+    """The argument's `refine_bind` records and `f`'s `ensures` statuses."""
     verified = _verify(source)
     assert verified.ok, [(d.error_code, d.description[:80])
                          for d in verified.errors]
-    assert _records(verified, _at(source, "mk(@Int.0)"), "refine_bind") == [
-        "verified"]
-    assert [o.status for o in verified.obligations
-            if o.kind == "ensures" and o.line == _at(source, "@Int.result > 0", 1)[0]
-            ] == ["verified"]
+    return (
+        _records(verified, _at(source, "mk(@Int.0)"), "refine_bind"),
+        [o.status for o in verified.obligations
+         if o.kind == "ensures"
+         and o.line == _at(source, "@Int.result > 0", 1)[0]])
+
+
+def test_kills_a_result_without_its_nested_facts() -> None:
+    """The argument's narrowing is proved from the result's nested facts, and
+    the program runs.  `f`'s postcondition is a runtime check since #1897:
+    the narrowing has no check of its own, so `consume`'s postcondition is
+    withheld (the test below holds the proof it should keep)."""
+    source = _nested_result_source()
+    narrowing, post = _nested_result_rows(source)
+    assert narrowing == ["verified"]
+    assert post == ["tier3"]
     assert _run(source, "f", [3]).value == 7
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "#1931: what is established is decided while the facts are assumed, "
+    "before a row's status is known, so an argument's narrowing that is "
+    "proved but has no check counts as unestablished and the callee's "
+    "postcondition is withheld"))
+def test_a_proved_argument_narrowing_keeps_the_callees_postcondition() -> None:
+    narrowing, post = _nested_result_rows(_nested_result_source())
+    assert narrowing == ["verified"]
+    assert post == ["verified"]
 
 
 def test_kills_a_guard_dropped_under_a_path_condition() -> None:
