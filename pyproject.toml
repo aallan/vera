@@ -319,6 +319,13 @@ pytest_add_cli_args_test_selection = [
     "tests/test_codegen_monomorphize.py",
     "tests/test_codegen_closures.py",
     "tests/test_codegen_modules.py",
+    # The class instrument of #1861 (its marker decides the table, the
+    # verifier and the container-store and closure-argument guards): it
+    # pins the guard each store and closure argument's refinement row emits.
+    # It kills the eight mutants of _emit_written_store_guard the rest of
+    # this selection left surviving, and reaches _closure_argument_component,
+    # which no other file here reaches (Mutation (diff) run 45398289338, #1838).
+    "tests/test_rows_without_checks_1861.py",
     "tests/test_wasm.py",
     "tests/test_wasm_coverage.py",
     "tests/test_lsp.py",
