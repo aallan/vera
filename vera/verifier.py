@@ -12337,9 +12337,10 @@ class ContractVerifier:
 
         The generic path skips full SMT (TypeVar params/contracts can't be
         represented), but a concrete refined return obligation is independent
-        of the type parameters, so a minimal context — TypeVar params falling
-        back to ``declare_int`` — suffices to translate the body and discharge
-        the predicate.  Verified at Tier 1; a counterexample is an E505; an
+        of the type parameters, so the declaration context every check shares
+        (`_fresh_smt`), with TypeVar params as ``Int`` stand-ins stating
+        nothing, suffices to translate the body and discharge the predicate.
+        Verified at Tier 1; a counterexample is an E505; an
         untranslatable body or predicate falls to the runtime guard (E506,
         ``tier3``), exactly as on the non-generic path."""
         if decl.body is None:  # pragma: no cover — caller guards this
@@ -12357,99 +12358,30 @@ class ContractVerifier:
         # `_fn_naming_scope` calls from disagreeing if that ever changes.
         fn_env = self._fn_naming_scope(
             self._current_alias_env, decl, enclosing)
-        smt = SmtContext(timeout_ms=self.timeout_ms)
-        # #1455, second site: the SAME lexical chain the main path binds.  The
-        # flat registry stood here, and since #1378 it holds no `where` helper,
-        # so a generic function whose concrete refined return is produced by a
-        # helper call lost the helper's contract: `tier3`/E506 where the
-        # identical top-level spelling proves at Tier 1.  Honest, but a
-        # precision loss with no reason behind it, and it is the one call-site
-        # resolution left reading the flat table where a lexical scope applies.
-        self._bind_smt_scope(
-            smt, CalleeScope(fn_env, self._scoped_fn_lookup(decl, enclosing)))
-        for adt_info in self._program_data_types():
-            smt.register_adt(adt_info)
-        # CR PR-review: the generic refined-return fast path translates the body
-        # too, so it needs the same sub-pattern source-fact hook as the main
-        # path (line 742) — a generic fn returning a refined ADT payload from a
-        # `match` arm would otherwise false-E505/E501 (the arm accessor is
-        # translated without the field's source refinement fact).
-        smt._subpattern_fact_hook = self._subpattern_source_facts
-        # #1406/#1407: and let it record a DISCLOSED call's result term, so
-        # the taint follows the value into every binding, projection and
-        # branch that value reaches.  The terms it causes to be recorded are
-        # per-function state, which `SmtContext.reset()` clears — so the warm
-        # (shared) smt is safe for the same reason `_tainted_facts` is.
-        smt._disclosed_call_hook = self._disclosed_call_for_value
-        # #1706: the same binding guard as the main path, for the calls this
-        # fast path's body translation models.
-        smt._call_binding_hook = self._call_binding_facts
-        smt._call_result_facts_hook = self._call_result_facts
-        smt._generic_callee_hook = self._generic_callee_info
-        # #1525: the same types as the main path, a construction's and an
-        # opaque stand-in's.
-        smt._recorded_type_hook = self._resolved_type_of  # pragma: no mutate — equivalent: a generic function's refined return is decided by its clones' verification, so this fast path's record is never the one read
-        smt._constructed_type_hook = self._constructed_type_of  # pragma: no mutate — equivalent: as the line above, the clone path decides the record
-        # #1480 review: and let a call-site check ask whether its goal rests
-        # on a placeholder one of the walks bound.  A bound method, so it
-        # reads the live `_opaque_shadows`, which each walk resets.
-        smt._placeholder_hook = self._contains_opaque_shadow
-        # #1480 review: and let the SMT `match` translation bind an arm's
-        # guarded refined binders the way the walks do (`_enter_match_arm`).
-        smt._guarded_binder_hook = self._guarded_binder_values
+        # #1928 review: the prologue every declaration check shares, so this
+        # path holds every hook the main path's context holds (a stand-in's
+        # type facts, its ranges, whether a row producing its value has a
+        # check, a refuted call's clause) and cannot fall behind it.  Safe on
+        # the warm shared context: the caller returns before any other
+        # context of this function is built, and a parent's check finishes
+        # before its `where` helpers are verified (`_verify_fn` step 9).
+        # #1455, second site: the SAME lexical chain the main path binds.
+        smt = self._fresh_smt(
+            CalleeScope(fn_env, self._scoped_fn_lookup(decl, enclosing)))
         slot_env = SlotEnv()
         assumptions: list[object] = []
         slot_refs = self._parameter_slots(decl, fn_env)
         for param_te, z3_name in zip(decl.params, slot_refs, strict=True):
             param_ty = self._written_type(param_te)
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
-            if self._is_nat_type(param_ty):
-                var = smt.declare_nat(z3_name)
-            elif self._is_bool_type(param_ty):
-                var = smt.declare_bool(z3_name)
-            elif self._is_string_type(param_ty):
-                var = smt.declare_string(z3_name)
-            elif self._is_float64_type(param_ty):
-                var = smt.declare_float64(z3_name)  # Real sort, as non-generic
-            elif self._is_array_type(param_ty):
-                # Concrete Array param — declare a proper array sort (as the
-                # non-generic path does) so a refined return proven via
-                # `array_length(...)` / `arr[i]` keeps Tier 1 instead of
-                # falling to a false E506.  Falls back to declare_int when the
-                # element type isn't Z3-representable, exactly as non-generic.
-                array_var = self._declare_array_var(smt, z3_name, param_ty)
-                var = array_var if array_var is not None else smt.declare_int(
-                    z3_name)
-            elif self._is_adt_type(param_ty):
-                # Concrete ADT param — declare an ADT sort so projections used
-                # by the return predicate translate (mirrors non-generic).
-                adt_var = smt.declare_adt(z3_name, param_ty)
-                var = adt_var if adt_var is not None else smt.declare_int(
-                    z3_name)
-            else:
-                var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
+            # The main path's declaration and premise (`_verify_fn` step 1):
+            # a concrete parameter's range, `Nat` components and refinements
+            # (#746, #1430, #1814); a parameter of a type variable is an
+            # `Int` stand-in of which nothing is stated.
+            var = self._declare_value(smt, z3_name, param_ty)
             smt.declare_input(z3_name, var, param_ty)
             slot_env = slot_env.push(type_name, var)
-            # Assume a refined param's predicate (parallel to the non-generic
-            # param-assume), so a return justified by `@PosInt` etc. proves.
-            if self._is_refined_type(param_ty):
-                pred = self._translate_refined_predicate(smt, param_ty, var)
-                if pred is not None:
-                    assumptions.append(pred)
-            # #1430: and the refinements written INSIDE the parameter's type
-            # — an `Array<PosInt>` element, an ADT payload — under the same
-            # R1 licence.  Every caller is obligated to discharge them at the
-            # argument position (#1410's `refine_bind`), so assuming them here
-            # closes the same modular loop the parameter's own refinement
-            # uses.  Facts are assumed even when the walk reports itself
-            # INCOMPLETE: each fact returned is true of the value, and a
-            # partial set is a weaker assumption, never an over-assumption.
-            # Through the same gate as the non-generic path above, so the two
-            # parameter-assumption sites cannot answer differently.
-            nested_facts, _ = self._nested_refinement_facts(
-                smt, param_ty, var)
-            assumptions.extend(self._established_facts(
-                nested_facts, source=None, term=var, smt=smt))
+            assumptions.extend(self._declared_type_facts(smt, param_ty, var))
         # Assume translatable preconditions too — a `requires(...)` may imply
         # the return predicate.
         for contract in decl.contracts:

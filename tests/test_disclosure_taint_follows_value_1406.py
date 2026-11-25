@@ -1176,22 +1176,22 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # producer roster — the very omission that let the fourth reader in —
     # still satisfied it.  A new reader is a deliberate edit here, and so is
     # a deleted one.
-    # `_check_generic_refined_return` and `_declared_type_facts` are the two
-    # R1 parameter-assumption sites (#1430): each states the refinements
-    # written INSIDE a parameter's type and assumes them, so each is a reader
-    # and each asks the gate.  A parameter has no producer inside its own
-    # function, so the gate answers "established" on every program measured —
-    # it is asked because the rule is that a reader is a call to the gate,
-    # and because a term can acquire a disclosed site through cross-module
-    # widening.  `_declared_type_facts` is `_verify_fn`'s per-parameter
+    # `_declared_type_facts` is the one R1 parameter-assumption site (#1430):
+    # it states the refinements written INSIDE a parameter's type and assumes
+    # them, so it is a reader and asks the gate.  A parameter has no producer
+    # inside its own function, so the gate answers "established" on every
+    # program measured — it is asked because the rule is that a reader is a
+    # call to the gate, and because a term can acquire a disclosed site
+    # through cross-module widening.  It is `_verify_fn`'s per-parameter
     # reading, factored out when a refinement predicate's binder came to need
-    # the same facts about its base type (#1480).  `_call_result_facts` is a
+    # the same facts about its base type (#1480), and the generic
+    # refined-return path's since #1928 (it was a second reader of its own,
+    # missing what a parameter's type states).  `_call_result_facts` is a
     # call result's: the refinements inside its return type, assumed of the
     # result at the call (#1706).
     assert readers == [
         "verifier:_binding_block",
         "verifier:_call_result_facts",
-        "verifier:_check_generic_refined_return",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_declared_type_facts",
         "verifier:_nested_refinement_discharge",

@@ -2504,3 +2504,149 @@ def test_1928_the_answering_clause_at_each_placement(
     assert reader == ("tier3", "E534"), reader
     if place != "module":
         assert not pipeline.run(entry, "main").ok, place
+
+
+# The generic refined-return path (#746; #1928, review round 6): a generic
+# function no call instantiates still has its concrete refined return
+# discharged, in a context of its own.  That context held a hand-kept list
+# of the main path's hooks, four short (a stand-in's type facts, its
+# ranges, whether a row producing its value has a check, a refuted call's
+# clause), and declared its parameters with none of what their types
+# state.  Each generic function below has a non-generic twin with the same
+# body, which the main path decides: the two rows agree.
+
+_GENERIC_RANGE_1928 = """\
+type Small = { @Int | @Int.0 <= 9223372036854775807 };
+
+private data Box { MkBox(Int) }
+
+public forall<T> fn k(@T, @Int -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn k_twin(@Bool, @Int -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public forall<T> fn kb(@T, @Box -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box.0 { MkBox(@Int) -> @Int.0 }
+}
+
+public fn kb_twin(@Bool, @Box -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box.0 { MkBox(@Int) -> @Int.0 }
+}
+"""
+
+_GENERIC_PRODUCER_1928 = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn pick2(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(0 - 5)
+}
+
+public forall<T> fn g(@T -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Pos> = apply_fn(fn(@Unit -> @Option<Pos>) effects(pure) { pick2(()) }, ());
+  match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }
+}
+
+public fn h(@Int -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Pos> = apply_fn(fn(@Unit -> @Option<Pos>) effects(pure) { pick2(()) }, ());
+  match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }
+}
+"""
+
+
+def _returns_1928(source: str) -> dict[str, tuple[str, str]]:
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    return {o.fn_name: (o.status, o.error_code)
+            for o in verified.obligations
+            if o.kind == "refine_bind" and o.expr_text.startswith("{")}
+
+
+def test_repro_1928_generic_return_states_a_parameter_range() -> None:
+    """An `Int` parameter, and an `Int` component of a concrete parameter,
+    lie in the 64-bit range, so a return bounded by `Int`'s maximum holds:
+    at bdf74e54 the generic `k` and `kb` were refuted (E505, a field of
+    2^63) where their twins proved."""
+    rows = _returns_1928(_GENERIC_RANGE_1928)
+    assert rows == {"k": ("verified", ""), "k_twin": ("verified", ""),
+                    "kb": ("verified", ""), "kb_twin": ("verified", "")}, rows
+
+
+def test_repro_1928_generic_return_discloses_an_unchecked_producer() -> None:
+    """A closure's return narrows `Some(0 - 5)` into `Option<Pos>` at a row
+    with no check, so the stand-in for its value states nothing of `Pos`:
+    at bdf74e54 the generic `g`'s return was `verified` while its twin
+    `h`, the same body, is not, and `h`'s run violates the return."""
+    rows = _returns_1928(_GENERIC_PRODUCER_1928)
+    assert rows["g"] == rows["h"] == ("tier3", "E506"), rows
+    assert not pipeline.run(_GENERIC_PRODUCER_1928, "h", [0], file=FILE).ok
+
+
+def _hooks_1928(smt: object) -> frozenset[str]:
+    return frozenset(
+        k for k, v in vars(smt).items()
+        if v is not None and (k.endswith("_hook")
+                              or k == "_callee_scope_lookup"))
+
+
+def test_1928_the_generic_fast_path_holds_every_hook_the_main_path_holds(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The class instrument: the context the generic refined-return path
+    translates a body in holds every hook the main path's holds, so no
+    hook added to one can be missing from the other.  At bdf74e54 the fast
+    path lacked `_type_invariant_hook`, `_type_ranges_hook`,
+    `_unchecked_producer_hook` and `_violation_clause_hook`."""
+    from vera import smt as smt_mod
+    from vera import verifier as verifier_mod
+    seen: dict[bool, set[str]] = {True: set(), False: set()}
+    fast = [False]
+    translate = smt_mod.SmtContext.translate_expr
+    generic = verifier_mod.ContractVerifier._check_generic_refined_return
+
+    def spy_translate(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        seen[fast[0]].update(_hooks_1928(self))
+        return translate(self, *args, **kwargs)
+
+    def spy_generic(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        fast[0] = True
+        try:
+            return generic(self, *args, **kwargs)
+        finally:
+            fast[0] = False
+
+    monkeypatch.setattr(smt_mod.SmtContext, "translate_expr", spy_translate)
+    monkeypatch.setattr(verifier_mod.ContractVerifier,
+                        "_check_generic_refined_return", spy_generic)
+    _returns_1928(_GENERIC_PRODUCER_1928)
+    assert seen[True] and seen[False], seen
+    assert seen[False] - seen[True] == set(), sorted(seen[False] - seen[True])
