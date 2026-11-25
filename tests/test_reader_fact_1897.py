@@ -1726,13 +1726,19 @@ FLOWS = ("direct", "array_literal", "array_append", "map", "if_join",
 FLOW_SOURCES = ("param", "apply")
 APPLY_FLOWS = ("direct", "throw_inner", "throw_inner_noouter", "closure",
                "generic", "state", "pass")
-FLOW_CONSUMERS = {"requires": "call_pre", "nat": "nat_bind", "ensures": "ensures"}
+# `callee`: the value is handed whole to `take`, whose `ensures` reads the
+# component through its parameter's type, and `inner`'s `ensures` rests on
+# `take`'s (W166).
+FLOW_CONSUMERS = {"requires": "call_pre", "nat": "nat_bind", "ensures": "ensures",
+                  "callee": "ensures"}
 NARROWINGS = ("u", "c", "p")
 
-# The consumer's own check, as the run names its trap.
+# The consumer's own check, as the run names its trap.  A `callee` consumer
+# is witnessed false by `take`'s check or by `inner`'s.
 _OWN_CHECK = {"requires": "Precondition violation in need(",
               "nat": "Negative value bound into a @Nat slot",
-              "ensures": "Postcondition violation in inner("}
+              "ensures": "Postcondition violation in inner(",
+              "callee": "Postcondition violation in "}
 
 # The 38 soundness members W145 found (a thrown value, a generic call's
 # result, a `State` `get`, an `Option` closure result) are closed by the
@@ -1748,11 +1754,14 @@ _CLOSURE_ENSURES = ("an `ensures` over a closure's `apply_fn` result is "
 
 def _flow_members() -> dict[str, str]:
     members: dict[str, str] = {}
-    for shape, consumer in itertools.product(FLOW_SHAPES, FLOW_CONSUMERS):
+    # A `callee` consumer reads the component through `take`'s parameter
+    # type, not through the join, so the join's loss does not reach it.
+    for shape, consumer in itertools.product(FLOW_SHAPES, ("requires", "nat", "ensures")):
         for flow in ("if_join", "match_join"):
             members[f"{flow}-{shape}-{consumer}-c"] = "incompleteness: " + _JOIN_NAT
-    for shape, narrowing in itertools.product(FLOW_SHAPES, ("c", "p")):
-        members[f"closure-{shape}-ensures-{narrowing}"] = (
+    for shape, consumer, narrowing in itertools.product(
+            FLOW_SHAPES, ("ensures", "callee"), ("c", "p")):
+        members[f"closure-{shape}-{consumer}-{narrowing}"] = (
             "incompleteness: " + _CLOSURE_ENSURES)
     return members
 
@@ -1881,7 +1890,14 @@ def _flow_program(cell: FlowCell) -> tuple[str, str, str]:
         ensures = f"@Int.result {ge} 0"
         body, consumer = sh.ref, f"ensures({ensures})"
     arm = f"{sh.pattern} -> {body}{sh.other}"
-    if cell.flow == "map":
+    if cell.consumer == "callee":
+        le = "<=" if cell.narrowing == "c" else "<"
+        decls += (f"private fn take(@{s} -> @Int)\n  requires(true)\n"
+                  f"  ensures(0 {le} @Int.result)\n  effects(pure)\n{{\n"
+                  f"  match @{s}.0 {{\n    {arm}\n  }}\n}}\n\n")
+        reader = (f"match {scrut} {{\n    Some(@{s}) -> take(@{s}.0),\n"
+                  "    None -> 1\n  }" if cell.flow == "map" else f"take({scrut})")
+    elif cell.flow == "map":
         reader = (f"match {scrut} {{\n    Some(@{s}) -> match @{s}.0 {{\n    {arm}\n    }},\n"
                   "    None -> 1\n  }")
     else:
@@ -1942,7 +1958,7 @@ def test_the_flow_matrix_is_the_product() -> None:
     """Every flow, shape, consumer and narrowing is a cell, every member
     names a cell, and the direct flow (the yardstick) has none."""
     ids = [c.id for c in FLOW_CELLS]
-    assert len(ids) == len(set(ids)) == 17 * 3 * 3 * 3 + 7 * 3 * 3 == 522
+    assert len(ids) == len(set(ids)) == 17 * 3 * 4 * 3 + 7 * 3 * 4 == 696
     assert set(FLOW_MEMBERS) <= set(ids)
     assert {c.source for c in FLOW_CELLS} == set(FLOW_SOURCES)
     assert not [m for m in FLOW_MEMBERS if m.startswith("direct-")]
@@ -1981,3 +1997,153 @@ def test_a_flow_keeps_the_narrowings_lineage(
         direct = _flow_verdicts(FlowCell("direct", cell.shape, cell.consumer,
                                          cell.narrowing))[1]
         assert used in (["verified"], direct), (cell.id, used, direct)
+
+
+
+# A callee's facts about its result follow the result's note (W166).  A
+# callee's postcondition, its refined return's predicate and the refinements
+# inside its return type are facts its proof drew from what its parameters'
+# types state; where the call's result is noted unestablished (an argument
+# holds a narrowing with no check, or the function-wide rule), they are
+# withheld with the result's type facts, so a proof that needs one is Tier 3.
+# The consumer here is the callee's contract, not a `match` reader of the
+# narrowed value's type.
+_CALLEE_OK = textwrap.dedent("""\
+    private fn ok(@Option<Pos> -> @Bool)
+      requires(true)
+      ensures(@Bool.result)
+      effects({eff})
+    {{
+      match @Option<Pos>.0 {{
+        Some(@Int) -> @Int.0 > 0,
+        None -> true
+      }}
+    }}
+
+    """)
+_CALLEE_PASS = textwrap.dedent("""\
+    private fn pass(@Option<Pos> -> @Option<Pos>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      @Option<Pos>.0
+    }
+
+    """)
+_CALLEE_MAIN = textwrap.dedent("""\
+
+    public fn main_go(@Int -> @{ret})
+      requires(true)
+      ensures(true)
+      effects({eff})
+    {{
+      go(fn(@Int -> @Option<Int>) effects(pure) {{ Some(@Int.0) }}, @Int.0)
+    }}
+    """)
+
+
+def _callee_program(tail: str, eff: str = "pure", extra: str = "") -> str:
+    """`go` narrows an `apply_fn` result with no check (E506) and hands it
+    to `ok`, whose `ensures(@Bool.result)` reads the payload as positive."""
+    return (POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n"
+            + _CALLEE_OK.format(eff=eff) + extra
+            + "public fn go(@MkO, @Int -> @Bool)\n  requires(true)\n"
+            + f"  ensures(@Bool.result)\n  effects({eff})\n{{\n"
+            + "  let @Option<Pos> = apply_fn(@MkO.0, @Int.0);\n"
+            + f"  {tail}\n}}\n" + _CALLEE_MAIN.format(ret="Bool", eff=eff))
+
+
+def _callee_check(source: str) -> None:
+    verified = _verify(source)
+    assert verified.ok
+    ensures = [_status(o) for o in verified.obligations
+               if o.fn_name == "go" and o.kind == "ensures"]
+    assert ensures and "verified" not in ensures, ensures
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith("Postcondition violation in"), str(ran.trap)
+    held = pipeline.run(source, "main_go", [3], file=FILE)
+    assert held.trap is None and held.value == 1, (held.trap, held.value)
+
+
+def test_repro_a_callees_postcondition_over_an_unchecked_argument() -> None:
+    """g2: `ok(@Option<Pos>.0)` over the `apply_fn` narrowing; `ok`'s
+    `ensures` is the narrowing's reader, through its parameter's type."""
+    _callee_check(_callee_program("ok(@Option<Pos>.0)"))
+
+
+def test_repro_a_callees_postcondition_carried_once() -> None:
+    """The call rule links `pass`'s result to the narrowing; `ok`'s result,
+    made from it, is noted, and `ok`'s `ensures` is withheld."""
+    _callee_check(_callee_program("ok(pass(@Option<Pos>.0))",
+                                  extra=_CALLEE_PASS))
+
+
+def test_repro_a_callees_postcondition_under_the_function_wide_rule() -> None:
+    """An effectful `ok` is no callee the call rule frees: its result is
+    noted by the function-wide rule, and its `ensures` follows."""
+    _callee_check(_callee_program("ok(@Option<Pos>.0)", eff="<IO>"))
+
+
+def test_a_callees_postcondition_over_a_checked_narrowing_is_kept() -> None:
+    """The control: beside the unchecked `apply_fn` narrowing, `ok` is
+    handed a narrowing `go`'s `requires` proves, so `ok`'s result is not
+    noted and its `ensures` proves `go`'s: the rule is no blanket."""
+    source = (POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n"
+              + _CALLEE_OK.format(eff="pure")
+              + textwrap.dedent("""\
+                public fn go(@MkO, @Int -> @Bool)
+                  requires(@Int.0 > 0)
+                  ensures(@Bool.result)
+                  effects(pure)
+                {
+                  let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+                  let @Option<Pos> = Some(@Int.0);
+                  ok(@Option<Pos>.0)
+                }
+                """))
+    verified = _verify(source)
+    assert verified.ok
+    unchecked = _line(source, "let @Option<Pos> = apply_fn(@MkO.0, @Int.0);")
+    assert _at_line(verified, unchecked) == ["tier3_unguarded/E506"]
+    proved = _line(source, "let @Option<Pos> = Some(@Int.0);")
+    assert _at_line(verified, proved) == ["verified"]
+    ensures = [_status(o) for o in verified.obligations
+               if o.fn_name == "go" and o.kind == "ensures"]
+    assert ensures == ["verified"], ensures
+
+
+_CALLEE_N = POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n" + \
+    textwrap.dedent("""\
+    private fn n(@Option<Pos> -> @Int)
+      requires(true)
+      ensures(@Int.result > 0)
+      effects(pure)
+    {
+      match @Option<Pos>.0 {
+        Some(@Int) -> @Int.0,
+        None -> 1
+      }
+    }
+
+    public fn go(@MkO, @Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+      let @Nat = n(@Option<Pos>.0) - 1;
+      nat_to_int(@Nat.0)
+    }
+    """) + _CALLEE_MAIN.format(ret="Int", eff="pure")
+
+
+def test_repro_a_callees_int_postcondition_a_later_row_needs() -> None:
+    source = _CALLEE_N
+    verified = _verify(source)
+    assert verified.ok
+    nat = _line(source, "let @Nat = n(@Option<Pos>.0) - 1;")
+    assert _at_line(verified, nat, "nat_bind") != ["verified"]
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value

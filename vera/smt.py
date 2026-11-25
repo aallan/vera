@@ -902,6 +902,12 @@ class SmtContext:
         # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
         # driving (pure-SMT tests).
         self._call_result_facts_hook: Any = None
+        # Optional hook (injected by the verifier) that notes a call's fresh
+        # result where an unchecked narrowing may have made it (#1897),
+        # asked before the callee's facts about the result are read, which
+        # follow that note.  Signature: (call_node, result_z3, smt) -> None.
+        # None when no verifier is driving (pure-SMT tests).
+        self._call_result_note_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -3646,7 +3652,25 @@ class SmtContext:
         """Assume the callee's postconditions, its refined return's
         predicate and the refinements written inside its return type, about
         the fresh result *ret_var* — each through :meth:`_guard_fact`, which
-        scopes it to the branch and to the call's binding (#1706)."""
+        scopes it to the branch and to the call's binding (#1706).
+
+        They follow the result's note (#1897): the callee drew them from
+        what its parameters' types state, so where the verifier notes the
+        result unestablished (``_call_result_note_hook``, asked before any
+        of them is read) each is held apart, in the form it would be
+        assumed in, owned by the narrowings the result is made from, and a
+        proof that needs one is disclosed rather than proved."""
+        if self._call_result_note_hook is not None:
+            self._call_result_note_hook(call_node, ret_var, self)
+        owners = self.narrowed_ids_in(ret_var)
+        held = owners if owners & self._unestablished_ids else None
+
+        def take(fact: z3.ExprRef) -> None:
+            if held is None:
+                self.assume(self._guard_fact(fact))
+            else:
+                self.withhold_narrowed([self._guard_fact(fact)], held)
+
         # Assume callee postconditions about the return variable
         saved_result = self._result_var
         self._result_var = ret_var
@@ -3660,7 +3684,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 z3_post = self.translate_expr(contract.expr, callee_env)
             if z3_post is not None:
-                self.assume(self._guard_fact(z3_post))
+                take(z3_post)
         self._result_var = saved_result
 
         # #746: a refined return type is an implicit postcondition — assume
@@ -3698,7 +3722,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 facts = self._type_facts(ret_var, callee_info.return_type)
             for fact in facts:
-                self.assume(self._guard_fact(fact))
+                take(fact)
             if any(self._mentions_stand_in(fact) for fact in facts):
                 self._taint(ret_var)
 
@@ -3712,9 +3736,21 @@ class SmtContext:
         # disclosed that obligation instead, so a proof that needs them is
         # Tier 3.
         if self._call_result_facts_hook is not None:
+            withheld_from = len(self._tainted_facts)
             for fact in self._call_result_facts_hook(
                     callee_info, call_node, ret_var, self):
                 self.assume(self._guard_fact(fact))
+            # The hook's gate withholds them bare where the result is noted
+            # unestablished; held as the kept ones are assumed, under the
+            # branch and the call's binding.
+            for i in range(withheld_from, len(self._tainted_facts)):
+                fact = self._tainted_facts[i]
+                key = self._withheld_owners.get(fact.get_id())
+                if key is None:
+                    continue  # a disclosed producer's, held as #1363 holds it
+                guarded = self._guard_fact(fact)
+                self._tainted_facts[i] = guarded
+                self._withheld_owners[guarded.get_id()] = key
 
     # -----------------------------------------------------------------
     # Stand-ins: what the translation has no term for (#1696)

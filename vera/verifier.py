@@ -1857,8 +1857,8 @@ class ContractVerifier:
             return []
         # The callee's guarantee holds under what it assumed of its
         # arguments; in a function with an unchecked narrowing, one may be
-        # that narrowing's value (W155).
-        self._note_minted(call, result, smt)
+        # that narrowing's value, and the result is noted so before this is
+        # asked (`SmtContext._call_result_note_hook`).
         with smt._callee_contract_scope(callee):
             facts, _ = self._nested_refinement_facts(smt, ret_ty, result)
         return cast("list[z3.ExprRef]", self._established_facts(
@@ -2492,6 +2492,9 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1897: and note a call's result before the callee's facts about
+        # it are assumed, so they follow the note (`_note_minted`).
+        smt._call_result_note_hook = self._note_minted
         # #1897: and let the translation record each value a narrowing row of
         # the function under verification gives a type its own does not
         # state, so a fact read off that type is withheld from the
@@ -11951,6 +11954,7 @@ class ContractVerifier:
         # fast path's body translation models.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        smt._call_result_note_hook = self._note_minted
         smt._narrowing_hook = self._note_narrowing
         smt._generic_callee_hook = self._generic_callee_info
         # #1525: the same types as the main path, a construction's and an
@@ -12567,10 +12571,12 @@ class ContractVerifier:
         `_note_narrowing` reads them through their parts.
 
         Asked by `_note_narrowing`, the hook every translated term passes
-        through, with the term's *env*, and by `_call_result_facts` before
-        its gate, without one: a call's result facts are asked of
-        `_established_facts` while the call is translated, before the hook
-        meets its term."""
+        through, with the term's *env*, and, without one, by the SMT
+        layer's call translation (``SmtContext._call_result_note_hook``)
+        before it reads the callee's facts about the result: its
+        postconditions, its refined return's predicate and the refinements
+        inside its return type follow this note, held apart where the
+        result is noted unestablished, as the result's type facts are."""
         frame = self._fn_frames[-1] if self._fn_frames else None
         if (frame is not None and frame.rows
                 and _holds_unchecked_narrowing(frame)
