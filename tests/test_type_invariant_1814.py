@@ -1831,9 +1831,10 @@ private fn total(@Chain -> @Int)
 
 @pytest.mark.parametrize("fn", ["all_pos", "deep", "total"])
 @pytest.mark.xfail(strict=True, reason=(
-    "#1928: a recursion over a data type with a refined field needs the "
-    "type's facts at every depth; the guard keeps the field's refinement, "
-    "which no check establishes below the head"))
+    "#1930: the call's guard asks one level of the tail, and the caller "
+    "holds the tail's nested refinements only as the opaque `refines_K`; "
+    "the guard keeps the field's refinement, which no check establishes "
+    "below the head"))
 def test_a_recursion_over_a_refined_field_keeps_its_ensures(fn: str) -> None:
     """The `Pos` twin of the `Nat` repros above: `violated` (E500) at main
     and after, `verified` at 342b097b, where the guard omitted the tail's
