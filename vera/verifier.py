@@ -1329,6 +1329,10 @@ class ContractVerifier:
         # typed program and decides which a runtime check can guard; this
         # verifier discharges its rows (`_settle_rows`) and lists none.
         self._table = obligation_table.build(typed)
+        # #1928: for each operation call, the handler clauses that may
+        # answer it (`_answering_clauses`), built on first use.
+        self._answers: tuple[dict[object, tuple[ast.HandlerClause, ...]],
+                             dict[str, tuple[ast.HandlerClause, ...]]] | None = None
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
@@ -2548,6 +2552,12 @@ class ContractVerifier:
         # cache, so safe on the warm (shared) smt too.
         smt._type_invariant_hook = (
             lambda ctx, ty, term: self._type_invariant(ctx, ty, term))
+        # #1928: and let a stand-in hold back what its type states beyond
+        # the ranges where a row producing its value has no check.
+        smt._type_ranges_hook = (
+            lambda ctx, ty, term: self._invariant_at(
+                ctx, ty, term, head=True, seen=frozenset()))
+        smt._unchecked_producer_hook = self._produces_unchecked
         # #1468: and let a generic call's precondition be read off the clone
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
@@ -12711,6 +12721,59 @@ class ContractVerifier:
                 sites = list(self._result_disclosed_fns.get(
                     self._result_disclosed_key(name, is_helper=True), ()))
         return hit, sites
+
+    def _produces_unchecked(self, node: ast.Node) -> bool:
+        """Whether a row that produces the value of *node* has no check
+        (#1928): a narrowing row under *node* whose guard emits none, or an
+        operation call under it that a handler clause holding such a row
+        may answer (`_answering_clauses`).  A row with no check is counted
+        whatever its proof: its status is settled after the stand-in that
+        asks is made."""
+        for sub in fold.walk(node):
+            parts: list[ast.Node] = [sub]
+            if isinstance(sub, ast.FnCall):
+                for clause in self._answering_clauses(sub):
+                    parts.extend(fold.walk(clause))
+            for part in parts:
+                if any(r.kind in ("refine_bind", "nat_bind")
+                       and not r.guard.check
+                       for r in self._table.rows_at(part)):
+                    return True
+        return False
+
+    def _answering_clauses(
+        self, call: ast.FnCall,
+    ) -> tuple[ast.HandlerClause, ...]:
+        """The handler clauses of *call*'s name that may answer it (#1928):
+        those of every handler the call stands lexically inside, and where
+        it stands inside none (an operation a function's effect row passes
+        to its caller's handler), those of every handler of the program."""
+        if self._answers is None:
+            key = obligation_table.ObligationTable._key
+            lexical: dict[object, tuple[ast.HandlerClause, ...]] = {}
+            named: dict[str, tuple[ast.HandlerClause, ...]] = {}
+            linked = self._typed.linked
+            roots = [tld.decl for tld in linked.program.declarations]
+            stack: list[tuple[ast.Node, tuple[ast.HandlerClause, ...]]] = [
+                (r, ()) for r in roots]
+            while stack:
+                cur, scope = stack.pop()
+                if isinstance(cur, ast.FnCall):
+                    lexical[key(cur)] = tuple(
+                        c for c in scope if c.op_name == cur.name)
+                inner = scope
+                if isinstance(cur, ast.HandleExpr):
+                    inner = scope + cur.clauses
+                    for c in cur.clauses:
+                        named[c.op_name] = named.get(c.op_name, ()) + (c,)
+                stack.extend(
+                    (child, inner if (isinstance(cur, ast.HandleExpr)
+                                      and child is cur.body) else scope)
+                    for child in fold.children(cur))
+            self._answers = (lexical, named)
+        lexical, named = self._answers
+        found = lexical.get(obligation_table.ObligationTable._key(call))
+        return found if found else named.get(call.name, ())
 
     def _established_facts(
         self,

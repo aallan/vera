@@ -1563,3 +1563,372 @@ def test_a_call_guards_what_the_callee_assumed(
         if o.kind == "ensures"], [
         (o.fn_name, o.kind, o.status, o.error_code)
         for o in verified.obligations]
+
+
+# #1928, the stand-in rule: a value is established only when every row that
+# produces it has a check.  A stand-in whose node holds a narrowing row with
+# no check, or an operation call a handler clause holding one answers, states
+# its base and its ranges alone (`SmtContext._inherit_disclosure`).
+
+_HEAD_1928 = """\
+private data Color { Red, Green, Blue }
+
+type NotRed = { @Color | @Color.0 != Red };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+type Wrap = { @Option<NotRed> | true };
+
+"""
+
+
+def _program_1928(pick_sig: str, pick_body: str, main_body: str) -> str:
+    return (_HEAD_1928 + _fn("private", pick_sig, "true", pick_body) + "\n"
+            + _fn("public", "main(@Unit -> @Bool)", "@Bool.result", main_body))
+
+
+def _state_1928(ty: str, init: str, base: str, bad: str, reader: str) -> str:
+    return _program_1928(
+        f"pick(@{ty} -> @{base})", bad,
+        f"let @{ty} = handle[State<{ty}>](@{ty} = {init}) {{\n"
+        f"    get(@Unit) -> {{ resume(pick(@{ty}.0)) }},\n"
+        f"    put(@{ty}) -> {{ resume(()) }}\n  }} in {{\n    get(())\n  }};\n"
+        f"  {reader}")
+
+
+def _closure_1928(ty: str, base: str, bad: str, reader: str) -> str:
+    return _program_1928(
+        f"pick2(@Unit -> @{base})", bad,
+        f"let @{ty} = apply_fn(fn(@Unit -> @{ty}) effects(pure) "
+        f"{{ pick2(()) }}, ());\n  {reader}")
+
+
+_OPT_NOTRED_READER = ("match @Option<NotRed>.0 { Some(@Color) -> "
+                      "@Color.0 != Red, None -> true }")
+_OPT_POS_READER = "match @Option<Pos>.0 { Some(@Int) -> @Int.0 > 0, None -> true }"
+
+_MEMBERS_1928 = {
+    "f4c": _program_1928(
+        "pick(@Wrap -> @Option<Color>)", "Some(Red)",
+        "let @Wrap = handle[State<Wrap>](@Wrap = Some(Green)) {\n"
+        "    get(@Unit) -> { resume(pick(@Wrap.0)) },\n"
+        "    put(@Wrap) -> { resume(()) }\n  } in {\n    get(())\n  };\n"
+        "  match @Wrap.0 { Some(@Color) -> @Color.0 != Red, None -> true }"),
+    "s_opt_notred": _state_1928(
+        "Option<NotRed>", "Some(Green)", "Option<Color>", "Some(Red)",
+        _OPT_NOTRED_READER),
+    "c_opt_notred": _closure_1928(
+        "Option<NotRed>", "Option<Color>", "Some(Red)", _OPT_NOTRED_READER),
+    "c_arr_notred": _closure_1928(
+        "Array<NotRed>", "Array<Color>", "[Red]",
+        "if array_length(@Array<NotRed>.0) > 0 then {\n"
+        "    let @Color = @Array<NotRed>.0[0];\n    @Color.0 != Red\n"
+        "  } else {\n    true\n  }"),
+    "destr_opt_notred": _program_1928(
+        "pick2(@Unit -> @Tuple<Option<Color>, Int>)", "Tuple(Some(Red), 1)",
+        "let @Bool = {\n    let Tuple<@Option<NotRed>, @Int> = apply_fn("
+        "fn(@Unit -> @Tuple<Option<NotRed>, Int>) effects(pure) "
+        "{ pick2(()) }, ());\n    " + _OPT_NOTRED_READER + "\n  };\n"
+        "  @Bool.0"),
+    "s_opt_pos": _state_1928(
+        "Option<Pos>", "Some(1)", "Option<Int>", "Some(0 - 5)",
+        _OPT_POS_READER),
+    "c_opt_pos": _closure_1928(
+        "Option<Pos>", "Option<Int>", "Some(0 - 5)", _OPT_POS_READER),
+    # The controls: the producer's own row has a check, which traps first.
+    "s_opt_nat": _state_1928(
+        "Option<Nat>", "Some(1)", "Option<Int>", "Some(0 - 5)",
+        "match @Option<Nat>.0 { Some(@Int) -> @Int.0 >= 0, None -> true }"),
+    "c_tup_notred": _closure_1928(
+        "Tuple<NotRed, Int>", "Tuple<Color, Int>", "Tuple(Red, 1)",
+        "match @Tuple<NotRed, Int>.0 { Tuple(@Color, @Int) -> "
+        "@Color.0 != Red }"),
+}
+
+
+def _reader_1928(source: str) -> tuple[str, str]:
+    """`main`'s `ensures`: its status and code."""
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    (found,) = [(o.status, o.error_code) for o in verified.obligations
+                if o.fn_name == "main" and o.kind == "ensures"]
+    return found
+
+
+def _assert_unestablished_1928(name: str) -> None:
+    """The reader's `ensures` is not proved over a value whose producing
+    row has no check (`verified` at e35cc91a), and the run that violates
+    it does not return normally."""
+    source = _MEMBERS_1928[name]
+    assert _reader_1928(source)[0] != "verified", name
+    ran = pipeline.run(source, "main", file=FILE)
+    assert ran.trap is not None, ran
+    assert "postcondition" in str(ran.trap).lower(), str(ran.trap)
+
+
+def test_repro_1928_f4c_base_only_handle() -> None:
+    _assert_unestablished_1928("f4c")
+
+
+def test_repro_1928_s_opt_notred_state_get() -> None:
+    _assert_unestablished_1928("s_opt_notred")
+
+
+def test_repro_1928_c_opt_notred_closure_payload() -> None:
+    _assert_unestablished_1928("c_opt_notred")
+
+
+def test_repro_1928_c_arr_notred_closure_element() -> None:
+    _assert_unestablished_1928("c_arr_notred")
+
+
+def test_repro_1928_destr_opt_notred_destructure() -> None:
+    _assert_unestablished_1928("destr_opt_notred")
+
+
+def test_repro_1928_s_opt_pos_state_get_primitive() -> None:
+    """Main's member too: a refinement over `Int` at a payload."""
+    _assert_unestablished_1928("s_opt_pos")
+
+
+def test_repro_1928_c_opt_pos_closure_primitive() -> None:
+    _assert_unestablished_1928("c_opt_pos")
+
+
+def test_repro_1928_controls_whose_row_is_checked_stay_verified() -> None:
+    """A producer row with a check: the reader stays `verified`, and the
+    run traps at the producer's own check, before the reader."""
+    for name in ("s_opt_nat", "c_tup_notred"):
+        source = _MEMBERS_1928[name]
+        assert _reader_1928(source) == ("verified", ""), name
+        ran = pipeline.run(source, "main", file=FILE)
+        assert ran.trap is not None, (name, ran)
+        assert "postcondition" not in str(ran.trap).lower(), str(ran.trap)
+
+
+# The instrument's dimension for #1928: producer x position below the head x
+# refinement x the producer's row.  A row with no check that is refuted or
+# undecided ("unchecked": the producer builds a violating value) must leave
+# its reader unproved beside a run that does not return normally; a row
+# with a check, or one whose value the solver proves ("proved": the producer
+# builds a satisfying literal), leaves the reader as it was at e35cc91a
+# (`_BASE_1928`, generated by a run of this generator at that head).
+
+_REFINEMENTS_1928 = {
+    # name: (base, violating value, satisfying value, predicate over {x})
+    "Pos": ("Int", "0 - 5", "1", "{x} > 0"),
+    "NotRed": ("Color", "Red", "Green", "{x} != Red"),
+}
+_POSITIONS_1928 = ("option", "array", "tuple")
+_PRODUCERS_1928 = ("state_get", "closure", "base_handle", "destructure")
+_ROWS_1928 = ("unchecked", "proved", "checked")
+
+
+def _position_1928(position: str, ref: str) -> tuple[str, str, str, str]:
+    """The value's type, its base's, a value built from `{v}`, and the
+    reader of the refined position over the value at `{s}`."""
+    base, _bad, _good, pred = _REFINEMENTS_1928[ref]
+    if position == "option":
+        return (f"Option<{ref}>", f"Option<{base}>", "Some({v})",
+                f"match {{s}} {{{{ Some(@{base}) -> "
+                + pred.format(x=f"@{base}.0") + ", None -> true }}")
+    if position == "array":
+        return (f"Array<{ref}>", f"Array<{base}>", "[{v}]",
+                "if array_length({s}) > 0 then {{ "
+                f"let @{base} = {{s}}[0]; " + pred.format(x=f"@{base}.0")
+                + " }} else {{ true }}")
+    assert position == "tuple", position
+    first = f"@{base}.1" if base == "Int" else f"@{base}.0"
+    return (f"Tuple<{ref}, Int>", f"Tuple<{base}, Int>", "Tuple({v}, 1)",
+            f"match {{s}} {{{{ Tuple(@{base}, @Int) -> "
+            + pred.format(x=first) + " }}")
+
+
+def _cell_1928(producer: str, position: str, ref: str, row: str) -> str:
+    _base, bad, good, _pred = _REFINEMENTS_1928[ref]
+    ty, base_ty, build, reader = _position_1928(position, ref)
+    value = "pick2(())" if row != "proved" else build.format(v=good)
+    pick_ret, pick_body = base_ty, build.format(v=bad)
+    extra = ""
+    if producer == "base_handle":
+        extra = f"type W = {{ @{ty} | true }};\n\n"
+        ty = "W"
+    if producer == "destructure":
+        pick_ret = f"Tuple<{base_ty}, Int>"
+        pick_body = f"Tuple({pick_body}, 1)"
+        if row == "proved":
+            value = f"Tuple({value}, 1)"
+        body = (f"let @Bool = {{\n    let Tuple<@{ty}, @Int> = apply_fn("
+                f"fn(@Unit -> @Tuple<{ty}, Int>) effects(pure) {{ {value} }}"
+                f", ());\n    {reader.format(s=f'@{ty}.0')}\n  }};\n  @Bool.0")
+    elif producer == "closure":
+        body = (f"let @{ty} = apply_fn(fn(@Unit -> @{ty}) effects(pure) "
+                f"{{ {value} }}, ());\n  {reader.format(s=f'@{ty}.0')}")
+    else:
+        body = (f"let @{ty} = handle[State<{ty}>](@{ty} = "
+                f"{build.format(v=good)}) {{\n"
+                f"    get(@Unit) -> {{ resume({value}) }},\n"
+                f"    put(@{ty}) -> {{ resume(()) }}\n  }} in {{\n"
+                f"    get(())\n  }};\n  {reader.format(s=f'@{ty}.0')}")
+    return (_HEAD_1928 + extra
+            + _fn("private", f"pick2(@Unit -> @{pick_ret})", "true", pick_body)
+            + "\n" + _fn("public", "main(@Unit -> @Bool)", "@Bool.result",
+                         body))
+
+
+_CELLS_1928 = list(itertools.product(
+    _PRODUCERS_1928, _POSITIONS_1928, _REFINEMENTS_1928, _ROWS_1928))
+
+
+def test_the_stand_in_dimension_spans_every_product() -> None:
+    assert len(_CELLS_1928) == 4 * 3 * 2 * 3 == 72
+
+
+#: The reader of each `proved` and `checked` cell at e35cc91a, (status,
+#: code), generated by a run of `_cell_1928` at that head.
+_BASE_1928 = {
+    "state_get.option.Pos.proved": ("verified", ""),
+    "state_get.option.Pos.checked": ("verified", ""),
+    "state_get.option.NotRed.proved": ("verified", ""),
+    "state_get.option.NotRed.checked": ("verified", ""),
+    "state_get.tuple.Pos.proved": ("verified", ""),
+    "state_get.tuple.Pos.checked": ("verified", ""),
+    "state_get.tuple.NotRed.proved": ("verified", ""),
+    "state_get.tuple.NotRed.checked": ("verified", ""),
+    "closure.option.Pos.proved": ("verified", ""),
+    "closure.option.Pos.checked": ("verified", ""),
+    "closure.option.NotRed.proved": ("verified", ""),
+    "closure.option.NotRed.checked": ("verified", ""),
+    "closure.array.Pos.proved": ("tier3", "E522"),
+    "closure.array.Pos.checked": ("tier3", "E522"),
+    "closure.array.NotRed.proved": ("verified", ""),
+    "closure.array.NotRed.checked": ("verified", ""),
+    "closure.tuple.Pos.proved": ("verified", ""),
+    "closure.tuple.Pos.checked": ("verified", ""),
+    "closure.tuple.NotRed.proved": ("verified", ""),
+    "closure.tuple.NotRed.checked": ("verified", ""),
+    "base_handle.option.Pos.proved": ("verified", ""),
+    "base_handle.option.Pos.checked": ("verified", ""),
+    "base_handle.option.NotRed.proved": ("verified", ""),
+    "base_handle.option.NotRed.checked": ("verified", ""),
+    "base_handle.tuple.Pos.proved": ("verified", ""),
+    "base_handle.tuple.Pos.checked": ("verified", ""),
+    "base_handle.tuple.NotRed.proved": ("verified", ""),
+    "base_handle.tuple.NotRed.checked": ("verified", ""),
+    "destructure.option.Pos.proved": ("verified", ""),
+    "destructure.option.Pos.checked": ("verified", ""),
+    "destructure.option.NotRed.proved": ("verified", ""),
+    "destructure.option.NotRed.checked": ("verified", ""),
+    "destructure.array.Pos.proved": ("tier3", "E522"),
+    "destructure.array.Pos.checked": ("tier3", "E522"),
+    "destructure.array.NotRed.proved": ("verified", ""),
+    "destructure.array.NotRed.checked": ("verified", ""),
+    "destructure.tuple.Pos.proved": ("verified", ""),
+    "destructure.tuple.Pos.checked": ("verified", ""),
+    "destructure.tuple.NotRed.proved": ("verified", ""),
+    "destructure.tuple.NotRed.checked": ("verified", ""),
+}
+
+#: The cells whose reader the rule moves from Tier 1 (measured): a producer
+#: row with no check whose value the solver proves (`Green` into `NotRed`:
+#: "a construction store guards only a scalar-based refinement") discloses
+#: as a refuted one does, its status being settled after the stand-in that
+#: asks is made.  `base_handle.tuple.NotRed.checked` is the same row: the
+#: handler's initial state `Tuple(Green, 1)` is under the handle's node.
+_LOST_1928: frozenset[str] = frozenset({
+    "state_get.option.NotRed.proved",
+    "state_get.tuple.NotRed.proved",
+    "closure.option.NotRed.proved",
+    "closure.array.NotRed.proved",
+    "closure.tuple.NotRed.proved",
+    "base_handle.option.NotRed.proved",
+    "base_handle.tuple.NotRed.proved",
+    "base_handle.tuple.NotRed.checked",
+    "destructure.option.NotRed.proved",
+    "destructure.array.NotRed.proved",
+    "destructure.tuple.NotRed.proved",
+})
+
+
+def _producer_row_checked_1928(source: str) -> bool | None:
+    """Whether every narrowing row at the producer's `pick2(())` call has a
+    check; None where the program states none there."""
+    from vera.obligations import table as obligation_table
+    rows = [r for r in obligation_table.build(
+        pipeline.typed(source, file=FILE)).rows
+        if r.kind in ("refine_bind", "nat_bind")
+        and getattr(r.node, "name", None) == "pick2"]
+    return all(r.guard.check for r in rows) if rows else None
+
+
+def _cell_param_1928(cell: tuple[str, ...]) -> object:
+    cid = ".".join(cell)
+    marks = ([pytest.mark.xfail(strict=True, reason=(
+        "#1928: a producer row with no check that the solver proves "
+        "discloses; its proof is settled after the stand-in is made"))]
+        if cid in _LOST_1928 else [])
+    return pytest.param(cell, id=cid, marks=marks)
+
+
+@pytest.mark.parametrize("cell", [_cell_param_1928(c) for c in _CELLS_1928])
+def test_a_stand_in_holds_what_every_producing_row_checks(
+        cell: tuple[str, str, str, str]) -> None:
+    """(a) Where the producer's row has no check and its value violates the
+    refinement, the reader's `ensures` is not `verified`, and the run does
+    not return normally.  (b) Where the row has a check, or the value is a
+    satisfying literal, the reader is what it was at e35cc91a."""
+    cid = ".".join(cell)
+    source = _cell_1928(*cell)
+    verified = pipeline.verify(source, file=FILE)
+    if not verified.ran:
+        pytest.skip("refused: " + ",".join(sorted(
+            {d.error_code for d in verified.checked.errors})))
+    (reader,) = [(o.status, o.error_code) for o in verified.obligations
+                 if o.fn_name == "main" and o.kind == "ensures"]
+    row = cell[3]
+    if row != "proved":
+        checked = _producer_row_checked_1928(source)
+        assert checked is not None, cid
+        if checked != (row == "checked"):
+            pytest.skip(("the producer's row has a check here"
+                         if checked else "E506: no check at this position")
+                         + f" (the {'checked' if checked else 'unchecked'}"
+                         " cell is the program)")
+    if row == "unchecked":
+        assert reader[0] != "verified", (cid, reader)
+        ran = pipeline.run(source, "main", file=FILE)
+        assert not ran.ok, (cid, ran)
+        return
+    assert reader == _BASE_1928[cid], (cid, reader)
+
+
+_TWO_HANDLERS_1928 = _state_1928(
+    "Option<NotRed>", "None", "Option<Color>", "Some(Red)",
+    _OPT_NOTRED_READER).replace(
+        "resume(pick(@Option<NotRed>.0))", "resume(@Option<NotRed>.0)") + """
+public fn other(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<NotRed> = handle[State<Option<NotRed>>](@Option<NotRed> = None) {
+    get(@Unit) -> { resume(pick(@Option<NotRed>.0)) },
+    put(@Option<NotRed>) -> { resume(()) }
+  } in {
+    get(())
+  };
+  true
+}
+"""
+
+
+def test_1928_an_operation_is_disclosed_by_its_own_handler() -> None:
+    """`main`'s `get` is answered by its own handler, whose clause resumes
+    the state it holds; `other`'s handler, whose clause resumes a value with
+    no check, answers no call of `main`'s, and leaves its reader proved."""
+    verified = pipeline.verify(_TWO_HANDLERS_1928, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    statuses = {(o.fn_name, o.kind, o.status, o.error_code)
+                for o in verified.obligations}
+    assert ("main", "ensures", "verified", "") in statuses, statuses
+    assert ("other", "refine_bind", "tier3_unguarded", "E506") in statuses

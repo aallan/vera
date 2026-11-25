@@ -930,6 +930,15 @@ class SmtContext:
         # Signature: (smt, type, term) -> list of facts.  None when no
         # verifier is driving.
         self._type_invariant_hook: Any = None
+        # #1928: the ranges alone of that walk (an `Int`'s i64 range, a
+        # `Nat`'s), which hold of a value by representation whatever row
+        # produced it.  Signature: (smt, type, term) -> list of facts.
+        self._type_ranges_hook: Any = None
+        # #1928: whether a row that produces the value of a node has no
+        # check (`ContractVerifier._produces_unchecked`), asked through the
+        # obligation table.  Signature: (node) -> bool.  None when no
+        # verifier is driving.
+        self._unchecked_producer_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -3830,18 +3839,36 @@ class SmtContext:
         const = z3.Const(self._named(f"_opaque_{tag}", node, key), sort)
         self._stand_ins[key] = const
         self._taint(const)
-        for stated in (self._base_facts(const, ty) if base_only
-                       else self._type_facts(const, ty)):
-            self.assume(stated)
+        facts = (self._base_facts(const, ty) if base_only
+                 else self._type_facts(const, ty))
         if not _is_arithmetic(node):
             # An arithmetic node's stand-in is the value the operation
             # leaves, and its own `int_overflow` row asks whether the
             # operation's exact result is in range: the range stated of the
             # stand-in would answer that row with its own goal (#1814).
-            for stated in self._invariant_facts(const, ty):
-                self.assume(stated)
-        self._inherit_disclosure(node, const)
+            facts = facts + self._invariant_facts(const, ty)
+        if self._inherit_disclosure(node, const):
+            # #1928: a value is established only when every row that
+            # produces it has a check.  What holds by representation (the
+            # base's `>= 0`, the ranges) is stated; the rest is withheld as
+            # `ContractVerifier._established_facts` withholds it, offered on
+            # the second attempt only.
+            stated_ids = {f.get_id() for f in (
+                *self._base_facts(const, ty), *self._ranges(const, ty))}
+            self._tainted_facts.extend(
+                f for f in facts if f.get_id() not in stated_ids)
+            facts = [f for f in facts if f.get_id() in stated_ids]
+        for stated in facts:
+            self.assume(stated)
         return const
+
+    def _ranges(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """The ranges *ty* states of *term* (#1928), through the verifier's
+        hook; nothing with no verifier driving."""
+        hook = self._type_ranges_hook
+        if hook is None:
+            return []
+        return list(hook(self, ty, term))
 
     def _invariant_facts(
         self, term: z3.ExprRef, ty: Type,
@@ -4108,7 +4135,7 @@ class SmtContext:
         self._id_holders.append(term)
         self._opaque_tainted = True
 
-    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
+    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> bool:
         """A stand-in term inherits the disclosure of the value it replaces.
 
         #1363's asymmetry, one layer down (#1418 review F1).  Where the SMT
@@ -4125,16 +4152,25 @@ class SmtContext:
         Called at every mint rather than at the two known callers, so a
         future stand-in is covered by existing code.  The walk is over ONE
         expression's subtree and runs only when a verifier is driving.
+
+        #1928: the one place a stand-in's disclosure is decided.  A value
+        is established only when every row that produces it has a check, so
+        a node holding a narrowing row with none, or an operation call a
+        handler clause with one answers, discloses the stand-in as a
+        disclosed call does (the verifier asks the obligation table).
+        Returns whether *stand_in* is disclosed.
         """
-        if self._disclosed_call_hook is None:
-            return
-        found, sites = self._disclosed_calls_in(node)
-        if not found:
-            return
+        found, sites = (self._disclosed_calls_in(node)
+                        if self._disclosed_call_hook is not None
+                        else (False, []))
+        if not found and not (self._unchecked_producer_hook is not None
+                              and self._unchecked_producer_hook(node)):
+            return False
         self._disclosed_terms.append(stand_in)
         if sites:
             self._disclosed_term_sites.setdefault(
                 stand_in.get_id(), []).extend(sites)
+        return True
 
     def _disclosed_calls_in(self, node: object) -> tuple[bool, list[Any]]:
         """Whether *node*'s subtree contains a disclosed call, and its sites.
