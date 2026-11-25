@@ -1,10 +1,13 @@
-"""Tests for `scripts/check_pragma_placement.py` (#1838): where mutmut files each
-`# pragma: no mutate`, read without the engine.
+"""Tests for `scripts/check_pragma_placement.py` (#1838): the gate accepts a
+`# pragma: no mutate` only in a shape it places by a local rule, filed under
+its own line, and refuses every other shape with a message saying where to
+write it.
 
-The shapes below pin the gate's rule; the repository cell holds `vera/` to it;
-and where mutmut is installed (the Mutation (diff) lane's self-test step) the
-differential holds the rule to mutmut's own `PragmaVisitor`, over the shapes
-and over every file of `vera/` that carries a pragma.
+The shapes below pin what it accepts and refuses; the repository cell holds
+`vera/` to it; and where mutmut is installed (the Mutation (diff) lane's
+self-test step) the differential holds every pragma it accepts to mutmut's
+own `PragmaVisitor`, over the shapes and over every file of `vera/` that
+carries a pragma.
 """
 
 from __future__ import annotations
@@ -33,7 +36,8 @@ gate = _load()
 P = "# pragma: no mutate"
 
 #: Each shape: its source, and for each pragma the line it is written on and
-#: the line the engine files it under (None: no visitor reads it).
+#: the line the gate files it under (None: a shape the gate does not place).
+#: Where the gate files a pragma under a line, the engine files it there too.
 SHAPES: dict[str, tuple[str, list[tuple[int, int | None]]]] = {
     "one_line_statement": (f"x = f(1)  {P} — r\n", [(1, 1)]),
     "after_a_call_that_spans_lines": (
@@ -83,7 +87,7 @@ SHAPES: dict[str, tuple[str, list[tuple[int, int | None]]]] = {
     "the_words_inside_a_string": (f'x = "{P}"\n', []),
 }
 
-#: Shapes the engine reads as written; every other has a misplaced pragma.
+#: Shapes the gate accepts; every other has a pragma it refuses.
 WELL_PLACED = {
     "one_line_statement", "inside_the_brackets_after_a_comma",
     "before_a_closing_bracket_on_its_own_line", "the_same_condition_with_its_bracket_on_a_line_of_its_own",
@@ -94,7 +98,7 @@ WELL_PLACED = {
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
-def test_each_shape_is_filed_where_the_engine_files_it(name: str) -> None:
+def test_each_shape_is_filed_and_judged_as_the_contract_says(name: str) -> None:
     source, expected = SHAPES[name]
     found = gate.pragmas(source)
     assert [(p.line, p.filed) for p in found] == expected
@@ -107,42 +111,71 @@ def test_a_bare_pragma_alone_on_its_line_is_refused() -> None:
     assert p.misplaced and "protects no node" in gate.explain(p)
 
 
-def test_repro_a_pragma_above_a_clause_after_a_one_line_suite_is_read_by_no_visitor() -> None:
-    """A one-line suite has no footer, so libcst gives a comment line below
-    it to the next clause's own leading lines, which no visitor scans, at
-    any indent; an indented block's footer above the same clause is read."""
-    (p,) = gate.pragmas(f"if a: x = 1\n    {P} block\nelse: x = 2\n")
-    assert (p.filed, p.how, p.misplaced) == (None, "above a clause", True)
-    (q,) = gate.pragmas(f"if a:\n    x = 1\n    {P} block\nelse:\n    x = 2\n")
+#: What the gate's message tells a `block` pragma to do instead.
+BLOCK_FIX = "write it after the code on the compound statement's own header line, or alone directly above"
+
+
+def _refused(source: str) -> str:
+    """The message the gate gives the one pragma of `source`, which it refuses
+    without placing it."""
+    (p,) = gate.pragmas(source)
+    assert (p.filed, p.misplaced) == (None, True), p
+    return gate.explain(p)
+
+
+def test_repro_a_pragma_above_a_clause_is_refused_after_a_one_line_suite_and_after_a_block() -> None:
+    """A `block` is placed only above the statement it covers.  Below a
+    one-line suite libcst gives the comment to the next clause's own leading
+    lines, which no visitor scans; below an indented block it is the block's
+    footer.  Both are refused, with the fix.  An `end` in the same footer is
+    placed: it closes a region with its block."""
+    assert BLOCK_FIX in _refused(f"if a: x = 1\n    {P} block\nelse: x = 2\n")
+    assert BLOCK_FIX in _refused(f"if a:\n    x = 1\n    {P} block\nelse:\n    x = 2\n")
+    (q,) = gate.pragmas(f"if a:\n    x = 1\n    {P} end\nelse:\n    x = 2\n")
     assert (q.filed, q.misplaced) == (3, False)
 
 
-def test_repro_a_comment_line_after_a_backslash_ends_the_statement_it_continues() -> None:
+def test_repro_a_comment_line_after_a_backslash_is_refused() -> None:
     """The engine files it under the statement's first line, as a trailing
-    comment, though nothing but the comment is on its own line."""
-    (p,) = gate.pragmas(f"x = 1 \\\n    {P} block\n")
-    assert (p.filed, p.how, p.misplaced) == (1, "statement", True)
+    comment; the gate does not place a comment line in an open logical line."""
+    assert BLOCK_FIX in _refused(f"x = 1 \\\n    {P} block\n")
 
 
-def test_repro_a_comment_line_below_a_pragma_makes_it_footer() -> None:
-    """libcst's footer runs through the last comment line deep enough for
-    the block, so an ordinary comment below the pragma decides; without it
-    the same pragma is the clause's own leading line."""
-    (p,) = gate.pragmas(f"if a:\n    x = 1\n{P} block\n    # a note\nelse:\n    x = 2\n")
-    assert (p.filed, p.misplaced) == (3, False)
-    (q,) = gate.pragmas(f"if a:\n    x = 1\n{P} block\n# a note\nelse:\n    x = 2\n")
-    assert (q.filed, q.misplaced) == (None, True)
+def test_repro_a_comment_line_at_another_column_between_a_pragma_and_its_clause_is_refused() -> None:
+    """Whether libcst makes the pragma a footer or the clause's leading line
+    turns on the comment lines below it; the gate places neither."""
+    assert BLOCK_FIX in _refused(f"if a:\n    x = 1\n{P} block\n    # a note\nelse:\n    x = 2\n")
+    assert BLOCK_FIX in _refused(f"if a:\n    x = 1\n{P} block\n# a note\nelse:\n    x = 2\n")
 
 
-def test_repro_the_indented_comment_lines_ending_a_module_are_one_line_at_their_first() -> None:
-    """libcst keeps the run as one footer line, the run's last comment at
-    the run's first line: the last is filed one line up, the others nowhere."""
-    (p,) = gate.pragmas(f"x = 1\n    # a note\n  {P} block\n")
-    assert (p.filed, p.misplaced) == (2, True)
-    (q,) = gate.pragmas(f"x = 1\n  {P} block\n    # a note\n")
-    assert (q.filed, q.misplaced) == (None, True)
-    (r,) = gate.pragmas(f"x = 1\n  {P} block\n")
+def test_repro_a_block_or_start_ending_a_module_is_refused_and_an_end_there_is_placed() -> None:
+    """Nothing follows a `block` or `start` at a module's end for a region to
+    cover, at any indent, beside any comment run; an `end` below the last
+    statement at its column closes one, and mutmut 3.8.1 marks its line."""
+    assert BLOCK_FIX in _refused(f"x = 1\n    # a note\n  {P} block\n")
+    assert BLOCK_FIX in _refused(f"x = 1\n  {P} block\n    # a note\n")
+    assert BLOCK_FIX in _refused(f"x = 1\n  {P} block\n")
+    assert "alone directly above a statement" in _refused(f"x = 1\n{P} start\n")
+    assert _refused(f"x = (\n    {P} end\n    1\n)\n").startswith("an `end` pragma alone inside brackets")
+    assert _refused(f"x = (\n    {P} start\n    1\n)\n").startswith("a `start` pragma alone inside brackets")
+    (r,) = gate.pragmas(f"x = 1\n{P} end\n")
     assert (r.filed, r.misplaced) == (2, False)
+
+
+def test_repro_a_comment_run_shallower_than_its_block_ending_a_module_is_refused() -> None:
+    """At the end of a module, comment lines shallower than the block above
+    them belong to the module's footer, where libcst keeps the run as one
+    line and mutmut files the pragma under line 3.  The gate accepted it as
+    written, under line 4; now it is refused, with the fix."""
+    assert BLOCK_FIX in _refused(f"if a:\n    x = 1\n  # a note\n  {P} block\n")
+
+
+def test_repro_an_indented_comment_run_below_a_module_level_comment_is_refused_by_design() -> None:
+    """mutmut reads this pragma at line 4: libcst stops trimming the module's
+    footer at the unindented comment.  The gate does not place it, since no
+    local rule says where libcst puts the run; it refuses it and asks for the
+    pragma on the node's own line."""
+    assert BLOCK_FIX in _refused(f"x = 1\n# a note\n  # another note\n  {P} block\n")
 
 
 def test_the_message_names_the_line_the_engine_files_it_under() -> None:
@@ -181,31 +214,31 @@ def _engine_lines(source: str) -> set[int]:
 
 
 def _gate_lines(source: str) -> set[int]:
-    """The same, as the gate reads it: each pragma's line where the engine
-    files it (a `start` ... `end` or `block` region is not expanded here)."""
-    return {p.filed for p in gate.pragmas(source) if p.filed is not None}
+    """The lines of the pragmas the gate accepts, each filed under its own
+    (a `start` ... `end` or `block` region is not expanded here)."""
+    return {p.line for p in gate.pragmas(source) if not p.misplaced}
 
 
 def _has_region(source: str) -> bool:
-    return any(p.token in ("start", "end", "block") and p.filed is not None for p in gate.pragmas(source))
+    return any(p.token in ("start", "end", "block") for p in gate.pragmas(source))
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
-def test_the_gate_reads_each_shape_as_the_engine_does(name: str) -> None:
-    """Equal where no region the engine reads is open; with one, each line
-    the gate files a pragma under is one the engine marks.  A pragma no
-    visitor reads marks nothing."""
+def test_each_pragma_the_gate_accepts_in_a_shape_is_one_the_engine_marks(name: str) -> None:
+    """Each line the gate accepts a pragma on is one the engine marks; with
+    no region and nothing refused, the two sets are equal.  The gate is not
+    held to the lines of the pragmas it refuses: some the engine reads."""
     source = SHAPES[name][0]
-    if _has_region(source):
-        assert _gate_lines(source) <= _engine_lines(source)
-    else:
-        assert _gate_lines(source) == _engine_lines(source)
+    mine, engine = _gate_lines(source), _engine_lines(source)
+    assert mine <= engine
+    if not _has_region(source) and not gate.check_source(source):
+        assert mine == engine
 
 
 def test_the_gate_reads_every_pragma_under_vera_as_the_engine_does() -> None:
-    """Over every file of `vera/` that holds a pragma: each line the gate
-    files a pragma under is one the engine marks, and with no `start`/`end`
-    region in the file the two sets are equal."""
+    """Over every file of `vera/` that holds a pragma: the gate accepts each
+    (the repository cell above), each line it accepts one on is one the
+    engine marks, and with no region in the file the two sets are equal."""
     checked = 0
     for path in gate.iter_scope_files():
         source = path.read_text(encoding="utf-8")

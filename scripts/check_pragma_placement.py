@@ -3,51 +3,70 @@
 
 mutmut 3.8 does not read a pragma by its physical line.  Its
 ``PragmaVisitor`` (``mutmut/mutation/pragma_handling.py``) files a comment by
-its place in the syntax tree:
+its place in libcst's syntax tree, and where libcst puts a comment line
+depends on rules no local reading reproduces in full (a block's footer, a
+module's footer, a clause's own leading lines).  So the gate does not try to
+read every placement.  Its contract:
 
-- inside brackets, a bare pragma ending a line of code is filed under that
-  line (``visit_ParenthesizedWhitespace``); a ``block``, ``start`` or
-  ``end`` pragma there, and any pragma alone on a line inside brackets, is
-  read by no visitor at all;
-- alone on its line, a pragma is filed under that line where it is a
-  module's header or footer, a statement's leading line in a body, or a
-  block's footer: there ``start``, ``end`` and ``block`` open and close
-  their regions, and a bare one protects no node, since none starts on a
-  line that holds only a comment.  Alone after a decorator, or in the own
-  leading lines of an ``else``, ``elif``, ``except`` or ``finally`` (above
-  the clause and shallower than the indented block it closes, or at any
-  indent after a one-line suite, which has no footer), it is read by no
-  visitor.  A footer runs through its last comment line deep enough for it,
-  so an ordinary comment line below a pragma can make the pragma footer.
-  The indented comment lines that end a module outside every block are one
-  footer line at their first line: the last of them is filed under the
-  first, and the others are read by no visitor;
-- alone on its line after a backslash, it ends the statement the backslash
-  continues, and is filed as that statement's trailing comment (below);
-- on a decorator's line, after the decorator, it is read by no visitor;
-- after code, outside every bracket, a pragma ends a statement and is filed
-  under the line the statement starts on: a simple statement's trailing
-  comment (``visit_SimpleStatementLine``), a compound statement's header
-  (``if``, ``for``, ``while``, ``with``, ``try``, ``except``, ``else``,
-  ``finally``, ``def``, ``class``, ``case``; a decorated ``def`` or ``class``
-  starts at its ``def`` or ``class``, not at a decorator), a one-line suite,
-  a ``match`` header.
+- it ACCEPTS a pragma only in a shape it places by a local rule, and for
+  each shape it accepts, the line it files the pragma under is the line
+  mutmut's visitor marks;
+- it REFUSES every other shape, with a message that says where to write the
+  pragma instead.  A refused pragma may still be one mutmut reads.
 
-So a pragma written after the closing bracket of a statement that spans
-lines protects the statement's first line, not its own: every mutant anchored
-on the first line (each argument of a call, an assignment's value, a
-condition's ``or``) is suppressed, and none on the pragma's line is.  The
-gate reads each pragma as the engine does, with ``tokenize`` for the bracket
-depth at the comment and the logical line it ends, and fails on one filed
-under another line, a bare one that protects nothing, and one no visitor
-reads.  The fix is to write the comment inside the brackets on the line of
-the node it answers (after a comma, or before a closing bracket put on a line
-of its own), or to make the statement one line.
+The shapes it accepts, each filed under its own line:
+
+- after the code of a line that starts a statement, outside every bracket: a
+  simple statement's trailing comment (``visit_SimpleStatementLine``), a
+  compound statement's header (``if``, ``for``, ``while``, ``with``, ``try``,
+  ``except``, ``else``, ``finally``, ``def``, ``class``, ``match``, ``case``),
+  a one-line suite.  On a header, ``block`` covers the whole statement;
+- a bare pragma after code inside brackets, on the line of the node it
+  answers: after a comma, or before a closing bracket put on a line of its
+  own (``visit_ParenthesizedWhitespace``);
+- a ``block``, ``start`` or ``end`` pragma alone on its line, directly above
+  a statement, a compound statement, a ``case`` or a decorator at that
+  statement's column: the next line that is neither blank nor a comment
+  starts it, no backslash continuation is open, and every comment line
+  between is at the same column.  The comment is that statement's leading
+  line, which the visitor scans;
+- an ``end`` pragma alone on its line, directly below a statement at the same
+  column, where a region that ends with its block has to close: the latest
+  statement starting at that column or shallower starts at it (so the line
+  above is that statement's last), no backslash continuation is open, every
+  comment line between that statement and the next is at the same column,
+  and the next statement is shallower, at the same column and no clause, or
+  there is none.  Comment lines below the pragma that are shallower than it
+  are ignored when the next statement is shallower too (the block has
+  closed); a deeper comment line, or a shallower one followed by a statement
+  at the pragma's own column or by the end of the module, is still refused.  The comment is then the footer of the block, or of the
+  module, which the visitor scans (at the end of a module too: mutmut 3.8.1
+  marks the line there).  ``block`` and ``start`` are not accepted there:
+  nothing follows them for a region to cover.
+
+A ``case`` is a statement here and ``else``, ``elif``, ``except`` and
+``finally`` are not: the visitor scans the leading lines of each ``case`` and
+of no other clause.
+
+Refused, with the reason: a pragma after code on a line that does not start
+its statement (after the closing bracket of a statement that spans lines, it
+is filed under the statement's first line and protects that line's mutants,
+not its own); a bare pragma alone on its line (no node starts there); a
+``block``, ``start`` or ``end`` inside brackets; a pragma on a decorator's
+line or alone after a decorator; and a pragma alone on its line in any other
+shape: a ``block`` or ``start`` at the end of a block or of a module, at an
+indent no statement next to it has, above an ``else``, ``elif``, ``except``
+or ``finally`` at its column, after a backslash, or with a comment line at
+another column between it and the statement.  The fix is to write the
+comment on the node's own line (inside the brackets on a statement that
+spans lines), or alone directly above the statement it covers, at that
+statement's column.
 
 It runs without the engine.  ``tests/test_check_pragma_placement.py`` (its
 named shapes) and ``tests/test_pragma_placement_matrix.py`` (a generated
-matrix of every place a comment can go) hold it to mutmut's own visitor where
-mutmut is installed (the Mutation (diff) lane's self-test step).
+matrix of every place a comment can go) hold every pragma it accepts to
+mutmut's own visitor where mutmut is installed (the Mutation (diff) lane's
+self-test step), and hold the documented shapes accepted.
 
 Usage:
     python scripts/check_pragma_placement.py            # every .py file under vera/
@@ -72,8 +91,8 @@ SCOPE = ("vera",)
 @dataclass(frozen=True)
 class Pragma:
     """One ``# pragma: no mutate`` comment: where it is written, its token
-    (``bare``, ``block``, ``start`` or ``end``), the line the engine files it
-    under (None: no visitor reads it), and how."""
+    (``bare``, ``block``, ``start`` or ``end``), the line the gate files it
+    under (None: a shape the gate does not place), and its shape."""
 
     line: int
     token: str
@@ -82,7 +101,7 @@ class Pragma:
 
     @property
     def misplaced(self) -> bool:
-        """Whether the engine reads it otherwise than its line says."""
+        """Whether the gate refuses it."""
         if self.filed is None:
             return True
         if self.how == "alone" and self.token == "bare":
@@ -107,66 +126,25 @@ def token_of(comment: str) -> str | None:
 CLAUSES = frozenset({"else", "elif", "except", "finally"})
 
 
-def footer_owns(column: int, clause: int, levels: list[int]) -> bool:
-    """Whether a comment line above a clause at column ``clause`` is the
-    footer of the indented block the clause closes, where the engine reads
-    it, rather than the clause's own leading lines, where it does not.
-    libcst's footer runs through the last comment line deep enough for it, so
-    ``column`` is the deepest of the line's own and those of the comment lines
-    between it and the clause.  ``levels`` are the indents of the blocks open
-    at the comment.
-    The block the clause closes is the shallowest one deeper than the clause;
-    a clause after a one-line suite closes none, so nothing above it is a
-    footer, at any column."""
-    closed = [level for level in levels if level > clause]
-    return bool(closed) and column >= min(closed)
-
-
-def module_tail(tokens: list[tokenize.TokenInfo], at: int) -> tuple[int, bool] | None:
-    """Where libcst 1.9 puts an indented comment line in the run of indented
-    comment lines that ends a module outside every block, or None for one in
-    no such run.  libcst keeps the run as one footer line holding the run's
-    last comment, positioned at the run's first line: so (the run's first
-    line, whether this is its last line), and the engine reads the last
-    line under the first and never reads the others."""
-    def indented_comment(t: tokenize.TokenInfo) -> bool:
-        return t.type == tokenize.COMMENT and t.start[1] > 0 and not t.line[:t.start[1]].strip()
-
-    rest = tokens[at + 1:]
-    if not all(indented_comment(t) or t.type in (tokenize.NEWLINE, tokenize.ENDMARKER)
-               or (t.type == tokenize.NL and t.line.strip()) for t in rest):
-        return None
-    first = at
-    while first >= 2 and tokens[first - 1].type == tokenize.NL and indented_comment(tokens[first - 2]):
-        first -= 2
-    return tokens[first].start[0], not any(t.type == tokenize.COMMENT for t in rest)
-
-
 def pragmas(source: str) -> list[Pragma]:
-    """Every pragma in ``source`` with the line the engine files it under.
-    The source must parse: ``tokenize`` alone accepts some text Python does
-    not, where the engine's parser would refuse the file.
-
-    A comment alone on its line is read where it is a module's header or
-    footer, a statement's leading line in a body, or a block's footer; it is
-    read nowhere inside brackets, after a decorator (between decorators, or
-    between the last one and its ``def`` or ``class``), or in a clause's own
-    leading lines (``footer_owns``).  A comment after code is read on a statement, a
-    compound header, a one-line suite or a ``match`` header, and nowhere on a
-    decorator's line."""
+    """Every pragma in ``source`` with the line the gate files it under, by
+    the module's contract.  The source must parse: ``tokenize`` alone accepts
+    some text Python does not, where the engine's parser would refuse the
+    file."""
     ast.parse(source)
     found: list[Pragma] = []
     depth = 0
     logical_start: int | None = None
     logical_first: str | None = None
     after_decorator = False
-    levels: list[int] = []
+    starts: list[int] = []  # the column each logical line so far starts at
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
             tokenize.ENCODING, tokenize.ENDMARKER)
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     for at, tok in enumerate(tokens):
         if tok.type not in skip and logical_start is None:
             logical_start, logical_first = tok.start[0], tok.string
+            starts.append(tok.start[1])
             after_decorator = after_decorator and tok.string == "@"
         if tok.type == tokenize.OP and tok.string in "([{":
             depth += 1
@@ -176,27 +154,42 @@ def pragmas(source: str) -> list[Pragma]:
             token = token_of(tok.string)
             if token is not None:
                 line = tok.start[0]
-                # A comment line after a backslash ends the logical line it
-                # continues: it is that statement's trailing comment, not alone.
-                if not tok.line[:tok.start[1]].strip() and (depth > 0 or logical_start is None):
-                    rest = tokens[at + 1:]
-                    ahead = next((n for n, t in enumerate(rest) if t.type not in skip), len(rest))
-                    following = rest[ahead] if ahead < len(rest) else None
-                    # libcst's footer runs through the last comment line deep
-                    # enough for it, so a line below this one can make it footer.
-                    run = [t.start[1] for t in rest[:ahead] if t.type == tokenize.COMMENT]
+                if not tok.line[:tok.start[1]].strip():
                     if depth > 0:
                         found.append(Pragma(line, token, None, "alone in brackets"))
+                    elif logical_start is not None:
+                        found.append(Pragma(line, token, None, "after a backslash"))
                     elif after_decorator:
                         found.append(Pragma(line, token, None, "after a decorator"))
-                    elif not levels and tok.start[1] > 0 and (tail := module_tail(tokens, at)) is not None:
-                        filed = tail[0] if tail[1] else None
-                        found.append(Pragma(line, token, filed, "alone" if filed == line else "module tail"))
-                    elif (following is not None and following.string in CLAUSES
-                          and not footer_owns(max([tok.start[1], *run]), following.start[1], levels)):
-                        found.append(Pragma(line, token, None, "above a clause"))
                     else:
-                        found.append(Pragma(line, token, line, "alone"))
+                        rest = tokens[at + 1:]
+                        ahead = next((n for n, t in enumerate(rest) if t.type not in skip), len(rest))
+                        column = tok.start[1]
+                        following = rest[ahead] if ahead < len(rest) else None
+                        aligned = all(t.start[1] == column for t in rest[:ahead] if t.type == tokenize.COMMENT)
+                        # Above a statement at its column: its leading line.
+                        placed = (aligned and following is not None and following.start[1] == column
+                                  and following.string not in CLAUSES)
+                        if token == "end" and not placed:
+                            # Below a statement at its column, ending its block
+                            # or the module: the block's or the module's footer.
+                            back = at
+                            while back > 0 and tokens[back - 1].type in skip:
+                                back -= 1
+                            owner = next((c for c in reversed(starts) if c <= column), None)
+                            # A shallower comment line below is ignored when the
+                            # next statement is shallower too: the block has closed.
+                            closed = following is not None and following.start[1] < column
+                            below = all(t.start[1] == column or (closed and t.start[1] < column)
+                                        for t in rest[:ahead] if t.type == tokenize.COMMENT)
+                            placed = (below and owner == column
+                                      and all(t.start[1] == column for t in tokens[back:at]
+                                              if t.type == tokenize.COMMENT)
+                                      and (following is None or following.start[1] < column
+                                           or (following.start[1] == column
+                                               and following.string not in CLAUSES)))
+                        found.append(Pragma(line, token, line, "alone") if placed
+                                     else Pragma(line, token, None, "alone elsewhere"))
                 elif depth > 0:
                     found.append(Pragma(line, token, line if token == "bare" else None, "brackets"))
                 elif logical_first == "@":
@@ -207,34 +200,37 @@ def pragmas(source: str) -> list[Pragma]:
         elif tok.type == tokenize.NEWLINE:
             after_decorator = logical_first == "@"
             logical_start = logical_first = None
-        elif tok.type == tokenize.INDENT:
-            levels.append(tok.end[1])
-        elif tok.type == tokenize.DEDENT:
-            levels.pop()
     return found
 
 
+#: Where to write a pragma the gate refuses, by its token.
+FIX = {
+    "bare": ("write it after the code on the node's own line; on a statement that spans lines, "
+             "inside the brackets (after a comma, or before a closing bracket on a line of its own)"),
+    "block": ("write it after the code on the compound statement's own header line, or alone "
+              "directly above the statement at that statement's column"),
+}
+
+
 def explain(p: Pragma) -> str:
-    """What is wrong with a misplaced pragma, and the fix."""
-    if p.filed is None:
-        where = {"brackets": "inside brackets after code", "alone in brackets": "alone inside brackets",
-                 "after a decorator": "alone after a decorator",
-                 "above a clause": ("alone above an else, elif, except or finally, outside the "
-                                    "footer of the block it closes"),
-                 "on a decorator": "on a decorator's line",
-                 "module tail": "in the indented comment lines that end the module, above the last"}[p.how]
-        fix = ("write it after the code of the line it answers" if p.token == "bare"
-               else "write it on a line of its own in a body, outside every bracket")
-        return f"a `{p.token}` pragma {where} is read by no visitor: {fix}"
-    if p.how == "alone":
-        return ("a bare pragma on a line of its own protects no node: "
-                "write it after the code of the line it answers")
-    if p.how == "module tail":
-        return (f"filed under line {p.filed}, the first of the indented comment lines that end the "
-                f"module, not under line {p.line}: write it at column 0")
-    return (f"filed under line {p.filed}, where the statement starts, not under line {p.line}: "
-            "write it inside the brackets on the line of the node it answers, or make the "
-            "statement one line")
+    """What is wrong with a refused pragma, and where to write it."""
+    fix = FIX.get(p.token, "write it alone directly above a statement, at that statement's column")
+    if p.token == "bare" and p.how in ("alone", "alone elsewhere"):
+        return f"a bare pragma on a line of its own protects no node: {fix}"
+    if p.filed is not None:
+        return (f"filed under line {p.filed}, where the statement starts, not under line {p.line}: "
+                f"{fix}, or make the statement one line")
+    where = {"brackets": "{a} `{t}` pragma inside brackets is read by no visitor",
+             "alone in brackets": "{a} `{t}` pragma alone inside brackets is read by no visitor",
+             "after a decorator": "{a} `{t}` pragma alone after a decorator is read by no visitor",
+             "on a decorator": "{a} `{t}` pragma on a decorator's line is read by no visitor",
+             "after a backslash": "{a} `{t}` pragma on a line of its own after a backslash is not placed",
+             "alone elsewhere": ("{a} `{t}` pragma on a line of its own is placed only directly above "
+                                 "a statement at its column (an `end` also directly below one, "
+                                 "ending its block), with no comment line at another column "
+                                 "between, and never above an else, elif, except or finally "
+                                 "at its column")}[p.how]
+    return f"{where.format(a='an' if p.token == 'end' else 'a', t=p.token)}: {fix}"
 
 
 def check_source(source: str) -> list[Pragma]:

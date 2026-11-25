@@ -1,7 +1,8 @@
 """The class instrument of `scripts/check_pragma_placement.py` (#1838): a
-generated matrix whose every source is judged by mutmut's own `PragmaVisitor`.
+generated matrix whose every source the gate accepts is judged by mutmut's
+own `PragmaVisitor`.
 
-No expected value is written by hand.  Each cell is one construct (a simple
+No expected line is written by hand.  Each cell is one construct (a simple
 statement, or a compound statement with its clauses) in one form (its headers
 on one line, spanning lines inside brackets, or continued by a backslash; its
 suites on the header's line or indented), in one context (first at module
@@ -20,23 +21,34 @@ brackets, alone before the statement, in a block's footer, above a clause at
 the clause's indent and deeper (in the block's footer, or in the clause's own
 leading lines after a one-line suite), between decorators and after the last.
 
-For each source the gate's reading of its one pragma (`pragmas`) is held to
-the visitor's:
+The gate accepts a pragma only in a shape it places by a local rule and
+refuses every other shape (the script's docstring).  So for each source the
+cell holds:
 
-- the line the engine files it under is the gate's ``filed``: the line a
-  `start` or `end` the engine reads raises its unmatched-region error at;
-  otherwise the first line the visitor marks (`no_mutate_lines` with
-  `ignore_node_lines`), a `block` region growing only downwards from it; and
-  None when it marks nothing;
-- a bare pragma marks exactly that one line, or none;
-- the gate refuses the pragma (`misplaced`) exactly when the engine files it
-  under no line or another line than its own, or it is bare and alone on its
-  line.
+- soundness: a pragma the gate accepts is one the engine files under its own
+  line, the line the gate files it under.  The engine's line is the line a
+  `start` or `end` it reads raises its unmatched-region error at; otherwise
+  the first line the visitor marks (`no_mutate_lines` with
+  `ignore_node_lines`), a `block` region growing only downwards from it.  An
+  accepted bare pragma marks exactly that one line;
+- usefulness: a pragma written in one of the documented shapes (`documented`,
+  read from the generator's own record of where it put the comment, not from
+  the gate) is accepted: after the code of a line that starts its statement
+  outside every bracket; bare, after code inside brackets; a `block`,
+  `start` or `end` alone directly above a statement at its column; an `end`
+  alone directly below a statement at its column, ending its block or the
+  module;
+- a refused pragma's message says where to write it.
 
-Where mutmut is not installed (the test shards install `[dev]` alone) the
-cells check only that the gate finds the one pragma on its line, and skip
-the differential; they run whole in the Mutation (diff) lane's self-test
-step, which installs the engine.
+The gate is not held to accept everything the visitor reads: a refused
+pragma may be one mutmut reads, and the axes (backslash continuations,
+comment runs beside the pragma, a module's tail, an `end` at a block's end)
+show that what is refused there is refused with a fix.
+
+Where mutmut is not installed (the test shards install `[dev]` alone) a cell
+checks usefulness and the messages, then skips the soundness half; the cells
+run whole in the Mutation (diff) lane's self-test step, which installs the
+engine.
 """
 
 from __future__ import annotations
@@ -177,61 +189,139 @@ COMPANIONS = ("none", "above", "below")
 
 Cell = tuple[str, str, str, str, str, str]
 
+#: One written source: where the cell put the pragma, the source, the
+#: pragma's line, whether it is alone on its line, and the documented shape
+#: it is written in (None: no documented shape).
+Source = tuple[str, str, int, bool, str | None]
 
-def sources(*cell: str) -> list[tuple[str, str, int, bool]]:
+#: The clauses a pragma alone on its line is never placed above.
+CLAUSES = ("else", "elif", "except", "finally")
+
+
+def sources(*cell: str) -> list[Source]:
     """Every source of a cell that Python parses."""
     out = []
-    for where, source, line, alone in written(*cell):
+    for written_source in written(*cell):
         try:
-            ast.parse(source)
+            ast.parse(written_source[1])
         except SyntaxError:
             continue
-        out.append((where, source, line, alone))
+        out.append(written_source)
     return out
 
 
-def written(
-    name: str, span: str, form: str, context: str, token: str, companion: str
-) -> list[tuple[str, str, int, bool]]:
-    """Every source a cell writes: (where, source, the pragma's line,
-    whether it is alone on its line).  A cell with a companion writes only
-    the pragmas alone on their line, each beside one ordinary comment line."""
+def _structure(full: list[Line]) -> tuple[list[bool], list[bool], list[int]]:
+    """For each line of the pragma-free lines: whether it starts a statement,
+    whether a bracket or a backslash is open at its end, and the bracket
+    depth at its end (the constructs' texts hold no bracket in a string)."""
+    starts: list[bool] = []
+    open_after: list[bool] = []
+    depths: list[int] = []
+    depth = 0
+    for n, (_, text) in enumerate(full):
+        starts.append(n == 0 or not open_after[n - 1])
+        depth += sum(map(text.count, "([{")) - sum(map(text.count, ")]}"))
+        depths.append(depth)
+        open_after.append(depth > 0 or text.endswith("\\"))
+    return starts, open_after, depths
+
+
+def _is_clause(text: str) -> bool:
+    return text.split()[0].rstrip(":") in CLAUSES
+
+
+def documented_after(full: list[Line], k: int, token: str) -> str | None:
+    """The documented shape of a pragma written after the code of line `k`."""
+    starts, _, depths = _structure(full)
+    text = full[k][1]
+    if depths[k] > 0:
+        return "brackets" if token == "bare" else None
+    if starts[k] and not text.endswith("\\") and not text.startswith("@"):
+        return "statement"
+    return None
+
+
+def documented_alone(
+    full: list[Line], gap: int, column: int, token: str, companion: str, note: int | None
+) -> str | None:
+    """The documented shape of a pragma alone on its line at `column`,
+    between `full[gap - 1]` and `full[gap]`, with an ordinary comment line at
+    column `note` just above it or just below it (`companion`)."""
+    if token == "bare":
+        return None
+    starts, open_after, _ = _structure(full)
+    above = gap - 1
+    if above >= 0:
+        if open_after[above]:
+            return None  # a bracket or a backslash is open
+        first = max(n for n in range(above + 1) if starts[n])
+        if full[first][1].startswith("@"):
+            return None  # after a decorator
+    following = full[gap] if gap < len(full) else None
+    if (following is not None and following[0] == column and not _is_clause(following[1])
+            and (companion != "below" or note == column)):
+        return "above"
+    if token != "end" or above < 0:
+        return None
+    # The latest statement starting at the pragma's column or shallower.
+    owner = next((full[n][0] for n in range(above, -1, -1) if starts[n] and full[n][0] <= column), None)
+    closed = following is not None and following[0] < column
+    if (owner == column
+            and (companion != "above" or note == column)
+            and (companion != "below" or note == column or (closed and note is not None and note < column))
+            and (following is None or following[0] < column
+                 or (following[0] == column and not _is_clause(following[1])))):
+        return "below"
+    return None
+
+
+#: The documented shapes, and the tokens each is written with.
+SHAPES = {"statement": TOKENS, "brackets": ("bare",), "above": ("block", "start", "end"), "below": ("end",)}
+
+
+def written(name: str, span: str, form: str, context: str, token: str, companion: str) -> list[Source]:
+    """Every source a cell writes.  A cell with a companion writes only the
+    pragmas alone on their line, each beside one ordinary comment line."""
     lines = construct(name, span, form)
     before: list[Line] = []
     after: list[Line] = []
     if context == "body":
         lines = _shift(lines, 4)
         before, after = [(0, "def g():"), (4, "w = 0")], [(4, "y = 0")]
-    levels = sorted({indent for indent, _ in [*before, *lines, *after]})
+    full = [*before, *lines, *after]
+    levels = sorted({indent for indent, _ in full})
     columns = sorted({*levels, *(a + (b - a) // 2 for a, b in itertools.pairwise(levels)), levels[-1] + 4})
     comment = _text(token)
     out = []
 
-    def emit(where: str, body: list[Line], line: int, alone: bool) -> None:
+    def emit(where: str, body: list[Line], line: int, alone: bool, shape: str | None) -> None:
         source = "".join(" " * indent + text + "\n" for indent, text in [*before, *body, *after])
-        out.append((where, source, len(before) + line, alone))
+        out.append((where, source, len(before) + line, alone, shape))
 
     if companion == "none":
         for i, (indent, text) in enumerate(lines):
-            emit(f"after_line_{i + 1}", [*lines[:i], (indent, f"{text}  {comment}"), *lines[i + 1:]], i + 1, False)
+            emit(f"after_line_{i + 1}", [*lines[:i], (indent, f"{text}  {comment}"), *lines[i + 1:]], i + 1, False,
+                 documented_after(full, len(before) + i, token))
     for gap in range(len(lines) + 1):
         for column in columns:
             if companion == "none":
-                emit(f"gap_{gap}_col_{column}", [*lines[:gap], (column, comment), *lines[gap:]], gap + 1, True)
+                emit(f"gap_{gap}_col_{column}", [*lines[:gap], (column, comment), *lines[gap:]], gap + 1, True,
+                     documented_alone(full, len(before) + gap, column, token, companion, None))
                 continue
             for other in levels:
                 pair = [(other, "# a note"), (column, comment)]
                 if companion == "below":
                     pair.reverse()
                 emit(f"gap_{gap}_col_{column}_note_{companion}_col_{other}", [*lines[:gap], *pair, *lines[gap:]],
-                     gap + 1 + (companion == "above"), True)
+                     gap + 1 + (companion == "above"), True,
+                     documented_alone(full, len(before) + gap, column, token, companion, other))
     return out
 
 
 def _cells() -> list[Cell]:
     cells, seen = [], set()
     for cell in itertools.product(CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS, COMPANIONS):
-        key = tuple(source for _, source, _, _ in sources(*cell))
+        key = tuple(source for _, source, _, _, _ in sources(*cell))
         if key in seen:  # A simple statement has no suite: its two forms are one.
             continue
         seen.add(key)
@@ -264,33 +354,69 @@ def engine_reading(source: str) -> tuple[int | None, set[int]]:
     return (min(marked) if marked else None), marked
 
 
-def disagreements(cell: Cell) -> tuple[int, list[str]]:
-    """How many sources the cell has, and each one where the gate and the
-    engine differ, described."""
+def the_gates_faults(cell: Cell) -> tuple[int, list[str]]:
+    """How many sources the cell has, and each one where the gate refuses a
+    documented shape or refuses with no fix, described."""
     token = cell[4]
     found = sources(*cell)
     wrong = []
-    for where, source, line, alone in found:
+    for where, source, line, _, shape in found:
         (p,) = gate.pragmas(source)
         assert (p.line, p.token) == (line, token), (where, source)
-        filed, marked = engine_reading(source)
-        refused = filed != line or (token == "bare" and alone)
-        if p.filed != filed:
-            wrong.append(f"{where}: the gate files it under {p.filed}, the engine under {filed}\n{source}")
-        elif token == "bare" and marked != ({filed} if filed is not None else set()):
-            wrong.append(f"{where}: a bare pragma marks {sorted(marked)}\n{source}")
-        elif p.misplaced != refused:
-            wrong.append(f"{where}: the gate {'refuses' if p.misplaced else 'accepts'} it\n{source}")
+        if shape is not None and p.misplaced:
+            wrong.append(f"{where}: the gate refuses a pragma written {shape!r}: {gate.explain(p)}\n{source}")
+        elif p.misplaced and "write it" not in gate.explain(p):
+            wrong.append(f"{where}: the refusal says nowhere to write it: {gate.explain(p)}\n{source}")
     return len(found), wrong
 
 
+def the_unsound_accepts(cell: Cell) -> list[str]:
+    """Each source whose pragma the gate accepts and the engine files under
+    another line, or (bare) marks more than its line, described."""
+    wrong = []
+    for where, source, line, _, _ in sources(*cell):
+        (p,) = gate.pragmas(source)
+        if p.misplaced:
+            continue
+        filed, marked = engine_reading(source)
+        if (p.filed, filed) != (line, line):
+            wrong.append(f"{where}: accepted and filed under {p.filed}, the engine under {filed}\n{source}")
+        elif p.token == "bare" and marked != {line}:
+            wrong.append(f"{where}: an accepted bare pragma marks {sorted(marked)}\n{source}")
+    return wrong
+
+
 @pytest.mark.parametrize(("construct", "span", "form", "context", "token", "companion"), CELLS)
-def test_the_gate_reads_every_place_of_a_pragma_as_the_engine_does(
+def test_the_gate_accepts_each_documented_shape_and_what_it_accepts_the_engine_reads_there(
     construct: str, span: str, form: str, context: str, token: str, companion: str
 ) -> None:
-    count, wrong = disagreements((construct, span, form, context, token, companion))
+    cell = (construct, span, form, context, token, companion)
+    count, wrong = the_gates_faults(cell)
     assert count > 0
     assert not wrong, "\n".join(wrong)
+    pytest.importorskip("libcst")
+    pytest.importorskip("mutmut.mutation.pragma_handling")
+    unsound = the_unsound_accepts(cell)
+    assert not unsound, "\n".join(unsound)
+
+
+def test_each_documented_shape_is_written_in_every_context_with_every_token_it_takes() -> None:
+    """The usefulness half reaches each shape: every documented shape is
+    written somewhere in each context, with each token it takes, both at
+    module level and in a function body, and the gate accepts some source
+    and refuses some in every cell's axis value."""
+    met: set[tuple[str, str, str]] = set()
+    verdicts: dict[tuple[int, str], set[bool]] = {}
+    for cell in CELLS:
+        for _, source, _, _, shape in sources(*cell):
+            if shape is not None:
+                met.add((shape, cell[3], cell[4]))
+            (p,) = gate.pragmas(source)
+            for n, value in enumerate(cell):
+                verdicts.setdefault((n, value), set()).add(p.misplaced)
+    assert met == {(shape, context, token) for shape, tokens in SHAPES.items()
+                   for context in CONTEXTS for token in tokens}
+    assert {key for key, seen in verdicts.items() if seen != {True, False}} == set()
 
 
 def test_the_matrix_spans_every_dimension_and_drops_only_what_python_refuses() -> None:
@@ -301,7 +427,7 @@ def test_the_matrix_spans_every_dimension_and_drops_only_what_python_refuses() -
     for n, dimension in enumerate((CONSTRUCTS, SPANS, FORMS, CONTEXTS, TOKENS, COMPANIONS)):
         assert {cell[n] for cell in CELLS} == set(dimension)
     for cell in CELLS:
-        kept = {source for _, source, _, _ in sources(*cell)}
+        kept = {source for _, source, _, _, _ in sources(*cell)}
         assert kept, cell
-        for where, source, _, _ in written(*cell):
+        for where, source, _, _, _ in written(*cell):
             assert source in kept or "\\\n" in source or "\\  #" in source, (cell, where, source)
