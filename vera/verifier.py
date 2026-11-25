@@ -429,6 +429,34 @@ class ArgumentTarget:
     #: The type to read refinements written INSIDE the formal off, when it
     #: carries any (:py:meth:`ContractVerifier._nested_refinement_formal`).
     nested: Type | None
+    #: The type the callee's parameter is declared at, a generic one's
+    #: instantiation included (the same resolution as *nested*), or None:
+    #: what the callee's proof assumed of it is the guard (#1928).
+    declared: Type | None
+
+
+@dataclass(frozen=True)
+class ParameterPremise:
+    """What a function's proof assumes of a parameter's value (#1928).
+
+    Built by :py:meth:`ContractVerifier._parameter_premise` and read twice:
+    by the function's own proof, which assumes it of the parameter
+    (:py:meth:`ContractVerifier._declared_type_facts`), and by a call, which
+    assumes the callee's facts only under the argument meeting all of it
+    (:py:meth:`ContractVerifier._call_binding_facts`).  One function, so the
+    guard cannot come to be less than what the callee assumed.
+    """
+
+    #: The head refinement's predicates, whatever the base (#1696).
+    head: list[z3.ExprRef]
+    #: The refinements written inside the type (#1430).
+    nested: list[z3.ExprRef]
+    #: What the type states at every position besides (#1814).
+    invariant: list[z3.ExprRef]
+
+    def facts(self) -> list[z3.ExprRef]:
+        """Every fact, as the guard requires them."""
+        return [*self.head, *self.nested, *self.invariant]
 
 
 @dataclass(frozen=True)
@@ -1710,6 +1738,7 @@ class ContractVerifier:
                 refined=self._refined_binding_target(arg, formal),
                 nat=self._nat_binding_target(arg, formal),
                 nested=nested if self._has_nested_refinement(nested) else None,
+                declared=nested,
             ))
         return targets
 
@@ -1724,11 +1753,16 @@ class ContractVerifier:
         *call*'s arguments owe *callee*'s parameters, over *terms*, the
         arguments as the call's translation translated them (#1706).
 
-        Per argument, what the callee's own proof assumed of the parameter
-        (`_declare_value`'s `>= 0` for a `@Nat`, and the refinement
-        predicate and nested facts of `_declared_type_facts`): the
-        refinement's predicate, `>= 0` for a `@Nat`, and the refinements
-        nested in the formal.  For every argument, whether or not it narrows
+        Per argument, what the callee's own proof assumed of the parameter,
+        read off the one function that proof reads it off
+        (:py:meth:`_parameter_premise`, #1928), over the argument's term:
+        the head refinement's predicates, the refinements nested in the
+        formal, and what the type states at every position (an `Int`'s
+        range, a `Nat`'s, at the head and inside).  A guard short of the
+        premise let a postcondition the callee proved from a parameter's
+        range stand as a fact over the argument's term, and the argument's
+        own `int_overflow` row was proved from it while the run trapped.
+        For every argument, whether or not it narrows
         at this call, because a fact over the argument's TERM is a fact over
         whatever produced it — a `let` whose slot it is, a constructor field
         inside it.  A statically fitting argument's guard discharges where the
@@ -1737,12 +1771,12 @@ class ContractVerifier:
         element or a `State<T>` read's value, the guard does not discharge
         and the callee's facts are lost to the proofs after the call: the
         caller is refused what it cannot show, never granted what it has not
-        shown.  The nested facts are
-        taken raw rather than through :py:meth:`_established_facts`: the
-        guard has to be at least what the callee assumed, and the callee's
-        own parameter carries no disclosure.  An untranslatable refinement
-        predicate is one the callee could not assume either, so only its
-        base's `>= 0`, which it did assume, stands for it.
+        shown.  The facts are taken raw rather than through
+        :py:meth:`_established_facts`: the guard has to be at least what the
+        callee assumed, and the callee's own parameter carries no
+        disclosure.  A refinement predicate the solver reads only in part is
+        assumed in part, its untranslatable rest a stand-in, and the guard
+        requires the same part.
         """
         formals = getattr(callee, "param_types", None)
         if formals is None:
@@ -1750,19 +1784,10 @@ class ContractVerifier:
         facts: list[z3.ExprRef] = []
         for target, term in zip(
                 self._argument_targets(call.args, formals), terms):
-            if term is None:
+            if term is None or target.declared is None:
                 continue
-            if target.refined is not None:
-                predicate = self._translate_refined_predicate(
-                    smt, target.refined, term)
-                if predicate is not None:
-                    facts.append(predicate)
-            if target.nat and isinstance(term, z3.ArithRef):
-                facts.append(term >= 0)
-            if target.nested is not None:
-                nested, _ = self._nested_refinement_facts(
-                    smt, target.nested, term)
-                facts.extend(nested)
+            facts.extend(self._parameter_premise(
+                smt, target.declared, term, standing=False).facts())
         return facts
 
     def _call_result_facts(
@@ -2375,21 +2400,41 @@ class ContractVerifier:
         it is a bug, and a term can acquire a disclosed site through
         cross-module widening.
         """
-        nested_facts, _ = self._nested_refinement_facts(smt, ty, var)
+        premise = self._parameter_premise(smt, ty, var)
         # #1696: the head refinement's predicates over any base, and the
         # value registered as one no refutation may rest on where a
         # predicate of its type holds a stand-in (#1470).
-        facts: list[object] = list(smt.declared_facts(var, ty, nested_facts))
+        facts: list[object] = list(smt.declared_facts(
+            var, premise.head, premise.nested))
         facts.extend(self._established_facts(
-            nested_facts, source=None, term=var, smt=smt))
+            list(premise.nested), source=None, term=var, smt=smt))
         # #1814: and what the type states at every position that neither
         # walk above states, through the same gate.  The caller's argument
         # rows and the composite-coercion guards at the call (#1818), or an
         # exported function's entry guard, establish it before the body runs.
         facts.extend(self._established_facts(
-            list(self._type_invariant(smt, ty, var)),
-            source=None, term=var, smt=smt))
+            list(premise.invariant), source=None, term=var, smt=smt))
         return facts
+
+    def _parameter_premise(
+        self, smt: SmtContext, ty: Type, term: z3.ExprRef, *,
+        standing: bool = True,
+    ) -> ParameterPremise:
+        """What a function's proof assumes of a parameter of type *ty* whose
+        value is *term* (#1928): THE source of both the function's own
+        premise (:py:meth:`_declared_type_facts`) and the guard a call puts
+        on the callee's facts (:py:meth:`_call_binding_facts`), the second
+        over the argument's term.  `_declare_value`'s `Nat` range is the
+        head of :py:meth:`_type_invariant`'s walk.  A guard's facts stand
+        under an implication, not as premises of their own, so they are
+        built with *standing* False: the same facts, no element tagged for
+        the premise screen."""
+        nested, _ = self._nested_refinement_facts(smt, ty, term)
+        return ParameterPremise(
+            head=smt.head_facts(term, ty),
+            nested=list(nested),
+            invariant=list(self._type_invariant(
+                smt, ty, term, standing=standing)))
 
     def _fresh_smt(self, scope: CalleeScope) -> SmtContext:
         """A solver context for one declaration, read in *scope*.
@@ -11336,7 +11381,8 @@ class ContractVerifier:
     # -----------------------------------------------------------------
 
     def _type_invariant(
-        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef,
+        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
+        standing: bool = True,
     ) -> list[z3.ExprRef]:
         """What *ty* states of a value *term* of it that the head and nested
         refinement walks do not (#1814): an `Int`'s i64 range and a `Nat`'s
@@ -11356,12 +11402,14 @@ class ContractVerifier:
 
         An element range standing as a fact of its own is tagged
         `AxiomKind.ELEMENT` for the premise screen (#1451); one under a
-        constructor's recognizer is not, and stays foreign to it."""
+        constructor's recognizer is not, and stays foreign to it; nor is one
+        a call's guard holds (*standing* False, #1928), which stands under
+        an implication."""
         ranged: dict[int, tuple[z3.ExprRef, str]] = {}
         facts = self._invariant_at(
             smt, ty, term, head=True, seen=frozenset(), ranged=ranged)
         for fact in facts:
-            if fact.get_id() in ranged:
+            if standing and fact.get_id() in ranged:
                 smt.tag_axiom(fact, AxiomKind.ELEMENT,
                               ranged[fact.get_id()][1])
         return facts

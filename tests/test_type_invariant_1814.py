@@ -1009,3 +1009,323 @@ def test_repro_an_element_predicate_withheld_leaves_the_position_incomplete() ->
     facts, complete = verifier._element_facts(
         smt, carrier, sequence, frozenset())  # type: ignore[arg-type]
     assert facts == [] and complete is False, (facts, complete)
+
+
+# =====================================================================
+# A call guards the callee's facts with what the callee assumed (#1928)
+# =====================================================================
+#
+# What a call imports of its callee is guarded by what the callee's own
+# proof assumed of its parameters, over the argument's term: the same
+# function (`ContractVerifier._parameter_premise`) at both ends.  With the
+# guard short of the premise, a postcondition the callee proves from a
+# parameter's range is a fact over the argument's term, and the argument's
+# own `int_overflow` row was proved from it while the run traps.
+
+#: shape: (the caller's value type, the parameter's type, declarations, the
+#: callee's `ensures` restating the parameter's range, the argument from x)
+_RESTATED = {
+    "int": ("Int", "Int", "", f"@Int.0 <= {INT_MAX}", "{x} + 1"),
+    "nat": ("Nat", "Nat", "", f"@Nat.0 <= {INT_MAX}", "{x} + 1"),
+    "tuple": ("Int", "Tuple<Int, Int>", "",
+              f"match @Tuple<Int, Int>.0 {{ Tuple(@Int, @Int) -> @Int.1 <= {INT_MAX} }}",
+              "Tuple({x} + 1, 0)"),
+    "option": ("Int", "Option<Int>", "",
+               f"match @Option<Int>.0 {{ Some(@Int) -> @Int.0 <= {INT_MAX}, None -> true }}",
+               "Some({x} + 1)"),
+    "field": ("Int", "IB", "private data IB { MkIB(Int) }\n\n",
+              f"match @IB.0 {{ MkIB(@Int) -> @Int.0 <= {INT_MAX} }}", "MkIB({x} + 1)"),
+    "array": ("Int", "Array<Int>", "",
+              f"array_length(@Array<Int>.0) > 0 ==> @Array<Int>.0[0] <= {INT_MAX}",
+              "[{x} + 1]"),
+    "int2": ("Int", "Option<Tuple<Int, Int>>", "",
+             "match @Option<Tuple<Int, Int>>.0 { Some(@Tuple<Int, Int>) -> "
+             f"match @Tuple<Int, Int>.0 {{ Tuple(@Int, @Int) -> @Int.1 <= {INT_MAX} }}, "
+             "None -> true }",
+             "Some(Tuple({x} + 1, 0))"),
+    "nat2": ("Nat", "Option<Tuple<Nat, Nat>>", "",
+             "match @Option<Tuple<Nat, Nat>>.0 { Some(@Tuple<Nat, Nat>) -> "
+             f"match @Tuple<Nat, Nat>.0 {{ Tuple(@Nat, @Nat) -> @Nat.1 <= {INT_MAX} }}, "
+             "None -> true }",
+             "Some(Tuple({x} + 1, 0))"),
+}
+_RESTATED_DEFAULT = {"int": "0", "nat": "0", "tuple": "Tuple(0, 0)",
+                     "option": "None", "field": "MkIB(0)", "array": "[]",
+                     "int2": "None", "nat2": "None"}
+
+
+def _fn(head: str, sig: str, ens: str, body: str, extra: str = "") -> str:
+    return (f"{head} fn {sig}\n  requires(true)\n  ensures({ens})\n{extra}"
+            f"  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+def _slot(params: list[str], i: int) -> str:
+    """The slot reference to parameter *i* of *params* (De Bruijn)."""
+    return f"@{params[i]}.{params[i + 1:].count(params[i])}"
+
+
+def _reached(kind: str, x_te: str, te: str, decls: str, ens: str,
+             arg: str, dflt: str) -> dict[str, str]:
+    """A callee `c` (or `r`) whose `ensures` is *ens* over its `@te`
+    parameter, reached from `k(@x_te)` the way *kind* names, with *arg*
+    (`{x}` the caller's value) at the parameter: the program's files."""
+    a = arg.format(x=f"@{x_te}.0")
+    if kind == "direct":
+        return {"p.vera": decls + _fn("private", f"c(@{te} -> @Int)", ens, "0")
+                + "\n" + _fn("public", f"k(@{x_te} -> @Int)", "true", f"c({a})")}
+    if kind == "module":
+        return {
+            "plib.vera": "module plib;\n\n"
+            + decls.replace("private data", "public data")
+            + _fn("public", f"c(@{te} -> @Int)", ens, "0"),
+            # A type alias is the module's own (SKILL.md § visibility).
+            "p.vera": "import plib;\n\n" + "".join(
+                line + "\n\n" for line in decls.splitlines()
+                if line.startswith("type "))
+            + _fn("public", f"k(@{x_te} -> @Int)", "true", f"c({a})")}
+    if kind == "generic":
+        return {"p.vera": decls
+                + _fn("private forall<A>", f"c(@A, @{te} -> @Int)", ens, "0")
+                + "\n" + _fn("public", f"k(@{x_te} -> @Int)", "true",
+                             f"c(true, {a})")}
+    assert kind == "recursive", kind
+    params = ["Nat", x_te, te]
+    n, x = _slot(params, 0), _slot(params, 1)
+    body = (f"if {n} > 0 then {{ r({n} - 1, {x}, {arg.format(x=x)}) }} "
+            "else { 0 }")
+    return {"p.vera": decls
+            + _fn("private", f"r(@Nat, @{x_te}, @{te} -> @Int)", ens, body,
+                  f"  decreases({n})\n")
+            + "\n" + _fn("public", f"k(@{x_te} -> @Int)", "true",
+                         f"r(1, @{x_te}.0, {dflt})")}
+
+
+def _assert_the_argument_is_checked(
+        tmp_path, files: dict[str, str]) -> None:  # type: ignore[no-untyped-def]
+    """The argument's own `+ 1` rows stay Tier 3, as at main, and the run
+    at `INT_MAX` traps on the overflow they check."""
+    entry = pipeline.write_tree(tmp_path, files, "p.vera")
+    verified = pipeline.verify(entry)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    rows = [(o.fn_name, o.expr_text, o.status) for o in verified.obligations
+            if o.kind == "int_overflow" and o.expr_text.endswith("+ 1")]
+    assert rows and all(s == "tier3" for _f, _e, s in rows), rows
+    ran = pipeline.run(entry, "k", [INT_MAX])
+    assert isinstance(ran.trap, WasmTrapError), ran
+    assert "overflow" in str(ran.trap).lower(), str(ran.trap)
+
+
+def _restated(tmp_path, shape: str, kind: str) -> None:  # type: ignore[no-untyped-def]
+    x_te, te, decls, ens, arg = _RESTATED[shape]
+    _assert_the_argument_is_checked(tmp_path, _reached(
+        kind, x_te, te, decls, ens, arg, _RESTATED_DEFAULT[shape]))
+
+
+_INC = f"""\
+private fn low(@Int -> @Int)
+  requires(true)
+  ensures(@Int.0 <= {INT_MAX})
+  effects(pure)
+{{
+  @Int.0
+}}
+
+public fn inc(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  low(@Int.0 + 1)
+}}
+
+private fn same(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 && @Int.result <= {INT_MAX})
+  effects(pure)
+{{
+  @Int.0
+}}
+
+public fn inc2(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  same(@Int.0 + 1)
+}}
+"""
+
+
+def test_repro_1928_inc_and_inc2() -> None:
+    """The issue's program: `low`'s and `same`'s postconditions hold of
+    every `Int` (verified), and `inc`'s and `inc2`'s `@Int.0 + 1` rows were
+    `verified` at cac60692 from them, while `inc(INT_MAX)` traps."""
+    statuses = _statuses(_INC)
+    assert ("ensures", "verified", "") in statuses["low"]
+    assert ("ensures", "verified", "") in statuses["same"]
+    for fn in ("inc", "inc2"):
+        assert [s for k, s, _c in statuses[fn] if k == "int_overflow"] == [
+            "tier3"], statuses[fn]
+        ran = pipeline.run(_INC, fn, [INT_MAX], file=FILE)
+        assert isinstance(ran.trap, WasmTrapError), ran
+        assert "overflow" in str(ran.trap).lower(), str(ran.trap)
+
+
+def test_repro_1928_int_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int", "direct")
+
+
+def test_repro_1928_int_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int", "module")
+
+
+def test_repro_1928_int_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int", "recursive")
+
+
+def test_repro_1928_nat_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A `Nat`'s upper bound: a false proof at main too."""
+    _restated(tmp_path, "nat", "direct")
+
+
+def test_repro_1928_nat_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "nat", "module")
+
+
+def test_repro_1928_nat_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "nat", "recursive")
+
+
+def test_repro_1928_tuple_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "tuple", "direct")
+
+
+def test_repro_1928_tuple_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "tuple", "module")
+
+
+def test_repro_1928_tuple_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "tuple", "recursive")
+
+
+def test_repro_1928_option_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "option", "direct")
+
+
+def test_repro_1928_option_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "option", "module")
+
+
+def test_repro_1928_option_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "option", "recursive")
+
+
+def test_repro_1928_field_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "field", "direct")
+
+
+def test_repro_1928_field_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "field", "module")
+
+
+def test_repro_1928_field_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "field", "recursive")
+
+
+def test_repro_1928_array_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "array", "direct")
+
+
+def test_repro_1928_array_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "array", "module")
+
+
+def test_repro_1928_array_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "array", "recursive")
+
+
+def test_repro_1928_int_two_levels_down_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int2", "direct")
+
+
+def test_repro_1928_int_two_levels_down_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int2", "module")
+
+
+def test_repro_1928_int_two_levels_down_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "int2", "recursive")
+
+
+def test_repro_1928_nat_two_levels_down_direct(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A false proof at main too."""
+    _restated(tmp_path, "nat2", "direct")
+
+
+def test_repro_1928_nat_two_levels_down_module(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "nat2", "module")
+
+
+def test_repro_1928_nat_two_levels_down_recursive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    _restated(tmp_path, "nat2", "recursive")
+
+
+#: The ways a callee's facts reach a caller.  A generic function's call
+#: imports no postcondition (`E522`, at main as here), and a closure applied
+#: through `apply_fn` carries no contract: neither imports anything.
+_REACH = ("direct", "module", "recursive")
+
+#: The matrix's types that state a range at some position (every one but
+#: `NotRed`), each with its first reader that is one expression.
+_RANGED = [t for t in _TYPES if t != "NotRed"]
+
+
+def _reader(tname: str) -> str:
+    readers = _TYPES[tname][2]
+    (expr,) = [e for s, e in readers.values() if not s][:1]
+    return expr
+
+
+def _reach_cells() -> list[tuple[str, str]]:
+    return list(itertools.product(_RANGED, _REACH))
+
+
+_REACH_CELLS = _reach_cells()
+
+
+def test_the_reach_dimension_spans_every_product() -> None:
+    assert len(_REACH_CELLS) == len(_RANGED) * len(_REACH) == 39
+
+
+@pytest.mark.parametrize(
+    "cell", [pytest.param(c, id=".".join(c)) for c in _REACH_CELLS])
+def test_a_call_guards_what_the_callee_assumed(
+        tmp_path, cell: tuple[str, str]) -> None:  # type: ignore[no-untyped-def]
+    """(a) A callee whose `ensures` restates its parameter's range at the
+    position the reader reads, and a caller whose argument holds `x + 1`
+    there: the argument's own row is not proved from the import, and the
+    run at `INT_MAX` traps on the check it keeps.  (b) A caller whose
+    argument is a parameter of the type, in range by its own type, still
+    proves a goal that needs the callee's postcondition after the call."""
+    tname, kind = cell
+    te, decls = _TYPES[tname][0], "".join(
+        _DECLS[d] + "\n\n" for d in _TYPES[tname][1])
+    restated = f"({_reader(tname)}) <= {INT_MAX}"
+    value = _TYPES[tname][6]
+    dflt = value.replace("@Int.0", "1")
+    _assert_the_argument_is_checked(tmp_path / "a", _reached(
+        kind, "Int", te, decls, restated,
+        value.replace("@Int.0", "{x} + 1"), dflt))
+    held = _reached(kind, te, te, decls, f"@Int.result == 0 && {restated}",
+                    "{x}", dflt)
+    held["p.vera"] = held["p.vera"].replace(
+        f"k(@{te} -> @Int)\n  requires(true)\n  ensures(true)",
+        f"k(@{te} -> @Int)\n  requires(true)\n  ensures(@Int.result == 0)")
+    entry = pipeline.write_tree(tmp_path / "b", held, "p.vera")
+    verified = pipeline.verify(entry)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    assert [(o.fn_name, o.status) for o in verified.obligations
+            if o.kind == "ensures"] == [
+        (o.fn_name, "verified") for o in verified.obligations
+        if o.kind == "ensures"], [
+        (o.fn_name, o.kind, o.status, o.error_code)
+        for o in verified.obligations]

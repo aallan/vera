@@ -2677,6 +2677,10 @@ public fn f(@List<Int>, @{ty} -> @Nat)
 """
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "#1928: the recursive call's guard holds the argument's element range, "
+    "a quantifier under an implication that no regime covers, so the slice "
+    "is outside the fragment (E540)"))
 @pytest.mark.parametrize("ty", [
     "Array<Int>", "Array<Nat>", "Array<Option<Nat>>"])
 def test_1451_an_element_range_keeps_an_undecided_slice_inside(

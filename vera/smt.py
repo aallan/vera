@@ -4052,25 +4052,29 @@ class SmtContext:
             return [term >= 0]
         return []
 
+    def head_facts(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """A value *term* DECLARED at *ty*: its head refinement's predicates
+        over *term*, whatever the base (#1696, R2), as the verifier states
+        its base's `>= 0`.  An unrefined value carries nothing here."""
+        return (self._type_facts(term, ty)
+                if isinstance(ty, RefinedType) else [])
+
     def declared_facts(
-        self, term: z3.ExprRef, ty: Type,
+        self, term: z3.ExprRef, head: Sequence[z3.ExprRef],
         nested: Sequence[z3.ExprRef] = (),
     ) -> list[z3.ExprRef]:
         """The facts a value *term* DECLARED at *ty* carries — a parameter's,
         a predicate's binder's (`ContractVerifier._declared_type_facts`):
-        its head refinement's predicates over *term*, whatever the base
-        (#1696, R2), as the verifier states its base's `>= 0`.
+        its *head* facts (:py:meth:`head_facts`), returned as given.
 
         A declared value whose refinement is not fully stated — a predicate
         of its head, or one of the *nested* facts the verifier derived for
         the positions inside its type, holding a stand-in — is registered
         as a value no refutation may rest on (#1470, R4): the solver may
         choose a value the type forbids, and a `sat` over such a value is
-        undecided, never a counterexample.  An unrefined value carries
-        nothing here.
+        undecided, never a counterexample.
         """
-        facts = (self._type_facts(term, ty)
-                 if isinstance(ty, RefinedType) else [])
+        facts = list(head)
         if any(self._mentions_stand_in(f) for f in (*facts, *nested)):
             self._taint(term)
         return facts
