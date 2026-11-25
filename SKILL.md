@@ -1623,7 +1623,7 @@ private fn safe_div(@Int, @Int -> @Int)
 
 Handle exceptions with `handle[Exn<E>]`:
 
-<!-- vera:skip-check category="INCOMPLETE" code="E121 E200" reason="calls safe_div, defined in the block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls safe_div, defined in the block above" -->
 ```vera
 private fn try_div(@Int, @Int -> @Option<Int>)
   requires(true)

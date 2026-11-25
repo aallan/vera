@@ -734,7 +734,15 @@ class ControlFlowMixin:
         """Type-check a match expression."""
         for arm in expr.arms:
             self._register_arm_pattern_reads(expr.scrutinee, arm.pattern)
-        scrutinee_ty = self._synth_expr(expr.scrutinee)
+        # #1812: a binding pattern names the scrutinee's type, which settles
+        # a part the scrutinee leaves open (`match none_ord(()) {
+        # @Option<Int> -> .. }`).
+        named = next((ty for arm in expr.arms
+                      if isinstance(arm.pattern, ast.BindingPattern)
+                      and (ty := self._pattern_binding_type(
+                          arm.pattern.type_expr)) is not None), None)
+        scrutinee_ty = self._settle(
+            expr.scrutinee, self._synth_held(expr.scrutinee), named)
         if scrutinee_ty is None:  # pragma: no cover — defensive: _synth_expr returns UnknownType, not None
             return None
         # #1671: an expression the check has refused is typed `Unknown`,
@@ -2196,8 +2204,12 @@ class ControlFlowMixin:
             error_code="E342",
         )
 
-    def _check_handle(self, expr: ast.HandleExpr) -> Type | None:
-        """Type-check a handler expression."""
+    def _check_handle(self, expr: ast.HandleExpr, *,
+                      expected: Type | None = None) -> Type | None:
+        """Type-check a handler expression.  An `Exn` handler's value is
+        its handled body's or a clause's, so each is checked against the
+        type the handler is expected at, as an `if`'s branches are
+        (#1812)."""
         # Resolve the handled effect
         effect_inst = self._resolve_effect_ref(expr.effect)
         if effect_inst is None:  # pragma: no cover — parser always produces EffectRef
@@ -2464,7 +2476,13 @@ class ControlFlowMixin:
                 effect=PureEffectRow(),
             )
 
-            clause_type = self._synth_expr(clause.body)
+            # #1812: an `Exn` clause's value is the handler's, so it is
+            # checked against the type the handler is expected at, as an
+            # `if`'s branches are.
+            clause_type = self._synth_expr(
+                clause.body,
+                expected=expected if effect_inst.name == "Exn" else None,  # pragma: no mutate (equivalent: a State clause's body ends in `resume(..)` (E340), typed `Unit` by its non-generic signature above, so an expected type reaches no argument and records nothing; measured, #1812)
+            )
             if effect_inst.name == "Exn" and clause_type is not None:
                 clause_types.append((clause, clause_type))
             if effect_inst.name == "State":
@@ -2609,7 +2627,7 @@ class ControlFlowMixin:
         # route it to the host.
         self._handled_effects.append(effect_inst.name)
         self._handled_effect_insts.append(effect_inst)
-        body_type = self._synth_expr(expr.body)
+        body_type = self._synth_expr(expr.body, expected=expected)
         self._handled_effect_insts.pop()
         self._handled_effects.pop()
 

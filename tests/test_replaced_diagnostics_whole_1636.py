@@ -1361,7 +1361,15 @@ _E503_A_LATER_ARRAY_ELEMENT = ('public fn f(@Int -> @Nat)\n'
  '  [@Int.0, @Nat.0][0]\n'
  '}\n')
 
-_E505_A_REFUTED_VALUE_INSIDE_A_HANDLE = ('type PosInt = { @Int | @Int.0 > 0 };\n'
+_E505_A_REFUTED_VALUE_INSIDE_A_HANDLE = ('private fn wrap(@Int -> @Option<Int>)\n'
+ '  requires(true)\n'
+ '  ensures(true)\n'
+ '  effects(pure)\n'
+ '{\n'
+ '  Some(@Int.0)\n'
+ '}\n'
+ '\n'
+ 'type PosInt = { @Int | @Int.0 > 0 };\n'
  '\n'
  'public fn f(@Float64 -> @Option<PosInt>)\n'
  '  requires(true)\n'
@@ -1372,7 +1380,7 @@ _E505_A_REFUTED_VALUE_INSIDE_A_HANDLE = ('type PosInt = { @Int | @Int.0 > 0 };\n
  '    get(@Unit) -> { resume(@Int.0) },\n'
  '    put(@Int) -> { resume(()) }\n'
  '  } in {\n'
- '    Some(0 - 5)\n'
+ '    wrap(0 - 5)\n'
  '  }\n'
  '}\n')
 
@@ -1384,7 +1392,7 @@ _E506_A_VALUE_INSIDE_A_HANDLE_CLAUSE = ('type PosInt = { @Int | @Int.0 > 0 };\n'
  '  effects(pure)\n'
  '{\n'
  '  handle[Exn<Int>] {\n'
- '    throw(@Int) -> { Some(0 - 5) }\n'
+ '    throw(@Int) -> { Some(@Int.0) }\n'
  '  } in {\n'
  '    throw(1)\n'
  '  }\n'
@@ -4257,7 +4265,9 @@ def test_e503_a_later_array_element(tmp_path: Path) -> None:
 
 
 def test_e505_a_refuted_value_inside_a_handle(tmp_path: Path) -> None:
-    """_relocate_diagnostic: E505."""
+    """_relocate_diagnostic: E505.  The value is a call's, which takes no
+    type from the handler (a construction there is checked against the
+    handler's type where it is built, #1812)."""
     assert _found(
         pipeline.verify(_E505_A_REFUTED_VALUE_INSIDE_A_HANDLE, file="main.vera"),
         "E505", tmp_path) == (
@@ -4267,8 +4277,8 @@ def test_e505_a_refuted_value_inside_a_handle(tmp_path: Path) -> None:
                          'component of its type.\n'
                          '  Counterexample:\n'
                          '      @Float64.0 = nan()',
-          'location': {'line': 12, 'column': 10, 'file': 'main.vera'},
-          'source_line': '    Some(0 - 5)',
+          'location': {'line': 20, 'column': 5, 'file': 'main.vera'},
+          'source_line': '    wrap(0 - 5)',
           'rationale': 'A refinement written inside a type — an ADT payload, a '
                        'tuple component — is an invariant of every value of '
                        'that type, and the receiving function is verified ONCE '
@@ -4291,25 +4301,27 @@ def test_e505_a_refuted_value_inside_a_handle(tmp_path: Path) -> None:
 
 def test_e506_a_value_inside_a_handle_clause(tmp_path: Path) -> None:
     """_relocate_diagnostic: E506.  The payload's row is a checked one
-    (#1542): the Tier 3 note, where it was the disclosure of a stale reason."""
+    (#1542): the Tier 3 note, where it was the disclosure of a stale reason.
+    The clause's construction is checked against the handler's type where
+    it is built (#1812), a constructor field's row."""
     assert _found(
         pipeline.verify(_E506_A_VALUE_INSIDE_A_HANDLE_CLAUSE, file="main.vera"),
         "E506", tmp_path) == (
         [{'severity': 'warning',
-          'description': "Refinement predicate at a return type in 'f' could "
-                         'not be verified statically; it will be checked at '
-                         'run time. To prove it statically, add a '
+          'description': "Refinement predicate at a constructor field in "
+                         "'f' could not be verified statically; it will be "
+                         'checked at run time. To prove it statically, add a '
                          '`requires(...)` implying the predicate or guard the '
                          'binding with an `if`.',
           'location': {'line': 9, 'column': 27, 'file': 'main.vera'},
-          'source_line': '    throw(@Int) -> { Some(0 - 5) }',
+          'source_line': '    throw(@Int) -> { Some(@Int.0) }',
           'rationale': 'The refinement predicate was not discharged '
-                       'statically: the only countermodel ran over an opaque '
-                       'stand-in for a value the verifier cannot translate, '
-                       'which refutes nothing the program produces.  Codegen '
-                       'emits a runtime predicate guard at the function '
-                       'boundary, so the narrowing is checked at run time '
-                       '(Tier 3) rather than silently accepted.',
+                       "statically: the value being narrowed is outside the "
+                       "SMT layer's decidable fragment, so there is no term "
+                       'to test the predicate against.  Codegen emits a '
+                       'runtime predicate guard at the function boundary, so '
+                       'the narrowing is checked at run time (Tier 3) rather '
+                       'than silently accepted.',
           'spec_ref': 'Chapter 2, Section 2.6 "Refinement Types" and Chapter '
                       '6, Section 6.8 "Summary of Verification Tiers"',
           'error_code': 'E506',
