@@ -83,6 +83,45 @@ def test_a_destructure_of_a_data_type_translates(cell: tuple[str, str, str]) -> 
         assert ran.ok and ran.value == 5, ran.trap
 
 
+def _guarded_program(tname: str, naming: str) -> str:
+    """A refined binder of an opaque value, passed to a precondition that
+    only the bind's guard establishes."""
+    decl, te, ctor, tyname = _TYPES[tname][:4]
+    shape = {"constructor": ctor, "type": tyname, "alias": "Alias"}[naming]
+    return (
+        f"{decl}\n\ntype Alias = {te};\n\ntype Pos = {{ @Int | @Int.0 > 0 }};\n\n"
+        "private fn need(@Int -> @Int)\n  requires(@Int.0 > 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n\n"
+        f"private fn mk(@Int -> @{te})\n  requires(true)\n  ensures(true)\n"
+        f"  effects(pure)\n{{\n  {ctor}(@Int.0)\n}}\n\n"
+        "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        f"  effects(pure)\n{{\n  let {shape}<@Pos> = mk(@Int.0);\n  need(@Pos.0)\n}}\n")
+
+
+@pytest.mark.parametrize("cell", [
+    pytest.param((t, n), id=f"{t}.{n}")
+    for t in ("generic", "plain") for n in _NAMES])
+def test_a_destructure_named_by_its_type_keeps_the_guard_fact(
+        cell: tuple[str, str]) -> None:
+    """The bind's guard establishes `@Pos` whichever name the shape is
+    written with, so the call's precondition is proved: read under the
+    type's or the alias's name, the guard fact was dropped and the call
+    refused (`E501`) at 71b3d463."""
+    verified = pipeline.verify(_guarded_program(*cell), file=FILE)
+    assert [o.status for o in verified.obligations
+            if o.fn_name == "f" and o.kind == "call_pre"] == ["verified"]
+    assert "E501" not in [d.error_code for d in verified.diagnostics]
+    ran = pipeline.run(_guarded_program(*cell), "f", [3], file=FILE)
+    assert ran.ok and ran.value == 3, ran.trap
+
+
+def test_repro_a_type_named_destructure_proves_the_call_its_guard_admits() -> None:
+    """`let One<@Pos> = mk(@Int.0); need(@Pos.0)`: `E501` at 71b3d463."""
+    verified = pipeline.verify(_guarded_program("plain", "type"), file=FILE)
+    assert [o.status for o in verified.obligations
+            if o.fn_name == "f" and o.kind == "call_pre"] == ["verified"]
+
+
 _REPRO = """\
 private data Box { MkBox(Int) }
 

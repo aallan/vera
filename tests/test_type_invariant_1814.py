@@ -270,6 +270,23 @@ def test_no_fact_proves_a_false_neighbour(
 
 _BOUNDARIES = (INT_MIN, -1, 0, 1, INT_MAX)
 
+#: The traps a type's own check raises: a `Nat` slot's sign, a refinement's
+#: predicate.
+_TYPE_CHECK_TRAPS = ("Negative value bound into a @Nat slot",
+                     "Refinement violation in ")
+
+
+def _outside_the_type(tname: str, x: int) -> bool:
+    """Whether the value the producer builds from *x* is one *tname* does
+    not admit: an `Int` admits every boundary, a refinement `> 0` (and
+    `NotRed`, `Red` for `x <= 0`) none at or below `0`, a `Nat` none below
+    it."""
+    if tname in ("Int", "OptInt", "ArrInt"):
+        return False
+    if tname in ("Pos", "OptPos", "NotRed"):
+        return x <= 0
+    return x < 0
+
 
 @pytest.mark.parametrize(
     "cell", [pytest.param(c, id=".".join(c)) for c in _CELLS])
@@ -288,6 +305,10 @@ def test_no_fact_is_false_at_a_boundary_value(
             continue
         assert isinstance(ran.trap, WasmTrapError), ran.trap
         if "Postcondition violation in f(" not in str(ran.trap):
+            # Only a type's own check may stop the run, and only on a value
+            # outside the type: any other trap fails the cell.
+            assert (str(ran.trap).startswith(_TYPE_CHECK_TRAPS)
+                    and _outside_the_type(cell[0], x)), (x, str(ran.trap))
             continue
         verified = pipeline.verify(source, file=FILE)
         unestablished = [
@@ -966,6 +987,51 @@ def test_repro_an_element_refinement_is_a_complete_goal() -> None:
     rows = _statuses(_ELEMENT_REFINEMENT_GOAL)
     assert [s for _k, s, _c in rows["h"] + rows["r"]] == [
         "verified"] * len(rows["h"] + rows["r"]), rows
+    # Each goal is required by name, so a row that goes missing fails here
+    # rather than shrinking the list above with it.
+    assert ("ensures", "verified") in [(k, s) for k, s, _c in rows["h"]], rows
+    assert ("refine_bind", "verified") in [(k, s) for k, s, _c in rows["r"]], rows
+
+
+#: An element refinement over a helper with a postcondition, and a goal
+#: about the elements that is false: the helper's `ensures`, asserted over
+#: the index quantifier's free index, is satisfiable for some index, so it
+#: proves nothing about the goal.
+_HELPER_ELEMENT = """\
+private fn big(@Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Int.0 > 5))
+  effects(pure)
+{
+  @Int.0 > 5
+}
+
+type R = { @Int | big(@Int.0) };
+
+private fn f(@Array<R> -> @Bool)
+  requires(%s)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  %s
+}
+"""
+
+
+def test_repro_a_helper_postcondition_proves_no_false_goal_of_an_empty_array() -> None:
+    """`f([])` returns false: the goal is refused (`E500`), at 71b3d463 and
+    at 08598810 alike."""
+    rows = _statuses(_HELPER_ELEMENT % ("true", "array_length(@Array<R>.0) > 0"))
+    assert ("ensures", "violated") in [(k, s) for k, s, _c in rows["f"]], rows
+
+
+def test_repro_a_helper_postcondition_proves_no_false_goal_of_an_element() -> None:
+    """`f([6])` returns false: an element above `5` need not be above
+    `100`, and the goal is refused (`E500`), at 71b3d463 and at 08598810
+    alike."""
+    rows = _statuses(_HELPER_ELEMENT % (
+        "array_length(@Array<R>.0) > 0", "@Array<R>.0[0] > 100"))
+    assert ("ensures", "violated") in [(k, s) for k, s, _c in rows["f"]], rows
 
 
 def test_repro_an_element_predicate_withheld_leaves_the_position_incomplete() -> None:
