@@ -1345,9 +1345,11 @@ class ContractVerifier:
         # verifier discharges its rows (`_settle_rows`) and lists none.
         self._table = obligation_table.build(typed)
         # #1928: for each operation call, the handler clauses that may
-        # answer it (`_answering_clauses`), built on first use.
+        # answer it (`_answering_clauses`), and the clauses standing where
+        # the table lists no rows (`_unlisted_clauses`), built on first use.
         self._answers: tuple[dict[object, tuple[ast.HandlerClause, ...]],
-                             dict[str, tuple[ast.HandlerClause, ...]]] | None = None
+                             dict[str, tuple[ast.HandlerClause, ...]],
+                             frozenset[object]] | None = None
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
@@ -12837,11 +12839,16 @@ class ContractVerifier:
         operation call under it that a handler clause holding such a row
         may answer (`_answering_clauses`).  A row with no check is counted
         whatever its proof: its status is settled after the stand-in that
-        asks is made."""
+        asks is made.  A clause that may answer and stands in a function
+        the table lists no rows for (`_unlisted_clauses`) counts as holding
+        such a row: nothing in this run says its ``resume`` is checked."""
         for sub in fold.walk(node):
             parts: list[ast.Node] = [sub]
             if isinstance(sub, ast.FnCall):
                 for clause in self._answering_clauses(sub):
+                    if (obligation_table.ObligationTable._key(clause)
+                            in self._unlisted_clauses()):
+                        return True
                     parts.extend(fold.walk(clause))
             for part in parts:
                 if any(r.kind in ("refine_bind", "nat_bind")
@@ -12856,33 +12863,71 @@ class ContractVerifier:
         """The handler clauses of *call*'s name that may answer it (#1928):
         those of every handler the call stands lexically inside, and where
         it stands inside none (an operation a function's effect row passes
-        to its caller's handler), those of every handler of the program."""
+        to its caller's handler), those of every handler the run holds.
+
+        Every clause that can answer is read: the roots are the entry
+        program's declarations, every linked module's (an imported
+        function's handler answers the entry program's operation a closure
+        passes it) and every instance clone (whose nodes are fresh, so a
+        call inside a clone is keyed by the clone's node, not the generic's
+        declaration's).  Built once per verifier."""
         if self._answers is None:
-            key = obligation_table.ObligationTable._key
-            lexical: dict[object, tuple[ast.HandlerClause, ...]] = {}
-            named: dict[str, tuple[ast.HandlerClause, ...]] = {}
-            linked = self._typed.linked
-            roots = [tld.decl for tld in linked.program.declarations]
-            stack: list[tuple[ast.Node, tuple[ast.HandlerClause, ...]]] = [
-                (r, ()) for r in roots]
-            while stack:
-                cur, scope = stack.pop()
-                if isinstance(cur, ast.FnCall):
-                    lexical[key(cur)] = tuple(
-                        c for c in scope if c.op_name == cur.name)
-                inner = scope
-                if isinstance(cur, ast.HandleExpr):
-                    inner = scope + cur.clauses
-                    for c in cur.clauses:
-                        named[c.op_name] = named.get(c.op_name, ()) + (c,)
-                stack.extend(
-                    (child, inner if (isinstance(cur, ast.HandleExpr)
-                                      and child is cur.body) else scope)
-                    for child in fold.children(cur))
-            self._answers = (lexical, named)
-        lexical, named = self._answers
+            self._answers = self._build_answers()
+        lexical, named, _unlisted = self._answers
         found = lexical.get(obligation_table.ObligationTable._key(call))
         return found if found else named.get(call.name, ())
+
+    def _unlisted_clauses(self) -> frozenset[object]:
+        """The clauses (by key) of `_answering_clauses`'s roots that stand
+        in a function the obligation table does not list
+        (`ObligationTable.rows_of_function` is ``None``): nothing in this
+        run says such a clause's ``resume`` is checked, so
+        `_produces_unchecked` counts it as holding a row with no check, the
+        conservative answer (#1928)."""
+        if self._answers is None:
+            self._answers = self._build_answers()
+        return self._answers[2]
+
+    def _build_answers(self) -> tuple[
+            dict[object, tuple[ast.HandlerClause, ...]],
+            dict[str, tuple[ast.HandlerClause, ...]],
+            frozenset[object]]:
+        """`_answering_clauses`'s two maps, over the entry program, every
+        linked module and every instance clone, and `_unlisted_clauses`."""
+        key = obligation_table.ObligationTable._key
+        lexical: dict[object, tuple[ast.HandlerClause, ...]] = {}
+        named: dict[str, tuple[ast.HandlerClause, ...]] = {}
+        unlisted: set[object] = set()
+        linked = self._typed.linked
+        roots: list[ast.Node] = [tld.decl for tld in
+                                 linked.program.declarations]
+        roots.extend(tld.decl for m in linked.modules
+                     for tld in m.program.declarations)
+        roots.extend(inst.clone for inst in self._typed.instances
+                     if inst.clone is not None)
+        # Each node with the clauses of the handlers it stands inside and
+        # whether the function holding it is one the table lists.
+        stack: list[tuple[ast.Node, tuple[ast.HandlerClause, ...], bool]] = [
+            (r, (), True) for r in roots]
+        while stack:
+            cur, scope, listed = stack.pop()
+            if isinstance(cur, ast.FnDecl):
+                listed = self._table.rows_of_function(cur) is not None
+            if isinstance(cur, ast.FnCall):
+                lexical[key(cur)] = tuple(
+                    c for c in scope if c.op_name == cur.name)
+            inner = scope
+            if isinstance(cur, ast.HandleExpr):
+                inner = scope + cur.clauses
+                for c in cur.clauses:
+                    named[c.op_name] = named.get(c.op_name, ()) + (c,)
+                    if not listed:
+                        unlisted.add(key(c))
+            stack.extend(
+                (child, inner if (isinstance(cur, ast.HandleExpr)
+                                  and child is cur.body) else scope, listed)
+                for child in fold.children(cur))
+        return lexical, named, frozenset(unlisted)
 
     def _established_facts(
         self,

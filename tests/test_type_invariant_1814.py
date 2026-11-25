@@ -27,6 +27,7 @@ values, and no postcondition check of the function may fire.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import pytest
 
@@ -2338,3 +2339,135 @@ def test_1928_an_operation_is_disclosed_by_its_own_handler() -> None:
                 for o in verified.obligations}
     assert ("main", "ensures", "verified", "") in statuses, statuses
     assert ("other", "refine_bind", "tier3_unguarded", "E506") in statuses
+
+
+# Where the answering clause stands (#1928, round 5): in the function that
+# performs the operation, in a generic's instance clone, or in an imported
+# module's function.  `_answering_clauses` reads the clauses of all three,
+# so a clause there whose `resume` narrows with no check discloses the
+# operation's value, and one whose `resume` holds a checked value does not.
+
+_POS_1928 = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+_POS_READ_1928 = ("match @Option<Pos>.0 { Some(@Int) -> @Int.0 > 0, "
+                  "None -> true }")
+_PICK_1928 = _fn("private", "pick(@Option<Pos> -> @Option<Int>)", "true",
+                 "Some(0 - 5)")
+_GET_CLAUSE_1928 = "get(@Unit) -> { resume(pick(@Option<Pos>.0)) }"
+_CLEAN_CLAUSE_1928 = "get(@Unit) -> { resume(@Option<Pos>.0) }"
+
+
+def _handle_1928(clause: str, body: str) -> str:
+    return (f"handle[State<Option<Pos>>](@Option<Pos> = Some(1)) {{\n"
+            f"    {clause},\n    put(@Option<Pos>) -> {{ resume(()) }}\n"
+            f"  }} in {{\n    {body}\n  }}")
+
+
+def _placement_1928(place: str, clause: str) -> dict[str, str]:
+    """The program of one placement, by file name: the reader is the
+    function whose `ensures` is read off the `get` (`main`, `g` or
+    `reader`)."""
+    if place == "function":
+        return {"main.vera": _POS_1928 + _PICK_1928 + "\n" + _fn(
+            "public", "main(@Unit -> @Bool)", "@Bool.result",
+            f"let @Option<Pos> = {_handle_1928(clause, 'get(())')};\n"
+            f"  {_POS_READ_1928}")}
+    if place == "clone":
+        # `other`'s clause has no check and answers no call of `g`'s: the
+        # clone's `get` is keyed by the clone's own node.
+        other = _fn("private", "other(@Unit -> @Bool)", "true",
+                    f"let @Option<Pos> = "
+                    f"{_handle_1928(_GET_CLAUSE_1928, 'get(())')};\n  true")
+        return {"main.vera": _POS_1928 + _PICK_1928 + "\n" + _fn(
+            "private forall<T>", "g(@T -> @Bool)", "@Bool.result",
+            f"let @Option<Pos> = {_handle_1928(clause, 'get(())')};\n"
+            f"  {_POS_READ_1928}") + "\n" + other + "\n" + _fn(
+            "public", "main(@Unit -> @Bool)", "true", "g(7) && other(())")}
+    assert place == "module", place
+    act = "type Act = fn(Unit -> Bool) effects(<State<Option<Pos>>>);\n\n"
+    lib = ("module lib;\n\n" + _POS_1928 + act + _PICK_1928 + "\n" + _fn(
+        "public", "run_state(@Act -> @Bool)", "true",
+        _handle_1928(clause, "apply_fn(@Act.0, ())")))
+    state = "  effects(<State<Option<Pos>>>)\n"
+    main = ("import lib;\n\n" + _POS_1928
+            + _fn("private", "reader(@Unit -> @Bool)", "@Bool.result",
+                  f"let @Option<Pos> = get(());\n  {_POS_READ_1928}")
+            + "\n" + _fn("public", "main(@Unit -> @Bool)", "true",
+                         "lib::run_state(fn(@Unit -> @Bool) effects("
+                         "<State<Option<Pos>>>) { reader(()) })"))
+    # The reader and `main` perform `State`: their rows say so.
+    main = main.replace("  effects(pure)\n{\n  let @Option<Pos> = get",
+                        state + "{\n  let @Option<Pos> = get").replace(
+        "  effects(pure)\n{\n  lib::", state + "{\n  lib::")
+    return {"lib.vera": lib, "main.vera": main}
+
+
+_READER_1928 = {"function": "main", "clone": "g", "module": "reader"}
+
+
+def _placement_reader_1928(
+        tmp_path: Path, place: str, clause: str,
+) -> tuple[tuple[str, str], Path]:
+    entry = pipeline.write_tree(tmp_path, _placement_1928(place, clause))
+    verified = pipeline.verify(entry)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    found = {(o.status, o.error_code) for o in verified.obligations
+             if o.fn_name == _READER_1928[place] and o.kind == "ensures"}
+    assert len(found) == 1, found
+    return found.pop(), entry
+
+
+def test_repro_1928_a_module_handler_answers_an_entry_operation(
+        tmp_path: Path) -> None:
+    """A `get` performed by an entry-program function, passed through a
+    closure's effect row to a handler inside an imported module's function
+    whose clause resumes a value with no check: `verified` at 342b097b (the
+    module's clauses were in neither map); the single-file twin, the
+    oracle, says E534."""
+    reader, _ = _placement_reader_1928(tmp_path, "module", _GET_CLAUSE_1928)
+    assert reader == ("tier3", "E534"), reader
+
+
+@pytest.mark.parametrize("place", ["function", "clone", "module"])
+@pytest.mark.parametrize("row", ["unchecked", "checked"])
+def test_1928_the_answering_clause_at_each_placement(
+        tmp_path: Path, place: str, row: str) -> None:
+    """A clause with no check at its `resume` leaves the reader unproved
+    (E534), wherever it stands; a clause resuming the state it holds (a
+    checked value) leaves the reader its facts (`verified`).  Where the
+    `get` stands inside the handle's body the unchecked run does not
+    return normally.  (The module's `get` stands in another function, whose
+    run reads the handler's state cell, not the clause.)"""
+    clause = _GET_CLAUSE_1928 if row == "unchecked" else _CLEAN_CLAUSE_1928
+    reader, entry = _placement_reader_1928(tmp_path, place, clause)
+    if row == "checked":
+        assert reader == ("verified", ""), reader
+        return
+    assert reader == ("tier3", "E534"), reader
+    if place != "module":
+        assert not pipeline.run(entry, "main").ok, place
+
+
+def test_1928_a_clause_the_table_lists_no_rows_for_is_unchecked(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The conservative answer: where the table lists no rows for the
+    function a clause that may answer stands in, nothing in the run says
+    its `resume` is checked, and the clean clause discloses as one with no
+    check does."""
+    import sys as _sys
+
+    from vera.obligations import table as obligation_table
+    real = obligation_table.ObligationTable.rows_of_function
+
+    def unlisted(self: object, decl: object) -> object:
+        if _sys._getframe(1).f_code.co_name == "_build_answers":
+            return None
+        return real(self, decl)  # type: ignore[arg-type]
+
+    reader, _ = _placement_reader_1928(
+        tmp_path / "listed", "function", _CLEAN_CLAUSE_1928)
+    assert reader == ("verified", ""), reader
+    monkeypatch.setattr(obligation_table.ObligationTable,
+                        "rows_of_function", unlisted)
+    reader, _ = _placement_reader_1928(
+        tmp_path / "unlisted", "function", _CLEAN_CLAUSE_1928)
+    assert reader == ("tier3", "E534"), reader
