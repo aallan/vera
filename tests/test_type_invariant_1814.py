@@ -1524,6 +1524,8 @@ _KIND_ARGUMENTS = {
     "call": "ident({x})",
     "standin": "{x} + 1 + Random.random_int(0, 10) * 0",
 }
+#: `standin`'s one row that holds no slot: proved, and no run traps on it.
+_STANDIN_SAFE_ROW = "Random.random_int(0, 10) * 0"
 #: Where the obligation sits: the argument's own row, an `int_overflow` row
 #: over the same term earlier in the body, the caller's postcondition.
 _KIND_OBLIGATIONS = ("own", "earlier", "ensures")
@@ -1586,9 +1588,10 @@ def test_a_call_guards_by_the_query_kind(cell: tuple[str, str, str]) -> None:
         assert bounded and all(s == "verified" for s in bounded), rows
     ran = pipeline.run(source, "k", [INT_MAX], file=FILE)
     if ran.trap is not None and "overflow" in str(ran.trap).lower():
-        # The callee's own `* 2` may be what traps; no row of `k` over a
-        # slot is proved (`standin`'s `r * 0` holds none, and cannot trap).
-        assert all(s != "verified" for _kd, e, s in overflow if "@" in e), rows
+        # The callee's own `* 2` may be what traps; no row of `k` is proved
+        # but `standin`'s `r * 0`, which cannot trap.
+        assert all(s != "verified" for _kd, e, s in overflow
+                   if e != _STANDIN_SAFE_ROW), rows
     if argument != "bounded" and (
             argument in ("unbounded", "standin") or obligation == "earlier"):
         # The boundary is reached: the cell is one the first assertion
