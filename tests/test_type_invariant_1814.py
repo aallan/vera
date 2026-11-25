@@ -906,3 +906,29 @@ def test_repro_a_generic_elements_own_nat_field_carries_its_sign() -> None:
     (`_payload_field_types(ctor, None)`): a generic constructor's fields are
     then unreadable, the element states nothing, and the ensures is `E500`."""
     assert ("ensures", "verified", "") in _statuses(_GENERIC_ELEMENT)["f"]
+
+
+#: A refinement over a data type with no field, as a nested array's element.
+_NESTED_ARRAY_DATA_REFINEMENT = """\
+private data Color { Red, Green, Blue }
+
+type NotRed = { @Color | @Color.0 != Red };
+
+public fn f(@Array<Array<NotRed>> -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  if array_length(@Array<Array<NotRed>>.0) > 0 then { if array_length(@Array<Array<NotRed>>.0[0]) > 0 then { @Array<Array<NotRed>>.0[0][0] != Red } else { true } } else { true }
+}
+"""
+
+
+def test_repro_a_data_refinement_on_a_nested_arrays_element_is_stated() -> None:
+    """`NotRed` is a refinement over `Color`, whose constructors carry no
+    field: only the refinement itself makes the inner array's element worth
+    a quantifier.  RED with that test never true (`chain is None and …`):
+    the outer element states nothing, the inner element's refinement is
+    never stated, and the ensures is Tier 3 (`E522`)."""
+    assert ("ensures", "verified", "") in _statuses(
+        _NESTED_ARRAY_DATA_REFINEMENT)["f"]
