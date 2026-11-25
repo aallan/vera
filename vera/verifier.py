@@ -15184,8 +15184,9 @@ class ContractVerifier:
             # One env per LEVEL: each predicate binds its own name — the
             # inner `{ @Int | @Int.0 > 0 }` binds `@Int`, the outer
             # `{ @Pos | @Pos.0 < 10 }` binds `@Pos` — over the same value.
-            inner_env = (SlotEnv() if base_name is None
-                         else SlotEnv().push(base_name, value_term))
+            inner_env = (
+                SlotEnv() if base_name is None  # pragma: no mutate — equivalent: `and False` pushes a data type's value under the key None, and every reader looks a slot up by its written type name, a string (`SlotEnv.resolve`, `tester`), so none reads it (measured: the instruments pass)
+                else SlotEnv().push(base_name, value_term))
             # The predicate may reference its binder by a syntactic alias
             # (`@Age.0` for `type Age = Nat`) that differs from the resolved
             # primitive `base_name`; bind the value under that key too so the

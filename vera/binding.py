@@ -601,11 +601,14 @@ _TYPE_PARAM_SCOPES: dict[type, str] = {
     ast.AbilityDecl: "type_params",
 }
 
-#: The constructor spellings: in an expression, in a pattern, and in a
-#: ``data`` declaration.
+#: The constructor spellings: in an expression, in a pattern, in a
+#: ``data`` declaration, and a destructure's shape (`let MkBox<…>`).  A
+#: shape named by its type (`let Wrap<…>`) is in no constructor table, so
+#: it keeps its spelling, and the SMT layer reads it by the value's sort
+#: (#1924).
 _CTOR_NODES = (
     ast.ConstructorCall, ast.NullaryConstructor, ast.ConstructorPattern,
-    ast.NullaryPattern, ast.Constructor,
+    ast.NullaryPattern, ast.Constructor, ast.LetDestruct,
 )
 
 
@@ -632,11 +635,6 @@ def _renamed(
         if name_field is not None:
             current = getattr(node, name_field)
             table = ctors if isinstance(node, _CTOR_NODES) else types
-            if isinstance(node, ast.LetDestruct):
-                # A destructure names its shape by a constructor
-                # (`let MkBox<…>`) or by a type (`let Wrap<…>`), so the
-                # name is a constructor's where one is in scope (#1924).
-                table = ctors if current in ctors else types
             renamed = (
                 current if current in bound and table is types
                 else table.get(current, current))

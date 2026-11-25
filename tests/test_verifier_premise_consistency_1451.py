@@ -2777,6 +2777,50 @@ public fn f(@Array<Box> -> @Int)
     assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
 
 
+def test_repro_an_element_refinement_read_at_an_index_is_not_an_element_range(
+    tmp_path: Path,
+) -> None:
+    """The cell above with the premise reading `a[0]`, the one index term
+    stage 2 instantiates an ELEMENT axiom at.  The refinement over `Color`
+    stays out of the range quantifier, so the screen stays undecided
+    (`E540`).  RED with the ranges-only walk stating the refinement too
+    (`_invariant_at` without its `ranged is not None` test): the predicate
+    lands in the ELEMENT quantifier, which is then a body that can have no
+    value, and its instance at `a[0]` is refused (`E538`)."""
+    from vera import verifier as vmod
+
+    source = """\
+private data Color {
+  Red,
+  Green
+}
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+private data Box {
+  MkBox(NoColor)
+}
+
+public fn f(@Array<Box> -> @Int)
+  requires(array_length(@Array<Box>.0) > 0 && @Array<Box>.0[0] == @Array<Box>.0[0])
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E540" in codes and "E538" not in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------------------
 # MD-9 / R2: a Tier-1 proof needs its premises SHOWN satisfiable, where they
 # leave the decidable fragment

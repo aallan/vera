@@ -807,3 +807,33 @@ def test_a_quotient_stand_in_does_not_prove_its_own_row() -> None:
     ran = pipeline.run(compiled, "go", [INT_MIN])
     assert not ran.ok and isinstance(ran.trap, WasmTrapError), ran
     assert pipeline.run(compiled, "go", [6]).value == -6
+
+
+def test_repro_a_level_that_does_not_translate_declines_the_membership() -> None:
+    """`_translate_refined_predicate` answers None (Tier 3) for a level with
+    no Bool term, at either level of a chain: a call the checker never typed
+    (built after the check, so no stand-in stands for it) has no term, and
+    the binder alone is a term of sort `Int`.  RED with the check reading
+    `translated is None and …`: the first raises, the second is returned as
+    the membership itself."""
+    import z3
+
+    from vera import ast
+    from vera.smt import SmtContext
+    from vera.types import INT, RefinedType
+    from vera.verifier import ContractVerifier
+
+    binder = ast.SlotRef(type_name="Int", type_args=None, index=0)
+    positive = ast.BinaryExpr(op=ast.BinOp.GT, left=binder,
+                              right=ast.IntLit(value=0))
+    untyped = ast.BinaryExpr(
+        op=ast.BinOp.GT, left=ast.FnCall(name="int_to_float", args=(binder,)),
+        right=ast.FloatLit(value=0.0))
+    translate = ContractVerifier._translate_refined_predicate
+    smt = SmtContext()
+    value = z3.Int("v")
+    assert translate(smt, RefinedType(INT, positive), value) is not None
+    for level in (untyped, binder):
+        assert translate(smt, RefinedType(INT, level), value) is None, level
+        chain = RefinedType(RefinedType(INT, positive), level)
+        assert translate(smt, chain, value) is None, level
