@@ -12461,32 +12461,25 @@ class ContractVerifier:
             parts = expr.args
         leaves = (narrowing.value_leaves(expr)
                   if narrowing.flow_arms(expr) is not None else ())
-        narrowed_leaves = [
-            obligation_table.ObligationTable._key(leaf) for leaf in leaves
-            if obligation_table.ObligationTable._key(leaf) in narrowed_at
-            or obligation_table.ObligationTable._key(leaf)
-            in frame.narrowed_nodes]
-        if narrowed_leaves:
-            # A join (a block's tail, an `if`, a `match`, a `handle`) whose
-            # leaf is narrowed: a requirement handed down narrows at the
-            # leaves, and the join's term (a stand-in, for a `handle`) holds
-            # none of them by occurrence.  Established where every narrowed
-            # leaf is: each leaf's check runs before the join's value is.
-            smt.note_narrowed(
-                cast("z3.ExprRef", term),
-                all(self._leaf_established(k, narrowed_at, frame)
-                    for k in narrowed_leaves))
-        held = [self._holds_narrowed(p, env, smt, frame) for p in parts]
-        if any(h for h, _ in held):
-            # A value a built-in makes of a narrowed one (an array literal
-            # or a store holding it, a read back out of that store): its
-            # type is its parts' types, so it is established no further
-            # than they are.  The SMT layer relates such a value to its
-            # parts by an axiom or not at all (a stand-in), never by
-            # occurrence, so the occurrence test alone cannot follow it.
-            smt.note_narrowed(
-                cast("z3.ExprRef", term),
-                all(est for h, est in held if h))
+        for made_of in (leaves, parts):
+            # A term made from narrowed values: a join's (a block's tail, an
+            # `if`, a `match`, a `handle`), whose leaves they are, where a
+            # requirement handed down narrows at the leaves and the join's
+            # term (a stand-in, for a `handle`) holds none of them by
+            # occurrence; or a built-in's (an array literal or a store
+            # holding one, a read back out of that store), whose parts hold
+            # them, related to its parts by an axiom or not at all.  Its
+            # type is theirs, so it is established no further than they
+            # are, and its lineage is theirs: the narrowed ids it was made
+            # from, which keep a fact read off it from those narrowings'
+            # own queries (`SmtContext.check_valid`'s *own*).
+            held = [self._holds_narrowed(p, env, smt, frame)
+                    for p in made_of]
+            if any(h for h, _, _ in held):
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term),
+                    all(est for h, est, _ in held if h),
+                    parents=set().union(*(ids for _, _, ids in held)))
         for steps, checked in narrowed_at.get(key, ()):
             component = term
             for ctor, i in steps:
@@ -12510,18 +12503,6 @@ class ContractVerifier:
         # collected env leaves free is never read as another's.
         frame.met[(key, id(env))] = (env, term)
 
-    @staticmethod
-    def _leaf_established(
-        key: object,
-        narrowed_at: dict[object, list[tuple[tuple[tuple[str, int], ...], bool]]],
-        frame: _FnFrame,
-    ) -> bool:
-        """Whether a join's narrowed leaf (#1897) holds only established
-        narrowed values: every row at it checked, and, met narrowed, every
-        narrowed value its term holds established."""
-        return (all(checked for _, checked in narrowed_at.get(key, ()))
-                and frame.narrowed_nodes.get(key, True))
-
     def _note_narrowed_binder(
         self, value: ast.Expr, steps: tuple[tuple[str, int], ...],
         stand_in: object, smt: SmtContext,
@@ -12542,35 +12523,47 @@ class ContractVerifier:
 
     def _holds_narrowed(
         self, part: ast.Expr, env: SlotEnv, smt: SmtContext, frame: _FnFrame,
-    ) -> tuple[bool, bool]:
-        """Whether *part*'s value holds a narrowed one (#1897), and whether
-        every narrowed value it holds is established, read off the term the
-        translation made of it under *env* (`_FnFrame.met`), never by
-        translating it again: a second translation mints stand-ins and
-        asserts facts afresh, and running the hook on the part's own parts
-        doubled the cost at each level of nested built-ins.  A part the
-        translation did not reach (a built-in it reads as a stand-in does not
-        translate its arguments) is read by its nodes: one a narrowing row
-        takes or one met narrowed, or a slot reference whose value holds a
-        narrowed one; such a part is taken as not established."""
+    ) -> tuple[bool, bool, set[int]]:
+        """Whether *part*'s value holds a narrowed one (#1897), whether every
+        narrowed value it holds is established, and the narrowed ids it
+        holds, read off the term the translation made of it under *env*
+        (`_FnFrame.met`), never by translating it again: a second
+        translation mints stand-ins and asserts facts afresh, and running
+        the hook on the part's own parts doubled the cost at each level of
+        nested built-ins.  A part a narrowing row takes holds the value the
+        row narrows, established where every row at it is checked.  A part
+        the translation did not reach (a built-in it reads as a stand-in
+        does not translate its arguments, nor does a `handle` its leaves)
+        is read by its nodes: one a narrowing row takes or one met
+        narrowed, or a slot reference whose value holds a narrowed one;
+        such a part is taken as not established."""
         key = obligation_table.ObligationTable._key(part)
-        if key in frame.narrowed_nodes:
-            return True, frame.narrowed_nodes[key]
-        if not smt._narrowed_terms and key not in _narrowed_at(frame):
-            return False, True
+        narrowed_at = _narrowed_at(frame)
+        rows = narrowed_at.get(key, ())
+        if not smt._narrowed_terms and not rows:
+            return False, True, set()
         met = frame.met.get((key, id(env)))
         if met is not None and met[0] is env:
             ids = smt.narrowed_ids_in(met[1])
-            return bool(ids), not ids & smt.unestablished_narrowed_ids()
-        narrowed_at = _narrowed_at(frame)
+            return (bool(ids) or bool(rows) or key in frame.narrowed_nodes,
+                    not ids & smt.unestablished_narrowed_ids()
+                    and all(checked for _, checked in rows)
+                    and frame.narrowed_nodes.get(key, True),
+                    ids)
+        if key in frame.narrowed_nodes:
+            return True, frame.narrowed_nodes[key], set()
+        held = False
+        ids = set()
         for node in fold.walk(part):
             node_key = obligation_table.ObligationTable._key(node)
             if node_key in narrowed_at or node_key in frame.narrowed_nodes:
-                return True, False
-            if isinstance(node, ast.SlotRef) and smt.narrowed_ids_in(
-                    smt._translate_slot_ref(node, env)):
-                return True, False
-        return False, True
+                held = True
+            elif isinstance(node, ast.SlotRef):
+                found = smt.narrowed_ids_in(
+                    smt._translate_slot_ref(node, env))
+                held = held or bool(found)
+                ids |= found
+        return held, not held, ids
 
     def _disclosure_is_live(self, smt: SmtContext) -> bool:
         """Whether this run has disclosed anything at all.

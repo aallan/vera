@@ -15,7 +15,7 @@ import hashlib
 
 import contextlib
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -807,6 +807,11 @@ class SmtContext:
         # The narrowed values some unchecked narrowing row gave their type:
         # a fact over one is established only by that row's own proof.
         self._unestablished_ids: set[int] = set()
+        # Each noted id to the narrowed ids it was made from (its lineage):
+        # a term made from a narrowed value (an array literal holding it, a
+        # `handle`'s stand-in whose leaves are it) holds that value by no
+        # occurrence, so its facts are that narrowing's own by this link.
+        self._narrowed_parents: dict[int, set[int]] = {}
         # The facts read off a type only checked narrowings gave the value:
         # established, so every query reads them but the narrowing's own.
         self._narrowed_facts: list[tuple[z3.ExprRef, frozenset[int]]] = []
@@ -4795,7 +4800,7 @@ class SmtContext:
             # does.
             own_id = self._term_id(own)
             self._own_excluded = (
-                frozenset({own_id}) if own_id in self._narrowed_ids
+                self._made_from(own_id) if own_id in self._narrowed_ids
                 else frozenset())
         try:
             result = self._check_refutation(goal, assumptions, tainted=False)
@@ -4808,6 +4813,19 @@ class SmtContext:
         if with_tainted.status == "verified":
             return SmtResult(status="disclosed")
         return result
+
+    def _made_from(self, own_id: int) -> frozenset[int]:
+        """*own_id* and every noted id whose lineage reaches it
+        (`_narrowed_parents`): the values made from that narrowed one."""
+        found = {own_id}
+        grew = True
+        while grew:
+            grew = False
+            for tid, parents in self._narrowed_parents.items():
+                if tid not in found and parents & found:
+                    found.add(tid)
+                    grew = True
+        return frozenset(found)
 
     def narrowed_ids_in(self, term: object) -> set[int]:
         """The ids of the narrowed values (`_narrowed_terms`, #1897) that
@@ -4871,11 +4889,17 @@ class SmtContext:
 
     def note_narrowed(
         self, term: z3.ExprRef, established: bool = True,
+        parents: Iterable[int] = (),
     ) -> None:
         """Record *term* as a value a narrowing in this function gave a type
         its own does not state (#1897); *established* is False where the
-        row is not checked, and a value any such row gave stays so."""
+        row is not checked, and a value any such row gave stays so.
+        *parents* are the narrowed ids *term* was made from: THE one record
+        of a term's lineage, which `check_valid`'s *own* follows."""
         tid = term.get_id()
+        lineage = set(parents) - {tid}
+        if lineage:
+            self._narrowed_parents.setdefault(tid, set()).update(lineage)
         if not established:
             self._unestablished_ids.add(tid)
         if tid in self._narrowed_ids:
@@ -5371,6 +5395,7 @@ class SmtContext:
         self._narrowed_ids.clear()
         self._narrowed_below.clear()
         self._unestablished_ids.clear()
+        self._narrowed_parents.clear()
         self._narrowed_facts.clear()
         self._withheld_owners.clear()
         self._own_excluded = frozenset()

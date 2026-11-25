@@ -1206,3 +1206,157 @@ def test_the_matrix_is_the_product() -> None:
             SOURCES, POSITIONS, SHAPES, READERS, PREDICATES)
         if not (reader == "destr" and SHAPES[shape].destr is None))
     assert len(ids) == expected == 4160
+
+
+# =====================================================================
+# The lineage of a term made from a narrowed one (W135's f1, f1b, the
+# Option twin, f2, f2b).  A flow that makes a NEW term from a narrowed
+# value (an array literal holding it, a `handle`'s stand-in whose leaves
+# are it) still carries that narrowing: the narrowing's own query never
+# reads a fact read off the new term, and a fact read off it is
+# established no further than the narrowing is.
+# =====================================================================
+
+NEED = textwrap.dedent("""\
+    private fn need(@Int -> @Int)
+      requires(@Int.0 > 0)
+      ensures(@Int.result == @Int.0)
+      effects(pure)
+    {
+      @Int.0
+    }
+
+    """)
+
+
+def _go(call: str) -> str:
+    return textwrap.dedent(f"""\
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {{
+          {call}
+        }}
+        """)
+
+
+def test_repro_f1_a_narrowing_read_back_through_an_array_literal() -> None:
+    """f1: the narrowed tuple is put in an array literal and read back by
+    a `match` on `[0]`.  The literal's term is the reader's only owner; it
+    was made from the tuple, so the `let`'s own query never reads its fact:
+    refuted (E505), as with the reader on the slot.  Was disclosed (E506)."""
+    source = POS + NEED + textwrap.dedent("""\
+        private fn inner(@Tuple<Int, Int> -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;
+          let @Array<Tuple<Pos, Int>> = [@Tuple<Pos, Int>.0];
+          match @Array<Tuple<Pos, Int>>.0[0] { Tuple(@Int, @Int) -> need(@Int.1) }
+        }
+        """) + _go("inner(Tuple(@Int.0, 0))")
+    verified = _verify(source)
+    let = _line(source, "let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+
+
+def test_repro_f1b_an_array_read_back_whose_consumer_is_the_ensures() -> None:
+    """f1 with the reader's consumer the function's own postcondition:
+    the `let` is refuted (E505), never proved or disclosed from the fact
+    read back through the literal.  Was disclosed (E506)."""
+    source = POS + textwrap.dedent("""\
+        private fn inner(@Tuple<Int, Int> -> @Int)
+          requires(true)
+          ensures(@Int.result > 0)
+          effects(pure)
+        {
+          let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;
+          let @Array<Tuple<Pos, Int>> = [@Tuple<Pos, Int>.0];
+          match @Array<Tuple<Pos, Int>>.0[0] { Tuple(@Int, @Int) -> @Int.1 }
+        }
+        """) + _go("inner(Tuple(@Int.0, 0))")
+    verified = _verify(source)
+    let = _line(source, "let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+
+
+def test_repro_f1_option_twin_read_back_through_an_array_literal() -> None:
+    """f1's `Option` twin: the payload row is unchecked, so the fact read
+    back through the literal is withheld; it was offered to the `let`'s
+    own second attempt (the literal's owner is not the `let`'s value) and
+    the `let` disclosed (E506).  Its lineage keeps it out: E505."""
+    source = POS + NEED + textwrap.dedent("""\
+        private fn inner(@Option<Int> -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let @Option<Pos> = @Option<Int>.0;
+          let @Array<Option<Pos>> = [@Option<Pos>.0];
+          match @Array<Option<Pos>>.0[0] { Some(@Int) -> need(@Int.0), None -> 1 }
+        }
+        """) + _go("inner(Some(@Int.0))")
+    verified = _verify(source)
+    let = _line(source, "let @Option<Pos> = @Option<Int>.0;")
+    assert _at_line(verified, let) == ["violated/E505"]
+
+
+_F2_TAIL = textwrap.dedent("""\
+      let @Option<Pos> = handle[Exn<Int>] { throw(@Int) -> @Option<Pos>.0 } in { @Option<Pos>.0 };
+      match @Option<Pos>.0 {
+        Some(@Int) -> {
+          let @Nat = @Int.0 - 1;
+          nat_to_int(@Nat.0)
+        },
+        None -> 1
+      }
+    }
+    """)
+
+
+def test_repro_f2_a_handle_whose_leaves_are_a_narrowed_slot() -> None:
+    """f2: a `handle` whose clause and body leaves are a slot an unchecked
+    payload narrowing typed.  The handle's term is a stand-in the leaves
+    do not occur in; its leaves hold the narrowed value, so it is narrowed
+    and unestablished, and the `@Nat` the reader's fact proves is Tier 3.
+    Was `verified` (the fact had no owner, so it came in as established)."""
+    source = POS + textwrap.dedent("""\
+        private fn mk(@Int -> @Option<Int>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          Some(@Int.0)
+        }
+
+        public fn go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let @Option<Pos> = mk(@Int.0);
+        """) + textwrap.indent(_F2_TAIL, "  ")[2:]
+    verified = _verify(source)
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
+
+
+def test_repro_f2b_a_handle_over_an_apply_fn_narrowing() -> None:
+    """f2 over `apply_fn`'s result, a program `vera verify` accepts: the
+    `@Nat` is Tier 3, its check kept, never `verified`."""
+    source = POS + textwrap.dedent("""\
+        type MkO = fn(Int -> Option<Int>) effects(pure);
+
+        public fn go(@MkO, @Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+        """) + textwrap.indent(_F2_TAIL, "  ")[2:]
+    verified = _verify(source)
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
