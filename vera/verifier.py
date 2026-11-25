@@ -5312,7 +5312,11 @@ class ContractVerifier:
         stack: list[object] = list(ground)
         seen: set[int] = set()
         while stack:
-            expr = cast("z3.ExprRef", stack.pop())
+            # `cast` returns its second argument at run time: the type is
+            # read by mypy alone, so no program sees a change to it.
+            expr = cast(
+                "z3.ExprRef",  # pragma: no mutate
+                stack.pop())
             if expr.get_id() in seen or not z3.is_app(expr):
                 continue
             seen.add(expr.get_id())
