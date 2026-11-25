@@ -453,10 +453,28 @@ class ParameterPremise:
     nested: list[z3.ExprRef]
     #: What the type states at every position besides (#1814).
     invariant: list[z3.ExprRef]
+    #: The ids of the *invariant* facts that are i64 range parts: an
+    #: `Int`'s range and a `Nat`'s upper bound, at the head and at every
+    #: position inside the type, and an array's element range (#1928).
+    ranges: frozenset[int] = frozenset()
 
     def facts(self) -> list[z3.ExprRef]:
-        """Every fact, as the guard requires them."""
+        """Every fact, as the function's own proof assumes them."""
         return [*self.head, *self.nested, *self.invariant]
+
+    def range_free(self) -> list[z3.ExprRef]:
+        """Every fact but the i64 range parts: what a call's guard requires
+        of an argument for any query but an `int_overflow` row's (#1928).
+        An argument that reaches its call is a value, and a value is in
+        range by its own evaluation; only a query asking whether arithmetic
+        stays in range may not take that as given."""
+        return [*self.head, *self.nested,
+                *(f for f in self.invariant if f.get_id() not in self.ranges)]
+
+    def range_parts(self) -> list[z3.ExprRef]:
+        """The i64 range parts, which an `int_overflow` row's query alone
+        also requires (:py:meth:`SmtContext.check_valid`, *in_range*)."""
+        return [f for f in self.invariant if f.get_id() in self.ranges]
 
 
 @dataclass(frozen=True)
@@ -1748,10 +1766,14 @@ class ContractVerifier:
         callee: FunctionInfo,
         terms: Sequence[z3.ExprRef | None],
         smt: SmtContext,
-    ) -> list[z3.ExprRef]:
+    ) -> tuple[list[z3.ExprRef], list[z3.ExprRef]]:
         """The SMT layer's hook (``SmtContext._call_binding_hook``): the facts
         *call*'s arguments owe *callee*'s parameters, over *terms*, the
-        arguments as the call's translation translated them (#1706).
+        arguments as the call's translation translated them (#1706), in two
+        parts: the premise without its i64 range parts, which every query
+        requires, and those parts, which only a query asking whether
+        arithmetic stays in range requires (#1928;
+        :py:meth:`ParameterPremise.range_free`).
 
         Per argument, what the callee's own proof assumed of the parameter,
         read off the one function that proof reads it off
@@ -1780,15 +1802,18 @@ class ContractVerifier:
         """
         formals = getattr(callee, "param_types", None)
         if formals is None:
-            return []
+            return [], []
         facts: list[z3.ExprRef] = []
+        ranges: list[z3.ExprRef] = []
         for target, term in zip(
                 self._argument_targets(call.args, formals), terms):
             if term is None or target.declared is None:
                 continue
-            facts.extend(self._parameter_premise(
-                smt, target.declared, term, standing=False).facts())
-        return facts
+            premise = self._parameter_premise(
+                smt, target.declared, term, standing=False)
+            facts.extend(premise.range_free())
+            ranges.extend(premise.range_parts())
+        return facts, ranges
 
     def _call_result_facts(
         self,
@@ -2430,11 +2455,13 @@ class ContractVerifier:
         built with *standing* False: the same facts, no element tagged for
         the premise screen."""
         nested, _ = self._nested_refinement_facts(smt, ty, term)
+        ranges: set[int] = set()
         return ParameterPremise(
             head=smt.head_facts(term, ty),
             nested=list(nested),
             invariant=list(self._type_invariant(
-                smt, ty, term, standing=standing)))
+                smt, ty, term, standing=standing, ranges=ranges)),
+            ranges=frozenset(ranges))
 
     def _fresh_smt(self, scope: CalleeScope) -> SmtContext:
         """A solver context for one declaration, read in *scope*.
@@ -10057,7 +10084,7 @@ class ContractVerifier:
         lo, hi = z3.IntVal(_I64_MIN), z3.IntVal(_I64_MAX)
 
         in_range = z3.And(result >= lo, result <= hi)
-        safe = smt.check_valid(in_range, list(assumptions))
+        safe = smt.check_valid(in_range, list(assumptions), in_range=True)
         if safe.status == "verified":
             self._record_obligation(decl.name, "int_overflow", expr, "verified")
             return
@@ -10065,7 +10092,7 @@ class ContractVerifier:
         # Not provably in range.  Distinguish a real, statically-decidable bug
         # (provably OUT of range) from dynamic operands we cannot decide.
         out_of_range = z3.Or(result < lo, result > hi)
-        bad = smt.check_valid(out_of_range, list(assumptions))
+        bad = smt.check_valid(out_of_range, list(assumptions), in_range=True)
         if bad.status == "verified":
             self._record_obligation(
                 decl.name, "int_overflow", expr, "violated",
@@ -10104,11 +10131,12 @@ class ContractVerifier:
             self._record_obligation(decl.name, "int_overflow", expr, "tier3")
             return
         overflow = z3.And(left == z3.IntVal(_I64_MIN), right == z3.IntVal(-1))
-        safe = smt.check_valid(z3.Not(overflow), list(assumptions))
+        safe = smt.check_valid(
+            z3.Not(overflow), list(assumptions), in_range=True)
         if safe.status == "verified":
             self._record_obligation(decl.name, "int_overflow", expr, "verified")
             return
-        bad = smt.check_valid(overflow, list(assumptions))
+        bad = smt.check_valid(overflow, list(assumptions), in_range=True)
         if bad.status == "verified":
             self._record_obligation(
                 decl.name, "int_overflow", expr, "violated",
@@ -11382,7 +11410,7 @@ class ContractVerifier:
 
     def _type_invariant(
         self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
-        standing: bool = True,
+        standing: bool = True, ranges: set[int] | None = None,
     ) -> list[z3.ExprRef]:
         """What *ty* states of a value *term* of it that the head and nested
         refinement walks do not (#1814): an `Int`'s i64 range and a `Nat`'s
@@ -11404,10 +11432,18 @@ class ContractVerifier:
         `AxiomKind.ELEMENT` for the premise screen (#1451); one under a
         constructor's recognizer is not, and stays foreign to it; nor is one
         a call's guard holds (*standing* False, #1928), which stands under
-        an implication."""
+        an implication.
+
+        *ranges*, when given, receives the ids of the facts that are i64
+        range parts (#1928): an `Int`'s range, a `Nat`'s upper bound (its
+        `>= 0` is not one: a `nat_sub` or `nat_bind` row asks it), an
+        array's element range, and a constructor field's under its
+        recognizer.  An element quantifier holding a range beside another
+        fact is not one: it stays whole, the stronger guard."""
         ranged: dict[int, tuple[z3.ExprRef, str]] = {}
         facts = self._invariant_at(
-            smt, ty, term, head=True, seen=frozenset(), ranged=ranged)
+            smt, ty, term, head=True, seen=frozenset(), ranged=ranged,
+            ranges=ranges)
         for fact in facts:
             if standing and fact.get_id() in ranged:
                 smt.tag_axiom(fact, AxiomKind.ELEMENT,
@@ -11418,10 +11454,12 @@ class ContractVerifier:
         self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
         head: bool, seen: frozenset[str],
         ranged: dict[int, tuple[z3.ExprRef, str]] | None = None,
+        ranges: set[int] | None = None,
     ) -> list[z3.ExprRef]:
         """One position of :py:meth:`_type_invariant`'s walk.  With
         *ranged* None the walk states ranges alone: no refinement over a
-        data type, no array's elements."""
+        data type, no array's elements.  *ranges* receives the ids of the
+        i64 range parts (:py:meth:`_type_invariant`)."""
         if ty is None or not smt.type_is_regular(ty):
             return []
         facts: list[z3.ExprRef] = []
@@ -11440,16 +11478,22 @@ class ContractVerifier:
             return facts
         if sort == z3.IntSort():
             if base == NAT:
-                facts.extend([term >= 0, term <= _I64_MAX])
+                bounds = [term <= _I64_MAX]
+                facts.extend([term >= 0, *bounds])
             elif base == INT:
-                facts.extend([term >= _I64_MIN, term <= _I64_MAX])
+                bounds = [term >= _I64_MIN, term <= _I64_MAX]
+                facts.extend(bounds)
+            else:
+                bounds = []
+            if ranges is not None:
+                ranges.update(b.get_id() for b in bounds)
             return facts
         if not isinstance(base, AdtType):
             return facts
         if base.name == "Array" and len(base.type_args) == 1:
             if ranged is not None:
                 facts.extend(self._element_invariant(
-                    smt, base.type_args[0], term, seen, ranged))
+                    smt, base.type_args[0], term, seen, ranged, ranges))
             return facts
         if not isinstance(sort, z3.DatatypeSortRef):
             return facts
@@ -11474,14 +11518,19 @@ class ContractVerifier:
             for j, field_ty in enumerate(field_types):
                 for fact in self._invariant_at(
                         smt, field_ty, sort.accessor(i, j)(term),
-                        head=False, seen=deeper, ranged=ranged):
-                    facts.append(fact if recognizer is None
-                                 else z3.Implies(recognizer, fact))
+                        head=False, seen=deeper, ranged=ranged,
+                        ranges=ranges):
+                    held = (fact if recognizer is None
+                            else z3.Implies(recognizer, fact))
+                    if ranges is not None and fact.get_id() in ranges:
+                        ranges.add(held.get_id())
+                    facts.append(held)
         return facts
 
     def _element_invariant(
         self, smt: SmtContext, element_ty: Type, term: z3.ExprRef,
         seen: frozenset[str], ranged: dict[int, tuple[z3.ExprRef, str]],
+        ranges: set[int] | None = None,
     ) -> list[z3.ExprRef]:
         """An `Array`'s element positions: the bounded index quantifier
         `_element_facts` states for a refined element, over what the
@@ -11504,8 +11553,10 @@ class ContractVerifier:
             ),
             z3.IntSort())
         element = index_fn(sequence, idx)
+        inner: set[int] = set()
         body = [fact for fact in self._invariant_at(
-            smt, element_ty, element, head=False, seen=seen, ranged=ranged)
+            smt, element_ty, element, head=False, seen=seen, ranged=ranged,
+            ranges=inner)
             if self._per_element(fact, element)]
         ranges = {fact.get_id() for fact in self._invariant_at(
             smt, element_ty, element, head=False, seen=seen)}
@@ -11519,6 +11570,11 @@ class ContractVerifier:
             axiom = z3.ForAll([idx], z3.Implies(in_range, z3.And(*part)))
             if tag:
                 ranged[axiom.get_id()] = (axiom, index_fn.name())
+            if ranges is not None and (
+                    tag or all(f.get_id() in inner for f in part)):
+                # The element range whole, a `Nat` element's `>= 0` in it:
+                # no call's guard required it before #1928.
+                ranges.add(axiom.get_id())
             out.append(axiom)
         return out
 
@@ -13783,7 +13839,7 @@ class ContractVerifier:
         smt._path_conditions.clear()
         try:
             verdict = smt.check_valid(
-                z3.Or(on_path, in_range), list(assumptions))
+                z3.Or(on_path, in_range), list(assumptions), in_range=True)
         finally:
             smt._path_conditions.extend(path)
         return verdict.status == "verified"

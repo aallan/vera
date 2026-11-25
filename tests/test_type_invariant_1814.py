@@ -1296,6 +1296,161 @@ def test_the_reach_dimension_spans_every_product() -> None:
     assert len(_REACH_CELLS) == len(_RANGED) * len(_REACH) == 39
 
 
+# The range part of the guard, by the query's kind (#1928)
+# --------------------------------------------------------
+#
+# An argument that reaches its call is a value, and a value is in range, so
+# the range part of the callee's premise holds at the call by the
+# argument's own evaluation: only a query asking whether arithmetic stays
+# in range (an `int_overflow` row) requires it of the argument.  At
+# e35cc91a every query required it, and a caller whose argument is a
+# call's result (which states nothing) or arithmetic it cannot bound lost
+# the callee's postcondition: five corpus programs refuted their `ensures`.
+
+_FROM_A_CALL = """\
+private fn larger(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.1 > @Int.0 then { @Int.1 } else { @Int.0 }
+}
+
+private fn magnitude(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then { @Int.0 } else { 0 }
+}
+
+public fn k(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  magnitude(larger(@Int.1, @Int.0))
+}
+"""
+
+_FROM_ARITHMETIC = """\
+private fn twice(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 2)
+  effects(pure)
+{
+  @Int.0 * 2
+}
+
+public fn k(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == (@Int.0 + 1) * 2)
+  effects(pure)
+{
+  twice(@Int.0 + 1)
+}
+"""
+
+
+def test_repro_1928_an_argument_from_a_call_keeps_the_callee_ensures() -> None:
+    """`magnitude(larger(..))`, reduced from `examples/modules.vera`: the
+    argument is a call's result, whose range nothing states; `k`'s
+    `ensures` needs `magnitude`'s, which holds of any argument.  Violated
+    (E500) at e35cc91a, verified at main and here."""
+    assert ("ensures", "verified", "") in _statuses(_FROM_A_CALL)["k"]
+
+
+def test_repro_1928_an_unbounded_argument_keeps_the_callee_ensures() -> None:
+    """`twice(@Int.0 + 1)`, reduced from `ch05_nested_where_helpers.vera`:
+    the caller cannot bound the argument, and `twice`'s postcondition does
+    not depend on the range.  Violated (E500) at e35cc91a, verified at main
+    and here; the argument's own row stays Tier 3."""
+    statuses = _statuses(_FROM_ARITHMETIC)["k"]
+    assert ("ensures", "verified", "") in statuses, statuses
+    assert all(s == "tier3" for kd, s, _c in statuses
+               if kd == "int_overflow"), statuses
+
+
+#: The argument at the call, over the caller's `@Int` parameter `{x}`.
+_KIND_ARGUMENTS = {
+    "parameter": "{x}",
+    "literal": "5",
+    "bounded": "{x} + 1",
+    "unbounded": "{x} + 1",
+    "call": "ident({x})",
+}
+#: Where the obligation sits: the argument's own row, an `int_overflow` row
+#: over the same term earlier in the body, the caller's postcondition.
+_KIND_OBLIGATIONS = ("own", "earlier", "ensures")
+#: The callee's postcondition: one that does not depend on the parameter's
+#: range, and one that restates it.
+_KIND_CALLEES = {
+    "doubles": "@Int.result == @Int.0 * 2",
+    "restates": f"@Int.0 <= {INT_MAX}",
+}
+_KIND_CELLS = list(itertools.product(
+    _KIND_ARGUMENTS, _KIND_OBLIGATIONS, _KIND_CALLEES))
+
+
+def _kind_program(argument: str, obligation: str, callee: str) -> str:
+    arg = _KIND_ARGUMENTS[argument]
+    requires = "@Int.0 < 100" if argument == "bounded" else "true"
+    ensures = "true"
+    if obligation == "ensures" and callee == "doubles":
+        # A contract's own `ident(..)` is a second call, whose result is
+        # not the body's: what the import gives is the result's parity.
+        ensures = ("@Int.result % 2 == 0" if argument == "call"
+                   else f"@Int.result == ({arg.format(x='@Int.0')}) * 2")
+    if obligation == "earlier":
+        body = f"let @Int = @Int.0 + 1;\n  c({arg.format(x='@Int.1')})"
+    else:
+        body = f"c({arg.format(x='@Int.0')})"
+    # `ident` states nothing of its result (#1925): its range is not shown.
+    return (_fn("private", "ident(@Int -> @Int)", "true", "@Int.0") + "\n"
+            + _fn("private", "c(@Int -> @Int)", _KIND_CALLEES[callee],
+                  "@Int.0 * 2" if callee == "doubles" else "@Int.0") + "\n"
+            + f"public fn k(@Int -> @Int)\n  requires({requires})\n"
+            f"  ensures({ensures})\n  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+def test_the_kind_dimension_spans_every_product() -> None:
+    assert len(_KIND_CELLS) == 5 * 3 * 2 == 30
+
+
+@pytest.mark.parametrize(
+    "cell", [pytest.param(c, id=".".join(c)) for c in _KIND_CELLS])
+def test_a_call_guards_by_the_query_kind(cell: tuple[str, str, str]) -> None:
+    """Argument x obligation x callee postcondition: an `int_overflow` row
+    of `k` is never `verified` where the run at `INT_MAX` traps on an
+    overflow, and `k`'s postcondition that reads the callee's result is
+    `verified` wherever that callee's postcondition does not depend on the
+    range."""
+    argument, obligation, callee = cell
+    source = _kind_program(argument, obligation, callee)
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    rows = [(o.kind, o.expr_text, o.status) for o in verified.obligations
+            if o.fn_name == "k"]
+    overflow = [r for r in rows if r[0] == "int_overflow"]
+    if argument == "bounded" and obligation != "earlier":
+        # `@Int.0 < 100` bounds the argument's `+ 1` (a contract's own
+        # `* 2` has no lower bound, and stays Tier 3).
+        bounded = [s for _k, e, s in overflow if e == "@Int.0 + 1"]
+        assert bounded and all(s == "verified" for s in bounded), rows
+    ran = pipeline.run(source, "k", [INT_MAX], file=FILE)
+    if ran.trap is not None and "overflow" in str(ran.trap).lower():
+        # The callee's own `* 2` may be what traps; no row of `k` is proved.
+        assert all(s != "verified" for *_r, s in overflow), rows
+    if argument != "bounded" and (
+            argument == "unbounded" or obligation == "earlier"):
+        # The boundary is reached: the cell is one the first assertion
+        # reads, not one it passes by running nothing.
+        assert isinstance(ran.trap, WasmTrapError), (ran, rows)
+        assert "overflow" in str(ran.trap).lower(), str(ran.trap)
+    if obligation == "ensures" and callee == "doubles":
+        assert ("ensures", "verified") in [(k, s) for k, _e, s in rows], rows
+
+
 @pytest.mark.parametrize(
     "cell", [pytest.param(c, id=".".join(c)) for c in _REACH_CELLS])
 def test_a_call_guards_what_the_callee_assumed(

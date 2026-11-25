@@ -820,6 +820,14 @@ class SmtContext:
         # argument cannot be discharged by the facts of the call it feeds.
         # Empty outside a call's translation, where nothing reads it.
         self._call_bindings: list[z3.ExprRef] = []
+        # #1928: the one decision of which import a query sees.  A call's
+        # binding holds its arguments' i64 range parts under this constant
+        # (`_call_binding`), and every query fixes it (`_premises`): true for
+        # a query asking whether arithmetic stays in range (`check_valid`'s
+        # *in_range*, an `int_overflow` row's), false for every other.  One
+        # translation of the call, one import, two guards.
+        self._range_premise = z3.Bool("$call_range_premise")
+        self._asking_range = False
         # #1363: declared-type facts whose OWN obligation resolved
         # not-proved-not-guarded.  Held apart from the solver rather than
         # asserted into it, so a goal is first asked WITHOUT them: anything
@@ -895,7 +903,8 @@ class SmtContext:
         # resolution (a refinement, a `@Nat`, a refinement nested in the
         # type), which its binding-obligation walk reads too.  Signature:
         # (call_node, callee_info, [term or None per argument], smt) ->
-        # [z3 fact].  None when no verifier is driving (pure-SMT tests).
+        # ([z3 fact], [z3 range fact]).  None when no verifier is driving
+        # (pure-SMT tests).
         self._call_binding_hook: Any = None
         # Optional hook (injected by the verifier) returning what a call's
         # declared return type says about its result beyond its head
@@ -3611,7 +3620,11 @@ class SmtContext:
         resolves each formal the way its binding-obligation walk does; this
         layer hands it one term per argument, ``None`` at a zero-size
         position, whose argument :meth:`_translate_call_args` translated and
-        dropped (#1214).
+        dropped (#1214).  The hook's second list, the arguments' i64 range
+        parts, is held under ``_range_premise`` (#1928): required by a
+        query that asks whether arithmetic stays in range, and by no other,
+        since an argument that reaches its call is a value, in range by its
+        own evaluation.
         """
         if self._call_binding_hook is None:
             return None
@@ -3620,11 +3633,14 @@ class SmtContext:
             None if (i < len(zero_size) and zero_size[i]) else next(translated)
             for i in range(len(args))
         ]
-        facts = [
-            part for fact in
-            self._call_binding_hook(call_node, callee_info, terms, self)
-            if (part := self._statable_part(fact)) is not None
-        ]
+        owed, ranges = self._call_binding_hook(
+            call_node, callee_info, terms, self)
+        facts = [part for fact in owed
+                 if (part := self._statable_part(fact)) is not None]
+        in_range = [part for fact in ranges
+                    if (part := self._statable_part(fact)) is not None]
+        if in_range:
+            facts.append(z3.Implies(self._range_premise, z3.And(*in_range)))
         if not facts:
             return None
         return facts[0] if len(facts) == 1 else z3.And(*facts)
@@ -4821,6 +4837,8 @@ class SmtContext:
         self,
         goal: z3.ExprRef,
         assumptions: list[z3.ExprRef],
+        *,
+        in_range: bool = False,
     ) -> SmtResult:
         """Check if assumptions ⟹ goal is valid.
 
@@ -4841,11 +4859,22 @@ class SmtContext:
         Asking in that order is what distinguishes "proved" from "proved from
         something we admitted we could not establish", which asserting them
         into the base context makes indistinguishable.
+
+        *in_range*: the goal asks whether arithmetic stays in the i64 range
+        (an `int_overflow` row, #1928), so a call's facts are assumed only
+        where its arguments meet their parameters' ranges too
+        (``_range_premise``): a callee's postcondition proved from its
+        parameter's range is not evidence of the argument's.
         """
-        result = self._check_refutation(goal, assumptions, tainted=False)
-        if result.status == "verified" or not self._tainted_facts:
-            return result
-        with_tainted = self._check_refutation(goal, assumptions, tainted=True)
+        saved, self._asking_range = self._asking_range, in_range
+        try:
+            result = self._check_refutation(goal, assumptions, tainted=False)
+            if result.status == "verified" or not self._tainted_facts:
+                return result
+            with_tainted = self._check_refutation(
+                goal, assumptions, tainted=True)
+        finally:
+            self._asking_range = saved
         if with_tainted.status == "verified":
             return SmtResult(status="disclosed")
         return result
@@ -5067,9 +5096,12 @@ class SmtContext:
     ) -> Iterator[None]:
         """A solver scope holding one refutation's premises: *assumptions*,
         the path conditions, the tainted facts when *tainted*, and the
-        recorded facts of every placeholder the query reads."""
+        recorded facts of every placeholder the query reads, and the call
+        bindings' range premise fixed by the query's kind (#1928)."""
         self.solver.push()
         try:
+            self.solver.add(self._range_premise if self._asking_range
+                            else z3.Not(self._range_premise))
             for a in assumptions:
                 self.solver.add(a)
             for pc in self._path_conditions:
