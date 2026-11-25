@@ -1360,3 +1360,303 @@ def test_repro_f2b_a_handle_over_an_apply_fn_narrowing() -> None:
     verified = _verify(source)
     nat = _line(source, "let @Nat = @Int.0 - 1;")
     assert _at_line(verified, nat, "nat_bind") == ["tier3"]
+
+
+# =====================================================================
+# The class instrument for the lineage (#1897, W145).  Every flow that
+# carries a narrowed value to a reader in the same function: the fact the
+# reader takes off the value's type is tied to the narrowing that typed it,
+# whatever the flow made of the value on the way.
+#
+# Axes: FLOW (how the value reaches the reader) x SHAPE (where the
+# refinement sits) x CONSUMER (what reads the fact) x NARROWING (u: a `let`
+# over a parameter the solver refutes, no check; c: a `Nat` component, whose
+# check code generation emits; p: a constructor over a parameter the
+# function's `requires` establishes).  Each cell is a differential: `vera
+# verify` (the narrowing's row, the consumer's obligation, and the row again
+# with every reader fact withheld) against `vera run` of `go` at a violating
+# input (-3, not the zero a stand-in takes) and a satisfying one (7).
+#
+# 1. No false Tier 1: under (u) the consumer is not `verified`, unless the
+#    violating run is stopped by a check on the flow before the consumer's
+#    own (a closure's return check: the flow established the value).
+# 2. No demotion: under (u) the narrowing's row is what it is with every
+#    reader fact withheld, and `violated` (E505) wherever it is the `let`
+#    the direct flow writes (the clause-leaf flow narrows a clause binder the
+#    solver cannot read: disclosed, E506, with or without the reader).
+# 3. Nothing withheld that holds: under (c) and (p) the consumer is
+#    `verified`, or as it is on the direct flow.
+# 4. The run agrees: a violating input never returns normally past a
+#    `verified` consumer; and the satisfying input returns the value the
+#    flow carried (so the template carries it at all).
+#
+# No flow is refused by the language: every cell type-checks.  The cells
+# that fail an assertion are strict xfails named in FLOW_MEMBERS.
+# =====================================================================
+
+FLOW_VIOLATING = -3
+FLOW_SATISFYING = 7
+
+
+@dataclass(frozen=True)
+class FlowShape:
+    wrap: str      # the type, over {x}
+    ctor: str      # a value, over {e}
+    lit: str       # a literal the refinement proves
+    pattern: str   # the reader's pattern
+    ref: str       # the refined component, inside the arm
+    other: str     # the other arms
+
+
+FLOW_SHAPES = {
+    "tuple": FlowShape("Tuple<{x}, Int>", "Tuple({e}, 0)", "Tuple(1, 0)",
+                       "Tuple(@Int, @Int)", "@Int.1", ""),
+    "option": FlowShape("Option<{x}>", "Some({e})", "Some(1)",
+                        "Some(@Int)", "@Int.0", ",\n    None -> 1"),
+    "nested": FlowShape("Tuple<Tuple<{x}, Int>, Int>", "Tuple(Tuple({e}, 0), 0)",
+                        "Tuple(Tuple(1, 0), 0)", "Tuple(Tuple(@Int, @Int), @Int)",
+                        "@Int.2", ""),
+}
+FLOWS = ("direct", "array_literal", "array_append", "map", "if_join",
+         "match_join", "block_tail", "handle_body", "clause_outer",
+         "clause_leaf", "throw_outer", "throw_inner", "throw_inner_noouter",
+         "closure", "generic", "state")
+FLOW_CONSUMERS = {"requires": "call_pre", "nat": "nat_bind", "ensures": "ensures"}
+NARROWINGS = ("u", "c", "p")
+
+# The consumer's own check, as the run names its trap.
+_OWN_CHECK = {"requires": "Precondition violation in need(",
+              "nat": "Negative value bound into a @Nat slot",
+              "ensures": "Postcondition violation in inner("}
+
+_THROWN = ("a narrowed value thrown into an `Exn` clause's binder (narrowed "
+           "inside the handle's body): the binder is a new value with no "
+           "lineage and the hook never sees the throw, so the consumer is "
+           "`verified` from a fact no narrowing established; the run traps at "
+           "the consumer's own check")
+_GENERIC = ("a generic identity call's result is a new term with no lineage: "
+            "the consumer is `verified` and the run traps at its own check")
+_STATE = ("a narrowed value `put` into a `State` cell and read back by `get`: "
+          "the `get`'s result has no lineage, the consumer is `verified` and "
+          "the run traps at its own check")
+_CLOSURE = ("a capturing closure over an `Option` payload, called through "
+            "`apply_fn`: the result has no lineage and no return check (the "
+            "tuple shapes trap at the closure's return check), so the "
+            "consumer is `verified` and the run traps at its own check")
+_JOIN_NAT = ("a checked `Nat` component through a join with a literal leaf: "
+             "the reader's fact is lost entirely, the consumer is REFUTED "
+             "(E501/E503/postcondition) though it holds; the same at main")
+_CLOSURE_ENSURES = ("an `ensures` over a closure's `apply_fn` result is "
+                    "Tier 3 (E522, body undecidable) where the direct flow "
+                    "proves it; the same at main")
+
+
+def _flow_members() -> dict[str, str]:
+    members: dict[str, str] = {}
+    for shape, consumer in itertools.product(FLOW_SHAPES, FLOW_CONSUMERS):
+        for flow, reason in (("throw_inner", _THROWN),
+                             ("throw_inner_noouter", _THROWN),
+                             ("generic", _GENERIC), ("state", _STATE)):
+            members[f"{flow}-{shape}-{consumer}-u"] = "soundness: " + reason
+        for flow in ("if_join", "match_join"):
+            members[f"{flow}-{shape}-{consumer}-c"] = "incompleteness: " + _JOIN_NAT
+    for consumer in ("requires", "nat"):
+        members[f"closure-option-{consumer}-u"] = "soundness: " + _CLOSURE
+    for shape, narrowing in itertools.product(FLOW_SHAPES, ("c", "p")):
+        members[f"closure-{shape}-ensures-{narrowing}"] = (
+            "incompleteness: " + _CLOSURE_ENSURES)
+    return members
+
+
+FLOW_MEMBERS = _flow_members()
+
+
+@dataclass(frozen=True)
+class FlowCell:
+    flow: str
+    shape: str
+    consumer: str
+    narrowing: str
+
+    @property
+    def id(self) -> str:
+        return f"{self.flow}-{self.shape}-{self.consumer}-{self.narrowing}"
+
+
+def _flow_statements(flow: str, s: str, lit: str, narrow: str,
+                     leaf: str) -> tuple[list[str], str, str]:
+    """The statements that carry the narrowed value, the reader's
+    scrutinee, and the extra declarations the flow needs."""
+    slot = f"@{s}.0"
+    if flow == "direct":
+        return [narrow], slot, ""
+    if flow in ("array_literal", "array_append"):
+        made = f"[{slot}]" if flow == "array_literal" else f"array_append([], {slot})"
+        return [narrow, f"let @Array<{s}> = {made};"], f"@Array<{s}>.0[0]", ""
+    if flow == "map":
+        return ([narrow, f"let @Map<Int, {s}> = map_insert(map_new(), 0, {slot});"],
+                f"map_get(@Map<Int, {s}>.0, 0)", "")
+    joined = {
+        "if_join": f"if true then {{ {slot} }} else {{ {lit} }}",
+        "match_join": f"match 0 {{ 0 -> {slot}, _ -> {lit} }}",
+        "block_tail": f"{{ let @Bool = true; {slot} }}",
+        "handle_body": f"handle[Exn<Int>] {{ throw(@Int) -> {lit} }} in {{ {slot} }}",
+        "clause_outer": f"handle[Exn<Int>] {{ throw(@Int) -> {slot} }} in {{ throw(1) }}",
+        "throw_outer": f"handle[Exn<{s}>] {{ throw(@{s}) -> {slot} }} in {{ throw({slot}) }}",
+        "state": (f"handle[State<{s}>](@{s} = {lit}) {{ get(@Unit) -> {{ resume(@{s}.0) }}, "
+                  f"put(@{s}) -> {{ resume(()) }} }} in {{ put({slot}); get(()) }}"),
+    }
+    if flow in joined:
+        return [narrow, f"let @{s} = {joined[flow]};"], slot, ""
+    if flow == "clause_leaf":
+        return [f"let @{s} = {leaf};"], slot, ""
+    if flow in ("throw_inner", "throw_inner_noouter"):
+        outer = [f"let @{s} = {lit};"] if flow == "throw_inner" else []
+        return outer + [f"let @{s} = handle[Exn<{s}>] {{ throw(@{s}) -> {slot} }} in {{",
+                        f"  {narrow}", f"  throw({slot})", "};"], slot, ""
+    if flow == "closure":
+        return ([narrow, f"let @MkS = fn(@Int -> @{s}) effects(pure) {{ {slot} }};"],
+                "apply_fn(@MkS.0, 0)", f"type MkS = fn(Int -> {s}) effects(pure);\n\n")
+    assert flow == "generic", flow
+    return [narrow], f"ident({slot})", textwrap.dedent("""\
+        private forall<T> fn ident(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @T.0
+        }
+
+        """)
+
+
+def _flow_program(cell: FlowCell) -> tuple[str, str, str]:
+    """The program, the narrowing's line text and the consumer's."""
+    sh = FLOW_SHAPES[cell.shape]
+    s = sh.wrap.format(x="Nat" if cell.narrowing == "c" else "Pos")
+    base = sh.wrap.format(x="Int")
+    if cell.narrowing == "p":
+        param, pre, call = "@Int", "@Int.0 > 0", "inner(@Int.0)"
+        narrow = f"let @{s} = {sh.ctor.format(e='@Int.0')};"
+        leaf = (f"handle[Exn<Int>] {{ throw(@Int) -> {sh.ctor.format(e='@Int.1')} }} "
+                "in { throw(@Int.0) }")
+    else:
+        param, pre = f"@{base}", "true"
+        call = f"inner({sh.ctor.format(e='@Int.0')})"
+        narrow = f"let @{s} = @{base}.0;"
+        leaf = f"handle[Exn<{base}>] {{ throw(@{base}) -> @{base}.0 }} in {{ throw(@{base}.0) }}"
+    stmts, scrut, decls = _flow_statements(cell.flow, s, sh.lit, narrow, leaf)
+    narrow_line = stmts[0] if cell.flow == "clause_leaf" else narrow
+    ge = ">=" if cell.narrowing == "c" else ">"
+    ensures = "true"
+    if cell.consumer == "requires":
+        decls += textwrap.dedent(f"""\
+            private fn need(@Int -> @Int)
+              requires(@Int.0 {ge} 0)
+              ensures(@Int.result == @Int.0)
+              effects(pure)
+            {{
+              @Int.0
+            }}
+
+            """)
+        body = f"need({sh.ref})"
+        consumer = f"{sh.pattern} -> {body}"
+    elif cell.consumer == "nat":
+        bind = f"let @Nat = {sh.ref}{'' if cell.narrowing == 'c' else ' - 1'};"
+        body, consumer = f"{{\n      {bind}\n      nat_to_int(@Nat.0)\n    }}", bind
+    else:
+        ensures = f"@Int.result {ge} 0"
+        body, consumer = sh.ref, f"ensures({ensures})"
+    arm = f"{sh.pattern} -> {body}{sh.other}"
+    if cell.flow == "map":
+        reader = (f"match {scrut} {{\n    Some(@{s}) -> match @{s}.0 {{\n    {arm}\n    }},\n"
+                  "    None -> 1\n  }")
+    else:
+        reader = f"match {scrut} {{\n    {arm}\n  }}"
+    lines = "\n".join(f"  {t}" for t in stmts)
+    go_pre = "@Int.0 > 0" if cell.narrowing == "p" else "true"
+    source = (POS + decls
+              + f"private fn inner({param} -> @Int)\n  requires({pre})\n"
+              + f"  ensures({ensures})\n  effects(pure)\n{{\n{lines}\n  {reader}\n}}\n\n"
+              + f"public fn go(@Int -> @Int)\n  requires({go_pre})\n  ensures(true)\n"
+              + f"  effects(pure)\n{{\n  {call}\n}}\n")
+    return source, narrow_line, consumer
+
+
+def _first_line(source: str, text: str) -> int:
+    for n, ln in enumerate(source.splitlines(), 1):
+        if ln.strip().startswith(text.strip()):
+            return n
+    raise AssertionError(f"no line {text!r}")
+
+
+def _flow_verdicts(cell: FlowCell) -> tuple[list[str], list[str]]:
+    """The narrowing's rows and the consumer's obligation, in `inner`."""
+    source, narrow, consumer = _flow_program(cell)
+    verified = _verify(source)
+    at_narrow, at_consumer = _first_line(source, narrow), _first_line(source, consumer)
+    inner = [o for o in verified.obligations if o.fn_name == "inner"]
+    rows = sorted(_status(o) for o in inner if o.line == at_narrow
+                  and o.kind in ("refine_bind", "nat_bind"))
+    used = sorted(_status(o) for o in inner if o.line == at_consumer
+                  and o.kind == FLOW_CONSUMERS[cell.consumer])
+    assert used, (cell.id, "no consumer obligation")
+    return rows, used
+
+
+def _flow_run(source: str, arg: int) -> tuple[str, Any]:
+    ran = pipeline.run(source, "go", [arg], file=FILE)
+    assert ran.compiled is not None and ran.compiled.ok, (arg, "no compile")
+    if ran.trap is not None:
+        return "trap", str(ran.trap).splitlines()[0]
+    return "ret", ran.value
+
+
+FLOW_CELLS = [FlowCell(*p) for p in itertools.product(
+    FLOWS, FLOW_SHAPES, FLOW_CONSUMERS, NARROWINGS)]
+
+
+def _flow_param(cell: FlowCell) -> Any:
+    reason = FLOW_MEMBERS.get(cell.id)
+    marks = [pytest.mark.xfail(strict=True, reason=reason)] if reason else []
+    return pytest.param(cell, id=cell.id, marks=marks)
+
+
+def test_the_flow_matrix_is_the_product() -> None:
+    """Every flow, shape, consumer and narrowing is a cell, every member
+    names a cell, and the direct flow (the yardstick) has none."""
+    ids = [c.id for c in FLOW_CELLS]
+    assert len(ids) == len(set(ids)) == 16 * 3 * 3 * 3 == 432
+    assert set(FLOW_MEMBERS) <= set(ids)
+    assert not [m for m in FLOW_MEMBERS if m.startswith("direct-")]
+
+
+@pytest.mark.parametrize("cell", [_flow_param(c) for c in FLOW_CELLS])
+def test_a_flow_keeps_the_narrowings_lineage(
+        cell: FlowCell, monkeypatch: pytest.MonkeyPatch) -> None:
+    source, _, _ = _flow_program(cell)
+    rows, used = _flow_verdicts(cell)
+    violating = _flow_run(source, FLOW_VIOLATING)
+    satisfying = _flow_run(source, FLOW_SATISFYING)
+    expect = FLOW_SATISFYING - (1 if cell.consumer == "nat" and cell.narrowing != "c" else 0)
+    # 4, and the template carries the value at all.
+    assert satisfying == ("ret", expect), (cell.id, satisfying)
+    assert not ("verified" in used and violating[0] == "ret"), (cell.id, used, violating)
+    if cell.narrowing == "u":
+        # 1: no false Tier 1, unless a check on the flow stopped the value.
+        own = violating[0] == "trap" and violating[1].startswith(_OWN_CHECK[cell.consumer])
+        assert "verified" not in used or not own, (cell.id, used, violating)
+        # 2: no demotion: the row is the row with the readers withheld.
+        with monkeypatch.context() as m:
+            m.setattr(verifier_mod.ContractVerifier, "_subpattern_source_facts",
+                      lambda self, scrutinee, scrutinee_z3, pattern, smt: [])
+            withheld, _ = _flow_verdicts(cell)
+        assert rows == withheld, (cell.id, rows, withheld)
+        if cell.flow != "clause_leaf":
+            assert rows == ["violated/E505"], (cell.id, rows)
+    else:
+        # 3: nothing withheld that holds.
+        direct = _flow_verdicts(FlowCell("direct", cell.shape, cell.consumer,
+                                         cell.narrowing))[1]
+        assert used in (["verified"], direct), (cell.id, used, direct)
