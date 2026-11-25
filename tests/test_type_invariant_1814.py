@@ -966,3 +966,46 @@ def test_repro_an_element_refinement_is_a_complete_goal() -> None:
     rows = _statuses(_ELEMENT_REFINEMENT_GOAL)
     assert [s for _k, s, _c in rows["h"] + rows["r"]] == [
         "verified"] * len(rows["h"] + rows["r"]), rows
+
+
+def test_repro_an_element_predicate_withheld_leaves_the_position_incomplete() -> None:
+    """An element predicate that is not about the element alone (a helper's
+    result is one constant shared by every element) is withheld, and the
+    position is then reported incomplete: `([], False)`.  RED with the
+    withheld branch reading `complete = True` (nothing stated, reported as
+    fully stated) and `complete = None`.
+
+    A direct call: no program was found whose verdict moves under those
+    mutants.  Probed with `Array<R>` returned whole, `Array<Int>` narrowed
+    to `Array<P>`, and a literal narrowed to `Array<P>`, each `R` and `P`
+    calling a helper: every one stays `refine_bind` tier3 (`E506`) or
+    violated (`E505`) at both trees, decided before this position's
+    completeness is read."""
+    from types import SimpleNamespace
+
+    import z3
+
+    from vera import ast
+    from vera.types import INT, RefinedType
+    from vera.verifier import ContractVerifier
+
+    binder = ast.SlotRef(type_name="Int", type_args=None, index=0)
+    positive = ast.BinaryExpr(op=ast.BinOp.GT, left=binder,
+                              right=ast.IntLit(value=0))
+    shared = z3.Int("helper_result")
+    index = z3.Function("index_t", z3.IntSort(), z3.IntSort(), z3.IntSort())
+    length = z3.Function("length_t", z3.IntSort(), z3.IntSort())
+    sequence = z3.Int("s")
+    smt = SimpleNamespace(carrier_elements=lambda term, projection, element:
+                          (sequence, index, length, z3.IntSort()))
+    verifier = object.__new__(ContractVerifier)
+    verifier._fresh_quantifier_name = lambda base: f"{base}_0"  # type: ignore[method-assign]
+    verifier._translate_refined_predicate = (  # type: ignore[method-assign]
+        lambda smt, ty, term: shared > 0)
+    verifier._nested_refinement_facts = (  # type: ignore[method-assign]
+        lambda smt, ty, term, seen: ([], True))
+    carrier = SimpleNamespace(projection=None,
+                              element_type=RefinedType(INT, positive))
+    facts, complete = verifier._element_facts(
+        smt, carrier, sequence, frozenset())  # type: ignore[arg-type]
+    assert facts == [] and complete is False, (facts, complete)
