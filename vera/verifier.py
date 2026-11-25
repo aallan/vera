@@ -11497,11 +11497,12 @@ class ContractVerifier:
         """Whether :py:meth:`_invariant_at` states something at some position
         of *ty*: an `Int` or `Nat` anywhere, or a refinement over a data
         type."""
-        if isinstance(ty, RefinedType):
-            chain = self._refined_chain(ty)
-            if chain is not None and isinstance(chain[0], AdtType):
-                return True
         base = self._strip_refinements(ty)
+        if isinstance(ty, RefinedType):
+            # The chain's base: a refinement over a data type is stated
+            # whatever the type's own fields hold.
+            if isinstance(base, AdtType):
+                return True
         if base in (INT, NAT):
             return True
         if not isinstance(base, AdtType):
