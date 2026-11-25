@@ -2341,11 +2341,14 @@ def test_1928_an_operation_is_disclosed_by_its_own_handler() -> None:
     assert ("other", "refine_bind", "tier3_unguarded", "E506") in statuses
 
 
-# Where the answering clause stands (#1928, round 5): in the function that
+# Where the handler clause stands (#1928, round 5): in the function that
 # performs the operation, in a generic's instance clone, or in an imported
-# module's function.  `_answering_clauses` reads the clauses of all three,
-# so a clause there whose `resume` narrows with no check discloses the
-# operation's value, and one whose `resume` holds a checked value does not.
+# module's function.  A `get` inside a handler's body is answered by its
+# clause; one outside every handler reads the cell (spec 7.5.2), and
+# `_answering_clauses` still reads every clause of its name, in the entry
+# program, every module and every clone alike (a conservative
+# over-approximation).  A clause whose `resume` narrows with no check
+# discloses the reader; one resuming the state it holds does not.
 
 _POS_1928 = "type Pos = { @Int | @Int.0 > 0 };\n\n"
 _POS_READ_1928 = ("match @Option<Pos>.0 { Some(@Int) -> @Int.0 > 0, "
@@ -2416,13 +2419,15 @@ def _placement_reader_1928(
     return found.pop(), entry
 
 
-def test_repro_1928_a_module_handler_answers_an_entry_operation(
+def test_repro_1928_the_conservative_disclosure_crosses_a_module_boundary(
         tmp_path: Path) -> None:
-    """A `get` performed by an entry-program function, passed through a
-    closure's effect row to a handler inside an imported module's function
-    whose clause resumes a value with no check: `verified` at 342b097b (the
-    module's clauses were in neither map); the single-file twin, the
-    oracle, says E534."""
+    """A `get` an entry-program function performs outside every handler,
+    run under an imported module's handler (through a closure's effect
+    row) whose clause resumes a value with no check: the clause does not
+    answer it (the run reads the cell), but the name fallback reads the
+    module's clauses as it reads one file's, so the reader is `tier3`/E534
+    as its single-file twin is.  342b097b had `verified` here (the
+    module's clauses were in neither map)."""
     reader, _ = _placement_reader_1928(tmp_path, "module", _GET_CLAUSE_1928)
     assert reader == ("tier3", "E534"), reader
 
@@ -2433,10 +2438,12 @@ def test_1928_the_answering_clause_at_each_placement(
         tmp_path: Path, place: str, row: str) -> None:
     """A clause with no check at its `resume` leaves the reader unproved
     (E534), wherever it stands; a clause resuming the state it holds (a
-    checked value) leaves the reader its facts (`verified`).  Where the
-    `get` stands inside the handle's body the unchecked run does not
-    return normally.  (The module's `get` stands in another function, whose
-    run reads the handler's state cell, not the clause.)"""
+    checked value) leaves the reader its facts (`verified`).  In the
+    function and clone placements the `get` stands in the handle's body,
+    the clause answers it, and the unchecked run does not return normally.
+    In the module placement the `get` stands outside every handler and
+    reads the cell (spec 7.5.2): the clause does not answer it, and E534 is
+    the name fallback's conservative disclosure, so no run is asserted."""
     clause = _GET_CLAUSE_1928 if row == "unchecked" else _CLEAN_CLAUSE_1928
     reader, entry = _placement_reader_1928(tmp_path, place, clause)
     if row == "checked":
@@ -2445,29 +2452,3 @@ def test_1928_the_answering_clause_at_each_placement(
     assert reader == ("tier3", "E534"), reader
     if place != "module":
         assert not pipeline.run(entry, "main").ok, place
-
-
-def test_1928_a_clause_the_table_lists_no_rows_for_is_unchecked(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The conservative answer: where the table lists no rows for the
-    function a clause that may answer stands in, nothing in the run says
-    its `resume` is checked, and the clean clause discloses as one with no
-    check does."""
-    import sys as _sys
-
-    from vera.obligations import table as obligation_table
-    real = obligation_table.ObligationTable.rows_of_function
-
-    def unlisted(self: object, decl: object) -> object:
-        if _sys._getframe(1).f_code.co_name == "_build_answers":
-            return None
-        return real(self, decl)  # type: ignore[arg-type]
-
-    reader, _ = _placement_reader_1928(
-        tmp_path / "listed", "function", _CLEAN_CLAUSE_1928)
-    assert reader == ("verified", ""), reader
-    monkeypatch.setattr(obligation_table.ObligationTable,
-                        "rows_of_function", unlisted)
-    reader, _ = _placement_reader_1928(
-        tmp_path / "unlisted", "function", _CLEAN_CLAUSE_1928)
-    assert reader == ("tier3", "E534"), reader
