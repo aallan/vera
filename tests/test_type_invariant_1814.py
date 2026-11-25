@@ -837,3 +837,72 @@ def test_repro_a_level_that_does_not_translate_declines_the_membership() -> None
         assert translate(smt, RefinedType(INT, level), value) is None, level
         chain = RefinedType(RefinedType(INT, positive), level)
         assert translate(smt, chain, value) is None, level
+
+
+#: An element whose `Nat` sits two data types down, read by destructures
+#: whose binders are `Int`: only the element quantifier states its sign.
+_NESTED_ELEMENT = """\
+private data Inner { MkInner(Nat) }
+
+private data Outer { MkOuter(Inner) }
+
+public fn f(@Array<Outer> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if array_length(@Array<Outer>.0) > 0 then { let MkOuter<@Inner> = @Array<Outer>.0[0]; let MkInner<@Int> = @Inner.0; @Int.0 } else { 0 }
+}
+"""
+
+
+def test_repro_a_nat_two_data_types_down_an_element_carries_its_sign() -> None:
+    """`_states_anything` walks `Outer`'s field into `Inner` with its own
+    structural key.  RED with the key one constant for every type
+    (`key = None`, `_type_key(None)`): `Inner` reads as already seen, the
+    element states nothing and the ensures is `E500`; and with the fields
+    walked under no `seen` set, which raises."""
+    assert ("ensures", "verified", "") in _statuses(_NESTED_ELEMENT)["f"]
+
+
+#: A recursive element type with nothing to state on the way round.
+_RECURSIVE_ELEMENT = """\
+private data BList { BCons(Bool, BList), BNil }
+
+public fn f(@Array<BList> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if array_length(@Array<BList>.0) > 0 then { 1 } else { 0 }
+}
+"""
+
+
+def test_repro_a_recursive_element_type_that_states_nothing_ends_the_walk() -> None:
+    """`BList`'s second field is `BList`: the walk stops at a key it has
+    seen.  RED with `seen & {key}` for `seen | {key}` (the set never
+    grows): `RecursionError`."""
+    assert ("ensures", "verified", "") in _statuses(_RECURSIVE_ELEMENT)["f"]
+
+
+#: A generic element whose stated field is not its type parameter.
+_GENERIC_ELEMENT = """\
+private data Tag<T> { MkTag(T, Nat) }
+
+public fn f(@Array<Tag<Bool>> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if array_length(@Array<Tag<Bool>>.0) > 0 then { let MkTag<@Bool, @Int> = @Array<Tag<Bool>>.0[0]; @Int.0 } else { 0 }
+}
+"""
+
+
+def test_repro_a_generic_elements_own_nat_field_carries_its_sign() -> None:
+    """`Tag<Bool>`'s type argument states nothing; its `Nat` field does, read
+    at the instantiation.  RED with the fields read against no type
+    (`_payload_field_types(ctor, None)`): a generic constructor's fields are
+    then unreadable, the element states nothing, and the ensures is `E500`."""
+    assert ("ensures", "verified", "") in _statuses(_GENERIC_ELEMENT)["f"]
