@@ -288,14 +288,41 @@ def _outside_the_type(tname: str, x: int) -> bool:
     return x < 0
 
 
+def _the_type_checks_the_value(
+        cell: tuple[str, str, str, str], text: str, where: list[str]) -> bool:
+    """Whether a type check's trap is raised at a site that checks the
+    producer's value at the cell's type, and at no other.
+
+    (a) Innermost frame `drive`: the producer's own bind or construction
+    check.  (b) Innermost frame `f`, the trap `f`'s parameter-entry check:
+    the caller's narrowing row for a direct argument is checked where code
+    generation puts it, at the callee's entry.  (c) Innermost frame `f`, a
+    constructor sub-pattern binding, only where the value reaches `f` inside
+    an `Option` it matches (the `match` source): the producer's `Some(x)`
+    construction has no check of the payload's refinement, and the binding
+    is the first site that checks the value at the type.  Any other site
+    (another frame, `f`'s body) is not the type's check on this value."""
+    if where[:1] == ["drive"]:
+        return True
+    if where[:1] != ["f"]:
+        return False
+    first, _, rest = text.partition("\n")
+    if first.startswith("Refinement violation in f(") and (
+            rest.lstrip().startswith("parameter")):
+        return True
+    return (cell[1] == "match" and first.startswith(
+        "Refinement violation in constructor sub-pattern "))
+
+
 @pytest.mark.parametrize(
     "cell", [pytest.param(c, id=".".join(c)) for c in _CELLS])
 def test_no_fact_is_false_at_a_boundary_value(
         cell: tuple[str, str, str, str]) -> None:
     """A producer builds the value from each i64 boundary value and `f` is
     run on it.  A value the type admits completes: any trap fails the cell.
-    A value the type does not admit is stopped by a type's own check raised
-    in the producer, `drive` (the trap's innermost frame), or else `f`'s
+    A value the type does not admit is stopped by a type's own check at a
+    site that checks this value (:py:func:`_the_type_checks_the_value`), or
+    else `f`'s
     postcondition check fires and the producer's obligation is refused or
     disclosed by `vera verify` (the program is not one whose facts were
     established).  No other trap is accepted."""
@@ -311,7 +338,8 @@ def test_no_fact_is_false_at_a_boundary_value(
         where = [fr.func for fr in ran.trap.frames]
         assert _outside_the_type(cell[0], x), (x, text, where)
         if text.startswith(_TYPE_CHECK_TRAPS):
-            assert where[:1] == ["drive"], (x, text, where)
+            assert _the_type_checks_the_value(cell, text, where), (
+                x, text, where)
             continue
         assert text.startswith("Postcondition violation in f("), (x, text)
         if unestablished is None:
