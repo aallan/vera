@@ -833,8 +833,9 @@ class SmtContext:
         # Empty outside a call's translation, where nothing reads it.
         self._call_bindings: list[z3.ExprRef] = []
         # #1928: the one decision of which import a query sees.  A call's
-        # binding holds what its arguments' types state of a value (ranges,
-        # a `Nat` inside the type) under this constant (`_call_binding`), and
+        # binding holds what its arguments' types state of a value by
+        # representation or by construction (ranges, a `Nat`'s `>= 0` inside
+        # the type; never a refinement) under this constant (`_call_binding`), and
         # every query fixes it (`_premises`): true for a query asking what a
         # type states of a value (`check_valid`'s *in_range*: an
         # `int_overflow`, `nat_sub` or `nat_bind` row's), false for every
@@ -3644,7 +3645,8 @@ class SmtContext:
         position, whose argument :meth:`_translate_call_args` translated and
         dropped (#1214).  The hook's second list, what the arguments' types
         state of a value by representation or by construction (a range, a
-        `Nat` inside the type), is held under ``_range_premise`` (#1928):
+        `Nat`'s `>= 0` inside the type; a refinement inside it is in the
+        first list), is held under ``_range_premise`` (#1928):
         required by a query that asks what a type states of a value, and by
         no other, since an argument that reaches its call is a value its
         own evaluation and constructions checked.

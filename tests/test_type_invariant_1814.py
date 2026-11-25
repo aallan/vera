@@ -1688,6 +1688,57 @@ def test_repro_1928_a_call_result_of_a_nat_field_type_keeps_the_ensures() -> Non
     assert ("ensures", "verified", "") in statuses["total"], statuses
 
 
+def _premise_of(monkeypatch, param: str, decls: str = ""):  # type: ignore[no-untyped-def]
+    """The `ParameterPremise` `f(@<param>)`'s own proof builds of its
+    parameter, through `ContractVerifier._parameter_premise`."""
+    from vera.verifier import ContractVerifier
+
+    seen: list[object] = []
+    real = ContractVerifier._parameter_premise
+
+    def spy(self, smt, ty, term, **kw):  # type: ignore[no-untyped-def]
+        premise = real(self, smt, ty, term, **kw)
+        if kw.get("standing", True) and str(term).startswith("@" + param.split("<")[0]):
+            seen.append(premise)
+        return premise
+
+    monkeypatch.setattr(ContractVerifier, "_parameter_premise", spy)
+    source = (decls + _fn("private", f"f(@{param} -> @Int)", "true", "0"))
+    assert pipeline.verify(source, file=FILE).ran
+    assert len(seen) == 1, seen
+    return seen[0]
+
+
+_NOT_RED = ("private data Color { Red, Green }\n\n"
+            "type NotRed = { @Color | @Color.0 != Red };\n\n")
+
+
+def test_a_data_type_refinement_inside_a_premise_is_required_by_every_query(
+        monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A refinement over a data type at a position inside the type can have
+    no check where it is constructed (E506), so a call's guard requires it
+    of every query (#1928): in `range_free()`, not in `range_parts()`."""
+    for param in ("Option<NotRed>", "Array<NotRed>"):
+        premise = _premise_of(monkeypatch, param, _NOT_RED)
+        free = {f.get_id() for f in premise.range_free()}
+        assert premise.invariant, param
+        assert all(f.get_id() in free for f in premise.invariant), param
+        assert premise.range_parts() == [], (param, premise.range_parts())
+
+
+def test_a_nat_inside_a_premise_is_a_range_part(
+        monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The control: a `Nat`'s facts inside the type (its `>= 0` included)
+    are what the type states by construction, range parts."""
+    for param, decls in (("Option<Nat>", ""), ("Array<Nat>", ""),
+                         ("Chain", _CHAIN)):
+        premise = _premise_of(monkeypatch, param, decls)
+        parts = {f.get_id() for f in premise.range_parts()}
+        assert premise.invariant, param
+        assert all(f.get_id() in parts for f in premise.invariant), param
+        assert any(">= 0" in str(f) for f in premise.range_parts()), param
+
+
 def _restating_program(depth: int) -> str:
     """`g` restates the `Nat` field *depth* levels into its parameter; `k`
     constructs the argument with that field narrowed from `@Int.0 - 1`."""

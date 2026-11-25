@@ -478,10 +478,14 @@ class ParameterPremise:
     #: What the type states at every position besides (#1814).
     invariant: list[z3.ExprRef]
     #: The ids of the *invariant* facts beyond what every query requires
-    #: of an argument (#1928): all of them but a head `Nat`'s `>= 0`, what
-    #: the type states of a value by representation (an `Int`'s range, a
-    #: `Nat`'s upper bound) or by construction (a `Nat`'s `>= 0` inside the
-    #: type, a refinement over a data type inside it, an array's elements).
+    #: of an argument (#1928): what the type states of a value by
+    #: representation (an `Int`'s range, a `Nat`'s upper bound) or by
+    #: construction (a `Nat`'s `>= 0` inside the type, every `nat_bind` row
+    #: having a check), at every position, an element quantifier holding
+    #: only these included.  A head `Nat`'s `>= 0` and a refinement over a
+    #: data type inside the type (whose rows can have no check, E506) are
+    #: not: every query requires them, as main's guard did a nested
+    #: scalar refinement.
     ranges: frozenset[int] = frozenset()
 
     def facts(self) -> list[z3.ExprRef]:
@@ -491,7 +495,9 @@ class ParameterPremise:
     def range_free(self) -> list[z3.ExprRef]:
         """What a call's guard requires of an argument for every query
         (#1928): the head refinement's predicates, a head `Nat`'s `>= 0`,
-        the refinements nested in the formal.  An argument that reaches its
+        the refinements nested in the formal, a refinement over a data type
+        inside it (and an element quantifier holding one).  An argument that
+        reaches its
         call is a value, in range by its own evaluation and of its type
         inside by its constructions' checks; only a query asking what a type
         states of a value may not take that as given."""
@@ -499,9 +505,11 @@ class ParameterPremise:
                 *(f for f in self.invariant if f.get_id() not in self.ranges)]
 
     def range_parts(self) -> list[z3.ExprRef]:
-        """The rest of the premise, which only a query asking what a type
-        states of a value also requires (an `int_overflow`, `nat_sub` or
-        `nat_bind` row's; :py:meth:`SmtContext.check_valid`, *in_range*)."""
+        """What the type states of a value by representation or by
+        construction (an `Int`'s range, a `Nat`'s upper bound, a `Nat`'s
+        `>= 0` inside the type), which only a query asking that also
+        requires (an `int_overflow`, `nat_sub` or `nat_bind` row's;
+        :py:meth:`SmtContext.check_valid`, *in_range*)."""
         return [f for f in self.invariant if f.get_id() in self.ranges]
 
 
@@ -11564,12 +11572,13 @@ class ContractVerifier:
         a call's guard holds (*standing* False, #1928), which stands under
         an implication.
 
-        *ranges*, when given, receives the ids of every fact but a head
-        `Nat`'s `>= 0` (#1928; :py:attr:`ParameterPremise.ranges`): an
-        `Int`'s range, a `Nat`'s upper bound, a `Nat`'s `>= 0` inside the
-        type, a refinement over a data type inside it, each element
-        quantifier whole, and a constructor field's fact under its
-        recognizer."""
+        *ranges*, when given, receives the ids of what the type states of
+        a value by representation or by construction (#1928;
+        :py:attr:`ParameterPremise.ranges`): an `Int`'s range, a `Nat`'s
+        upper bound, a `Nat`'s `>= 0` inside the type, an element
+        quantifier every fact of which is one, and a constructor field's
+        fact under its recognizer where the inner fact is one.  Not a head
+        `Nat`'s `>= 0`, nor a refinement over a data type inside the type."""
         ranged: dict[int, tuple[z3.ExprRef, str]] = {}
         facts = self._invariant_at(
             smt, ty, term, head=True, seen=frozenset(), ranged=ranged,
@@ -11589,7 +11598,7 @@ class ContractVerifier:
         """One position of :py:meth:`_type_invariant`'s walk.  With
         *ranged* None the walk states ranges alone: no refinement over a
         data type, no array's elements.  *ranges* receives the ids of the
-        facts beyond a head `Nat`'s `>= 0` (:py:meth:`_type_invariant`)."""
+        range parts (:py:meth:`_type_invariant`)."""
         if ty is None or not smt.type_is_regular(ty):
             return []
         facts: list[z3.ExprRef] = []
@@ -11600,9 +11609,10 @@ class ContractVerifier:
             if chain is not None and isinstance(chain[0], AdtType):
                 predicate = self._translate_refined_predicate(smt, ty, term)
                 if predicate is not None:
+                    # Required of every query (#1928): its rows can have no
+                    # check where it is constructed (E506), so it is not
+                    # what the type states of a value by construction.
                     facts.append(predicate)
-                    if ranges is not None:
-                        ranges.add(predicate.get_id())
         base = self._strip_refinements(ty)
         try:
             sort = term.sort()
@@ -11689,8 +11699,10 @@ class ContractVerifier:
             ),
             z3.IntSort())
         element = index_fn(sequence, idx)
+        inner: set[int] = set()
         body = [fact for fact in self._invariant_at(
-            smt, element_ty, element, head=False, seen=seen, ranged=ranged)
+            smt, element_ty, element, head=False, seen=seen, ranged=ranged,
+            ranges=inner)
             if self._per_element(fact, element)]
         element_ranges = {fact.get_id() for fact in self._invariant_at(
             smt, element_ty, element, head=False, seen=seen)}
@@ -11705,10 +11717,12 @@ class ContractVerifier:
             axiom = z3.ForAll([idx], z3.Implies(in_range, z3.And(*part)))
             if tag:
                 ranged[axiom.get_id()] = (axiom, index_fn.name())
-            if ranges is not None:
-                # Each element quantifier whole: what the type states of a
-                # value by construction, which no call's guard required
-                # before #1928.
+            if ranges is not None and (
+                    tag or all(f.get_id() in inner for f in part)):
+                # An element quantifier every fact of which is a range part
+                # (the ranges, a `Nat` element's `>= 0`), whole: no call's
+                # guard required it before #1928.  One holding a refinement
+                # over a data type is required of every query.
                 ranges.add(axiom.get_id())
             out.append(axiom)
         return out
