@@ -1471,13 +1471,58 @@ def test_repro_1928_an_unbounded_argument_keeps_the_callee_ensures() -> None:
                if kd == "int_overflow"), statuses
 
 
+_RANDOM_SHADOW = f"""\
+private fn c(@Int -> @Int)
+  requires(true)
+  ensures(@Int.0 <= {INT_MAX})
+  effects(pure)
+{{
+  @Int.0
+}}
+
+public fn k(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{{
+  let @Int = Random.random_int(0, 10);
+  let @Int = c(@Int.0 + {INT_MAX} + 1);
+  let @Tuple<Int, Int> = Tuple(@Int.1, 0);
+  let Tuple<@Nat, @Int> = @Tuple<Int, Int>.0;
+  @Nat.0
+}}
+"""
+
+
+def test_repro_1928_an_argument_over_a_stand_in_keeps_its_range_guard() -> None:
+    """`c(r + <max> + 1)`, `r` a random value: the argument's term holds a
+    stand-in, so its range parts mention one.  Stripped from the guard
+    (#1696's rule, which is the refinement list's), they left `c`'s
+    `@Int.0 <= <max>` unguarded, and it proved the argument's own
+    `int_overflow` rows; the run traps on that overflow.  Verified at
+    57b6e0c6, Tier 3 at main and here."""
+    rows = [(o.expr_text, o.status) for o in pipeline.verify(
+        _RANDOM_SHADOW, file=FILE).obligations
+        if o.fn_name == "k" and o.kind == "int_overflow"]
+    assert len(rows) == 2 and all(s != "verified" for _e, s in rows), rows
+    ran = pipeline.run(_RANDOM_SHADOW, "k", [5], file=FILE)
+    assert isinstance(ran.trap, WasmTrapError), ran
+    assert "overflow" in str(ran.trap).lower(), str(ran.trap)
+
+
 #: The argument at the call, over the caller's `@Int` parameter `{x}`.
+#: `standin`'s term holds a stand-in (a random value) times 0, so the run is
+#: deterministic (the argument is `{x} + 1` at run time) and both bounds of
+#: the argument's range follow from `{x} + 1`'s: the callee's restated range
+#: can prove the argument's rows.  Its own row `r * 0` holds no slot and no
+#: run traps on it.
 _KIND_ARGUMENTS = {
     "parameter": "{x}",
     "literal": "5",
     "bounded": "{x} + 1",
     "unbounded": "{x} + 1",
     "call": "ident({x})",
+    "standin": "{x} + 1 + Random.random_int(0, 10) * 0",
 }
 #: Where the obligation sits: the argument's own row, an `int_overflow` row
 #: over the same term earlier in the body, the caller's postcondition.
@@ -1499,8 +1544,10 @@ def _kind_program(argument: str, obligation: str, callee: str) -> str:
     if obligation == "ensures" and callee == "doubles":
         # A contract's own `ident(..)` is a second call, whose result is
         # not the body's: what the import gives is the result's parity.
-        ensures = ("@Int.result % 2 == 0" if argument == "call"
+        # A contract performs no effect: `standin`'s, too, is the parity.
+        ensures = ("@Int.result % 2 == 0" if argument in ("call", "standin")
                    else f"@Int.result == ({arg.format(x='@Int.0')}) * 2")
+    effects = "<Random>" if argument == "standin" else "pure"
     if obligation == "earlier":
         body = f"let @Int = @Int.0 + 1;\n  c({arg.format(x='@Int.1')})"
     else:
@@ -1510,11 +1557,11 @@ def _kind_program(argument: str, obligation: str, callee: str) -> str:
             + _fn("private", "c(@Int -> @Int)", _KIND_CALLEES[callee],
                   "@Int.0 * 2" if callee == "doubles" else "@Int.0") + "\n"
             + f"public fn k(@Int -> @Int)\n  requires({requires})\n"
-            f"  ensures({ensures})\n  effects(pure)\n{{\n  {body}\n}}\n")
+            f"  ensures({ensures})\n  effects({effects})\n{{\n  {body}\n}}\n")
 
 
 def test_the_kind_dimension_spans_every_product() -> None:
-    assert len(_KIND_CELLS) == 5 * 3 * 2 == 30
+    assert len(_KIND_CELLS) == 6 * 3 * 2 == 36
 
 
 @pytest.mark.parametrize(
@@ -1539,10 +1586,11 @@ def test_a_call_guards_by_the_query_kind(cell: tuple[str, str, str]) -> None:
         assert bounded and all(s == "verified" for s in bounded), rows
     ran = pipeline.run(source, "k", [INT_MAX], file=FILE)
     if ran.trap is not None and "overflow" in str(ran.trap).lower():
-        # The callee's own `* 2` may be what traps; no row of `k` is proved.
-        assert all(s != "verified" for *_r, s in overflow), rows
+        # The callee's own `* 2` may be what traps; no row of `k` over a
+        # slot is proved (`standin`'s `r * 0` holds none, and cannot trap).
+        assert all(s != "verified" for _kd, e, s in overflow if "@" in e), rows
     if argument != "bounded" and (
-            argument == "unbounded" or obligation == "earlier"):
+            argument in ("unbounded", "standin") or obligation == "earlier"):
         # The boundary is reached: the cell is one the first assertion
         # reads, not one it passes by running nothing.
         assert isinstance(ran.trap, WasmTrapError), (ran, rows)

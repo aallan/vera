@@ -88,6 +88,12 @@ private fn mk(@Float64 -> @Option<PosNat>)
 """
 
 
+#: A term holding a stand-in (a random value) whose value is 0: added to a
+#: call's argument, the argument's range parts mention a stand-in, and the
+#: run is the stand-in-free argument's.
+_STAND_IN = " + Random.random_int(0, 10) * 0"
+
+
 def _k(sig: str, requires: str, body: str, effects: str = "pure") -> str:
     return (f"public fn k({sig})\n  requires({requires})\n  ensures(true)\n"
             f"  effects({effects})\n{{\n{body}\n}}\n")
@@ -119,20 +125,30 @@ def _codes(verified: pipeline.Verified) -> set[str]:
 # =====================================================================
 
 
-def _subtraction(requires: str) -> str:
+def _subtraction(requires: str, stand_in: str = "") -> str:
     # `9223372036854775806 - @Nat.0` needs `@Nat.0 < <max>`, which `c`'s
     # postcondition states of `@Nat.0 + 1` only where that sum is in range.
     return _BELOW_MAX + _k(
         "@Nat -> @Nat", requires,
-        "  let @Int = c(@Nat.0 + 1);\n"
+        f"  let @Int = c(@Nat.0 + 1{stand_in});\n"
         "  let @Nat = 9223372036854775806;\n"
-        "  @Nat.0 - @Nat.1")
+        "  @Nat.0 - @Nat.1", "<Random>" if stand_in else "pure")
 
 
 def test_repro_a_nat_sub_row_requires_the_range_premise() -> None:
     """At `@Nat.0 = <max>` the argument `@Nat.0 + 1` overflows and the run
     traps: the `nat_sub` row is not proved from `c`'s postcondition."""
     source = _subtraction("true")
+    rows = _rows(_verify(source), "nat_sub")
+    assert rows == [("@Nat.0 - @Nat.1", "violated")], rows
+    assert "overflow" in _trap(source, INT_MAX)
+
+
+def test_repro_a_nat_sub_row_over_a_stand_in_argument_keeps_its_guard() -> None:
+    """The same attack with a stand-in in the argument: its range parts
+    mention the stand-in and were stripped from the guard, so `c`'s
+    postcondition proved the row (verified at 57b6e0c6, and at main)."""
+    source = _subtraction("true", _STAND_IN)
     rows = _rows(_verify(source), "nat_sub")
     assert rows == [("@Nat.0 - @Nat.1", "violated")], rows
     assert "overflow" in _trap(source, INT_MAX)
@@ -188,16 +204,28 @@ def test_the_shadow_re_ask_asks_lhs_below_rhs() -> None:
 # =====================================================================
 
 
-def _quotient(requires: str) -> str:
+def _quotient(requires: str, stand_in: str = "") -> str:
     # `@Int.1 / -1` overflows at `<min>` alone; `c`'s postcondition states
     # `@Int.1 - 1 >= <min>` only where that difference is in range.
     return _ABOVE_MIN + _k(
         "@Int -> @Int", requires,
-        "  let @Int = c(@Int.0 - 1);\n  @Int.1 / -1")
+        f"  let @Int = c(@Int.0 - 1{stand_in});\n  @Int.1 / -1",
+        "<Random>" if stand_in else "pure")
 
 
 def test_repro_a_quotient_row_requires_the_range_premise() -> None:
     source = _quotient("true")
+    rows = [r for r in _rows(_verify(source), "int_overflow")
+            if r[0] == "@Int.1 / -1"]
+    assert rows == [("@Int.1 / -1", "tier3")], rows
+    assert "overflow" in _trap(source, INT_MIN)
+
+
+def test_repro_a_quotient_row_over_a_stand_in_argument_keeps_its_guard(
+        ) -> None:
+    """Verified at 57b6e0c6 (the stripped range parts left `c`'s
+    postcondition unguarded), and at main, which held no guard."""
+    source = _quotient("true", _STAND_IN)
     rows = [r for r in _rows(_verify(source), "int_overflow")
             if r[0] == "@Int.1 / -1"]
     assert rows == [("@Int.1 / -1", "tier3")], rows
@@ -215,19 +243,29 @@ def test_a_quotient_row_whose_premise_holds_is_proved() -> None:
 # =====================================================================
 
 
-def _projected(requires: str) -> str:
+def _projected(requires: str, stand_in: str = "") -> str:
     # The destructured component `@Int.1 + <max>` is `>= 0` only where
     # `@Int.1 > <min>`, which `c` states of `@Int.1 - 1` only in range.
     return _ABOVE_MIN + _k(
         "@Int -> @Nat", requires,
-        "  let @Int = c(@Int.0 - 1);\n"
+        f"  let @Int = c(@Int.0 - 1{stand_in});\n"
         f"  let @Tuple<Int, Int> = Tuple(@Int.1 + {_MAX}, 0);\n"
         "  let Tuple<@Nat, @Int> = @Tuple<Int, Int>.0;\n"
-        "  @Nat.0")
+        "  @Nat.0", "<Random>" if stand_in else "pure")
 
 
 def test_repro_a_projected_nat_bind_row_requires_the_range_premise() -> None:
     source = _projected("true")
+    rows = _rows(_verify(source), "nat_bind")
+    assert rows == [("@Nat", "violated")], rows
+    assert "overflow" in _trap(source, INT_MIN)
+
+
+def test_repro_a_projected_nat_bind_over_a_stand_in_argument_keeps_its_guard(
+        ) -> None:
+    """Verified at 57b6e0c6 (the stripped range parts left `c`'s
+    postcondition unguarded), and at main, which held no guard."""
+    source = _projected("true", _STAND_IN)
     rows = _rows(_verify(source), "nat_bind")
     assert rows == [("@Nat", "violated")], rows
     assert "overflow" in _trap(source, INT_MIN)

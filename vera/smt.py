@@ -3650,6 +3650,13 @@ class SmtContext:
         required by a query that asks what a type states of a value, and by
         no other, since an argument that reaches its call is a value its
         own evaluation and constructions checked.
+
+        Only the first list goes through :meth:`_statable_part`.  The second
+        is held whole: a range part mentions a stand-in only where the
+        argument's own term holds one, and it is no conjunct the callee's
+        prologue checks; stripped, it would leave the callee's facts
+        unguarded, so a postcondition proved from the parameter's range
+        would prove the argument's own range rows.
         """
         if self._call_binding_hook is None:
             return None
@@ -3662,10 +3669,8 @@ class SmtContext:
             call_node, callee_info, terms, self)
         facts = [part for fact in owed
                  if (part := self._statable_part(fact)) is not None]
-        in_range = [part for fact in ranges
-                    if (part := self._statable_part(fact)) is not None]
-        if in_range:
-            facts.append(z3.Implies(self._range_premise, z3.And(*in_range)))
+        if ranges:
+            facts.append(z3.Implies(self._range_premise, z3.And(*ranges)))
         if not facts:
             return None
         return facts[0] if len(facts) == 1 else z3.And(*facts)
@@ -3684,6 +3689,10 @@ class SmtContext:
         on a continuation that exists only where the prologue's check held.
         An implication keeps its antecedent (a constructor's recognizer) and
         is stripped in its consequent.
+
+        Applied to the binding hook's first list alone (what the arguments
+        owe the parameters' refinements); the second list, the ranges, is
+        never stripped (#1928, :meth:`_call_binding`).
         """
         if z3.is_and(fact):
             kept = [c for c in fact.children()
