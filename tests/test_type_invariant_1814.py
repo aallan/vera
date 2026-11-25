@@ -293,29 +293,34 @@ def _outside_the_type(tname: str, x: int) -> bool:
 def test_no_fact_is_false_at_a_boundary_value(
         cell: tuple[str, str, str, str]) -> None:
     """A producer builds the value from each i64 boundary value and `f` is
-    run on it.  A value the type does not admit is stopped at the producer's
-    check, or the producer's obligation is refused or disclosed by `vera
-    verify` (the program is not one whose facts were established): `f`'s
-    postcondition check fires on no other program."""
+    run on it.  A value the type admits completes: any trap fails the cell.
+    A value the type does not admit is stopped by a type's own check raised
+    in the producer, `drive` (the trap's innermost frame), or else `f`'s
+    postcondition check fires and the producer's obligation is refused or
+    disclosed by `vera verify` (the program is not one whose facts were
+    established).  No other trap is accepted."""
     source = _program(*cell)
     compiled = pipeline.compile(source, file=FILE)
+    unestablished: list[tuple[str, str, str]] | None = None
     for x in _BOUNDARIES:
         ran = pipeline.run(compiled, "drive", [x])
         if ran.ok:
             continue
         assert isinstance(ran.trap, WasmTrapError), ran.trap
-        if "Postcondition violation in f(" not in str(ran.trap):
-            # Only a type's own check may stop the run, and only on a value
-            # outside the type: any other trap fails the cell.
-            assert (str(ran.trap).startswith(_TYPE_CHECK_TRAPS)
-                    and _outside_the_type(cell[0], x)), (x, str(ran.trap))
+        text = str(ran.trap)
+        where = [fr.func for fr in ran.trap.frames]
+        assert _outside_the_type(cell[0], x), (x, text, where)
+        if text.startswith(_TYPE_CHECK_TRAPS):
+            assert where[:1] == ["drive"], (x, text, where)
             continue
-        verified = pipeline.verify(source, file=FILE)
-        unestablished = [
-            (o.kind, o.status, o.error_code) for o in verified.obligations
-            if o.fn_name == "drive"
-            and o.status in ("violated", "tier3_unguarded")]
-        assert unestablished, (x, str(ran.trap))
+        assert text.startswith("Postcondition violation in f("), (x, text)
+        if unestablished is None:
+            verified = pipeline.verify(source, file=FILE)
+            unestablished = [
+                (o.kind, o.status, o.error_code) for o in verified.obligations
+                if o.fn_name == "drive"
+                and o.status in ("violated", "tier3_unguarded")]
+        assert unestablished, (x, text)
 
 
 # =====================================================================
