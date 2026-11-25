@@ -3367,6 +3367,42 @@ def test_1451_a_truncated_scan_denies_the_licence_too() -> None:
     assert verifier._premise_halves_disjoint(smt, []) is True
 
 
+def test_repro_the_halves_skip_the_instantiated_axioms_and_scan_the_rank_one() -> None:
+    """Stage 2 instantiates a TOTALITY or ELEMENT axiom and drops a RANK
+    one, so the disjointness test skips the first two and scans the third.
+    The one quantified fact here shares `f` with the ground premise: tagged
+    TOTALITY or ELEMENT the halves are disjoint, tagged RANK or untagged
+    they are not.  RED with the test inverted (`record.kind is
+    AxiomKind.RANK`): every answer flips; and with the record never read
+    (`record = None`): the instantiated kinds read as shared."""
+    from types import SimpleNamespace
+
+    import z3
+
+    from vera import verifier as vmod
+    from vera.smt import AxiomKind
+
+    x = z3.Int("x")
+    f = z3.Function("f", z3.IntSort(), z3.IntSort())
+    axiom = z3.ForAll([x], f(x) >= 0)
+    verifier = object.__new__(vmod.ContractVerifier)
+
+    def disjoint(kind: AxiomKind | None) -> bool:
+        def registered(fact: object) -> object:
+            if kind is None or not axiom.eq(fact):
+                return None
+            return SimpleNamespace(kind=kind, symbol="f")
+        smt = SimpleNamespace(solver=z3.Solver(), registered_axiom=registered)
+        smt.solver.add(axiom)
+        smt.solver.add(f(z3.Int("y")) > 0)
+        return bool(verifier._premise_halves_disjoint(smt, []))
+
+    assert disjoint(AxiomKind.TOTALITY) is True
+    assert disjoint(AxiomKind.ELEMENT) is True
+    assert disjoint(AxiomKind.RANK) is False
+    assert disjoint(None) is False
+
+
 def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(
     tmp_path: Path,
 ) -> None:

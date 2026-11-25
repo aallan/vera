@@ -932,3 +932,37 @@ def test_repro_a_data_refinement_on_a_nested_arrays_element_is_stated() -> None:
     never stated, and the ensures is Tier 3 (`E522`)."""
     assert ("ensures", "verified", "") in _statuses(
         _NESTED_ARRAY_DATA_REFINEMENT)["f"]
+
+
+#: An element refinement read from a parameter and returned whole.
+_ELEMENT_REFINEMENT_GOAL = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+public fn h(@Array<PosInt> -> @Int)
+  requires(array_length(@Array<PosInt>.0) > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Array<PosInt>.0[0]
+}
+
+public fn r(@Array<PosInt> -> @Array<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Array<PosInt>.0
+}
+"""
+
+
+def test_repro_an_element_refinement_is_a_complete_goal() -> None:
+    """`PosInt`'s predicate is stated of every element, so `h`'s element is
+    positive and `r`'s returned array narrows to `Array<PosInt>` in full.
+    RED with the per-element test joined by `or` (every stated predicate
+    withheld): `h`'s ensures is `E500` and `r`'s narrowing `E506`; and with
+    the position's completeness lost (`complete = None`): `r`'s narrowing
+    is Tier 3 (`E506`)."""
+    rows = _statuses(_ELEMENT_REFINEMENT_GOAL)
+    assert [s for _k, s, _c in rows["h"] + rows["r"]] == [
+        "verified"] * len(rows["h"] + rows["r"]), rows
