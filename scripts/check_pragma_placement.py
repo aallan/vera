@@ -243,7 +243,7 @@ def explain(p: Pragma) -> str:
              "not spaces": ("{a} `{t}` pragma on a line of its own is placed only where it and the "
                             "lines around it are indented with spaces alone: indent with spaces, "
                             "not tabs or form feeds"),
-             "after a backslash":"{a} `{t}` pragma on a line of its own after a backslash is not placed",
+             "after a backslash": "{a} `{t}` pragma on a line of its own after a backslash is not placed",
              "alone elsewhere": ("{a} `{t}` pragma on a line of its own is placed only directly above "
                                  "a statement at its column (an `end` also directly below one, "
                                  "ending its block), with no comment line at another column "

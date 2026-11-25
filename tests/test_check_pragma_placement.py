@@ -204,6 +204,16 @@ def _own_line_family() -> list[str]:
             family.append(f"if a:\n{code}x = 1\n{mark}{P} {kind}\n{code}y = 2\n")
         family.append(f"if a:\n{code}x = 1\n{mark}{P} end\nz = 3\n")
         family.append(f"if a:\n{code}x = 1\n{mark}{P} end\n")
+    # Spaces everywhere but ONE comment line between the pragma and the
+    # statement it is placed against: four tabs, the column four spaces give.
+    for kind in ("block", "start", "end"):
+        family.append(f"if a:\n    x = 1\n    {P} {kind}\n\t\t\t\t# a note\n    y = 2\n")
+    family.append(f"if a:\n    x = 1\n\t\t\t\t# a note\n    {P} end\nz = 3\n")
+    # Only the next statement is not spaces (a form feed resets the indent).
+    family.append(f"if a:\n    x = 1\n    {P} block\n\f    y = 2\n")
+    # Only the statement the `end` closes is not spaces; the line above it
+    # is deeper, nine spaces, which Python holds consistent with one tab.
+    family.append(f"if a:\n\tif b:\n         x = 1\n {P} end\nz = 3\n")
     return family
 
 
@@ -214,15 +224,12 @@ def test_an_own_line_pragma_beside_indentation_other_than_spaces_is_refused(sour
 
 
 def test_the_engine_files_the_tabbed_end_elsewhere_than_its_line() -> None:
-    """The differential cell: mutmut's visitor does not mark the `end`'s line
-    (or refuses the region as unclosed), so accepting it would be wrong."""
+    """The differential cell: mutmut's visitor never sees the `end` (it is
+    in the `else` clause's leading lines) and refuses the `start` on line 3
+    as unclosed, so accepting the `end` would be wrong."""
     handling = pytest.importorskip("mutmut.mutation.pragma_handling")
-    try:
-        engine = _engine_lines(TABBED)
-    except handling.PragmaParseError as e:  # a `start` with no `end` it sees
-        assert "end" in str(e), e
-        return
-    assert 5 not in engine, sorted(engine)
+    with pytest.raises(handling.PragmaParseError, match="Missing no mutate end for start block at <shape>:3"):
+        _engine_lines(TABBED)
 
 
 def test_the_message_names_the_line_the_engine_files_it_under() -> None:
