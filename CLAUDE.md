@@ -87,6 +87,7 @@ python scripts/check_diagnostic_examples.py # Verify every vera:diagnostic-annot
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
 python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682); that every location and quoted line is built by vera.errors.locate, and that every registered code can be raised (#1636)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
+python scripts/check_pragma_placement.py # Verify every `# pragma: no mutate` under vera/ is filed by mutmut under the line it is written on (#1838)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
 python scripts/check_history_rows.py  # Verify every row of HISTORY.md's stage tables (one sentence, ≤35 words, ≤1 issue link, no em dash) and each stage's prose (≤85 words) (#1880)

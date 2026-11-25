@@ -378,7 +378,8 @@ def guard_type_expr(
     one decision for both."""
     if (not isinstance(ty, RefinedType)  # pragma: no mutate — unreachable: the table reads this for a row it would otherwise check (`_guard_at`) and code generation for a checked row, each a refinement whose base `_refinement_guardable` holds is not itself one
             or isinstance(ty.base, RefinedType)  # pragma: no mutate — unreachable: as the line above
-            or contains_typevar(ty)):  # pragma: no mutate — equivalent: a type variable in the refinement is a parameter of the declaration it is written in, which the parameter rule below answers None for
+            or contains_typevar(ty)  # pragma: no mutate — equivalent: a type variable in the refinement is a parameter of the declaration it is written in, which the parameter rule below answers None for
+    ):
         return None
     found = written.get(id(ty.predicate))
     if found is None:
