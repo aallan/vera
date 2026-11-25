@@ -593,6 +593,9 @@ class TypeChecker(
         # and message are indistinguishable to the reader — to a single
         # entry, preserving first-occurrence order (PR #938 review).
         self._seen_diag_keys: set[tuple[str, ...]] = set()
+        # Each key above in the order it was first seen, so a synthesis
+        # the context replaces withdraws its own (`_synth_held`, #1812).
+        self._diag_keys_added: list[tuple[str, ...]] = []
         # The calls a diagnostic reported now is about, innermost last, by
         # `id` (`_about_the_call`): one at a piped call is placed at its
         # stage.
@@ -768,6 +771,13 @@ class TypeChecker(
         # by node identity and by span, so a literal checked again clears
         # its own earlier record and no other check's.
         self._element_target_ids: set[int] = set()
+        # #1812: the refusals of an index that a first synthesis could not
+        # type, held, one frame a synthesis, until the type its position's
+        # context names is known (`ExpressionsMixin._synth_held`).
+        self._held_refusals: list[list[tuple[ast.IndexExpr, bool]]] = []
+        # Every error-severity diagnostic `_error` was asked for, the
+        # duplicates it collapses among them (`_synth_held`).
+        self._errors_raised = 0
         self._element_target_spans: set[tuple[int, int, int, int]] = set()
         self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
@@ -1308,6 +1318,10 @@ class TypeChecker(
                error_code: str = "") -> None:
         """Record a type error diagnostic, placed at *node*
         (:meth:`_placement`)."""
+        if severity == "error":
+            # Counted before the duplicate collapse below: a synthesis that
+            # met an error is one, whether or not the error was new (#1812).
+            self._errors_raised += 1  # pragma: no mutate (equivalent: its one reader, `_synth_held`, asks only whether the count moved, `== before`, and `-= 1` or `+= 2` moves it exactly when `+= 1` does; measured, #1812)
         span = self._placement(node)
         placed = locate_at(self.file, self.source, span)
         loc = placed["location"]
@@ -1320,6 +1334,7 @@ class TypeChecker(
         if key in self._seen_diag_keys:
             return
         self._seen_diag_keys.add(key)
+        self._diag_keys_added.append(key)
         # A module's data type is typed by its identity (#1694); a reader is
         # shown the type's name.
         description, rationale, fix = display_type_names(

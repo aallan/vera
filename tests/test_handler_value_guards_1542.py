@@ -42,6 +42,13 @@ component at a `State` write boundary, at a `get` resume and at a handle's
 value bound by a `let` is listed as checked and is not (`E541`, the same
 verdict the value has at a `let` written directly); a refined `Option`
 payload and a binder's component are disclosed (`E506`, spec §2.6.5).
+
+A composite built at the position is held in one of three ways, each a
+source: where the position's type reaches the construction (#1812: a
+handler hands its type to its body and to an `Exn` clause), a component a
+callee's `ensures` proves is proved (`pr`), one nothing proves is refuted
+where it is built (`sc`, `E503`, `E505`), as with no handler around it, and
+one the solver cannot decide (`Short`) is left to its run-time check.
 """
 
 from __future__ import annotations
@@ -53,12 +60,14 @@ from tests import pipeline
 # A generated class instrument (tests/matrix_sample.py): a pull request runs
 # a sample of its cells, and all of them when it changes this file or a
 # module that decides its class: the table's rows, the verifier's reading of
-# them, and the handler lowering's guards.
+# them, the handler lowering's guards, and the checker's handing of the
+# handler's type to its body and clauses (#1812).
 pytestmark = pytest.mark.matrix(
     decides=[
         "vera/obligations/table.py",
         "vera/verifier.py",
         "vera/wasm/calls_handlers.py",
+        "vera/checker/control.py",
     ],
 )
 
@@ -202,17 +211,27 @@ _HV = ("private fn hv(@Int -> @{T})\n  requires(true)\n  ensures(true)\n"
 _PLAIN = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
 
 
-#: Where the value comes from: an opaque call's result (`mk`), or a
-#: construction written at the position over an opaque scalar (`sc`).
-SOURCES = ("call", "built")
+#: Where the value comes from: an opaque call's result (`mk`), a
+#: construction written at the position over an opaque scalar (`sc`, whose
+#: `ensures` proves nothing), or the same construction over a scalar whose
+#: `ensures` proves the component (`pr`: in `0..9`, so `Nat` and `Small`).
+SOURCES = ("call", "built", "proved")
+
+_PR = ("private fn pr(@Int -> @Int)\n  requires(true)\n"
+       "  ensures(@Int.result >= 0 && @Int.result < 10)\n  effects(pure)\n{\n"
+       "  if @Int.0 >= 0 && @Int.0 < 10 then { @Int.0 } else { 3 }\n}\n\n")
 
 
 def _program(shape: str, position: str, source: str = "call") -> str:
     t, b, mk, rd, good, _, built = SHAPES[shape]
-    value = built if source == "built" else "mk(@Int.0)"
+    value = "mk(@Int.0)" if source == "call" else built
     assert value is not None
+    if source == "proved":
+        value = value.replace("sc(", "pr(")
     fill = {"T": t, "B": b, "G": good, "V": value}
     src = PRELUDE
+    if source == "proved":
+        src += "\n" + _PR.rstrip("\n") + "\n"
     if position == "state_value_apply":
         src = f"type FT = fn({t} -> Int) effects(pure);\n" + src
     src += f"\nprivate fn sc(@Int -> @Int)\n{_PLAIN}{{\n  @Int.0\n}}\n\n"
@@ -236,6 +255,10 @@ def _program(shape: str, position: str, source: str = "call") -> str:
 # that no check answers (E541), and the value runs through.
 CHECKED, REFUSED, REFUSED_UNCHECKED = "checked", "refused", "refused_unchecked"
 DISCLOSED, OPEN = "disclosed", "open"
+#: PROVED: `vera verify` accepts with every narrowing row verified (a value
+#: built from `pr`, whose `ensures` proves the component, where the
+#: position's type reaches the construction).
+PROVED = "proved"
 
 _ALL = tuple(HANDLER_POSITIONS)
 #: The positions the verifier decides a narrowing at (it refutes one there):
@@ -244,8 +267,6 @@ _ALL = tuple(HANDLER_POSITIONS)
 #: handle's value.
 _DECIDED = ("state_init", "put_argument", "state_value_let",
             "state_value_apply", "state_value_return", "exn_throw")
-#: The write boundaries the verifier refutes a built `Nat` component at.
-_NAT_WRITES = ("state_init", "put_argument", "exn_throw")
 _BINDERS = ("put_binder", "exn_binder")
 
 
@@ -275,8 +296,8 @@ def _verdicts() -> dict[tuple[str, str], str]:
               else DISCLOSED for p in _ALL})
     assert set(v) == {(s, p) for s in SHAPES for p in HANDLER_POSITIONS}
     out = {(s, "call", p): verdict for (s, p), verdict in v.items()}
-    out.update({(s, "built", p): verdict for (s, p), verdict in _built().items()})
     out.update(_joins())
+    out.update(_built_and_proved())
     return out
 
 
@@ -292,9 +313,9 @@ _JOIN_DECIDED = tuple(p for p in JOIN_POSITIONS if p not in _UNDECIDED)
 
 
 def _joins() -> dict[tuple[str, str, str], str]:
-    """The handle's value at the hand-down's own positions.  As at the
-    handler positions: `Nat`, `Short` and every built composite are
-    checked (refused where the verifier decides a `Nat` or a `Small`); a
+    """A value from a call at the hand-down's own positions (a built one is
+    `_built_and_proved`'s).  As at the handler positions: `Nat` and `Short`
+    are checked (refused where the verifier decides a `Nat` or a `Small`); a
     refined payload from a call is disclosed where it is not refuted; a
     refined tuple component from a call is checked where a boundary
     decomposes it (a call's argument), disclosed at a constructor's field
@@ -315,29 +336,60 @@ def _joins() -> dict[tuple[str, str, str], str]:
     v.update({("tuple_small", "call", p): OPEN if p in _UNDECIDED
               else REFUSED_UNCHECKED for p in j})
     v[("tuple_small", "call", "call_argument")] = REFUSED
-    for shape in ("tuple_nat", "option_nat", "tuple_short", "option_short"):
-        v.update({(shape, "built", p): CHECKED for p in j})
-    for shape in ("tuple_small", "option_small"):
-        v.update({(shape, "built", p): CHECKED if p in _UNDECIDED else REFUSED
-                  for p in j})
     return v
 
 
-def _built() -> dict[tuple[str, str], str]:
-    """A composite built at the position: its construction is a store,
-    which checks the component (or payload) by its own row, at every
-    position bar a clause binder narrower than what it receives.  The
-    verifier refutes a narrowing it decides, a `Nat` one only at a write
-    boundary (inside a `handle`'s value it reads the construction nowhere),
-    a `Small` one at every position it decides a call's result at."""
-    v: dict[tuple[str, str], str] = {}
-    for shape, decided in (("tuple_nat", _NAT_WRITES), ("option_nat", _NAT_WRITES),
-                           ("tuple_short", ()), ("option_short", ()),
-                           ("tuple_small", _DECIDED),
-                           ("option_small", _DECIDED)):
-        v.update({(shape, p): REFUSED if p in decided else CHECKED for p in _ALL})
-        v.update({(shape, p): DISCLOSED for p in _BINDERS
+#: The positions read in a clause's own scope, where a refutation is under a
+#: premise over the clause's stand-ins and so no violation: a non-resuming
+#: `Exn` clause's value, a `get` clause's resume and a `with` override.
+_CLAUSE_SCOPE = ("exn_clause_value", "get_resume", "with_override")
+#: The positions the position's type reaches a construction at and the
+#: verifier decides it: every one bar a clause binder, a clause's scope and
+#: an arm the cell chooses (#1812: a handler hands its type to its body and
+#: to an `Exn` clause, as an `if` hands its branches theirs).
+_REACHED = tuple(p for p in POSITIONS
+                 if p not in _BINDERS + _CLAUSE_SCOPE + _ARMS)
+#: An `Exn` handle's value: the verifier reads no premise from it, so a
+#: refinement its construction meets is left to its check even where the
+#: callee's `ensures` proves it (a `Nat` component is proved by its sign).
+_EXN_VALUE = ("exn_body_value", "exn_in_state", "state_in_exn")
+_SMALL_BUILT = ("tuple_small", "option_small")
+
+
+def _built_and_proved() -> dict[tuple[str, str, str], str]:
+    """A composite built at the position, from `sc` (nothing proves the
+    component) and from `pr` (its `ensures` proves it).  Its construction is
+    a store, which checks the component (or payload) by its own row.  Where
+    the position's type reaches the construction (`_REACHED`), the value is
+    judged where it is built, as it is with no handler around it: `sc`'s
+    is refuted (`E503`, `E505`) where the predicate is one the solver
+    decides (`Nat`, `Small`) and left to its check where it is not
+    (`Short`); `pr`'s is proved.  At a clause binder narrower than what it
+    receives a refined component is disclosed (`E506`), a `Nat` one is
+    checked; elsewhere the row is a run-time check.  Read at `main`, where
+    the handler handed its body no type, a `Nat` component was refuted only
+    at a write boundary and checked everywhere else, and so was `pr`'s."""
+    v: dict[tuple[str, str, str], str] = {}
+    for shape in ("tuple_nat", "option_nat", "tuple_short", "option_short",
+                  "tuple_small", "option_small"):
+        decided = not shape.endswith("_short")
+        v.update({(shape, "built", p): REFUSED if decided and p in _REACHED
+                  else CHECKED for p in POSITIONS})
+        v.update({(shape, "built", p): DISCLOSED for p in _BINDERS
                   if not shape.endswith("_nat")})
+    for shape in ("tuple_nat", "option_nat") + _SMALL_BUILT:
+        # An arm the cell chooses proves `pr`'s value too: the premise over
+        # `get`'s stand-in decides no refutation, and blocks no proof.
+        v.update({(shape, "proved", p): PROVED if p in _REACHED + _ARMS
+                  else CHECKED for p in POSITIONS})
+        v.update({(shape, "proved", p): DISCLOSED for p in _BINDERS
+                  if not shape.endswith("_nat")})
+    v.update({(shape, "proved", p): CHECKED
+              for shape in _SMALL_BUILT for p in _EXN_VALUE})
+    # `hv`'s return is held to the whole `Tuple<Nat, Int>` by a row of its
+    # own, left to its check (`_emit_refinement_check`), as at `main`; the
+    # component's `nat_bind` row is proved.
+    v[("tuple_nat", "proved", "state_value_return")] = CHECKED
     return v
 
 
@@ -365,27 +417,42 @@ def test_a_handler_position_holds_its_value_to_its_type(
     compiled = pipeline.compile(src)
     assert pipeline.run(compiled, fn="go", args=[SATISFYING]).value == SATISFYING
     ran = pipeline.run(compiled, fn="go", args=[bad])
-    if verdict == CHECKED:
+    # What a run that no check stops returns: the violating argument, or,
+    # where `pr` maps it into the type, the value it maps it to.
+    through = SATISFYING if source == "proved" else bad
+    if source == "proved":
+        assert verdict not in (REFUSED, REFUSED_UNCHECKED, OPEN), verdict
+        assert ran.trap is None and ran.value == through, (ran.trap, ran.value)
+    if verdict == PROVED:
+        # Proved where it is built: no narrowing row is left to a check or
+        # refuted, and one is proved (a handler that dropped the type
+        # leaves the `Nat` component to a composite coercion's check).
+        assert verified.ok, (errors, statuses)
+        assert mismatches == [] and statuses == [], statuses
+        assert any(o.kind in _NARROWING and o.status == "verified"
+                   for o in verified.obligations)
+    elif verdict == CHECKED:
         assert verified.ok, (errors, statuses)
         assert mismatches == [] and statuses, statuses
         assert set(statuses) == {"tier3"}, statuses
-        assert ran.trap is not None, ran.value
+        if source != "proved":
+            assert ran.trap is not None, ran.value
     elif verdict in (REFUSED, REFUSED_UNCHECKED):
         assert errors and errors <= _REFUTED, errors
         assert "violated" in statuses and mismatches == [], (statuses, mismatches)
         if verdict == REFUSED:
             assert ran.trap is not None, ran.value
         else:
-            assert ran.value == bad
+            assert ran.value == through
     elif verdict == DISCLOSED:
         assert verified.ok, errors
         assert "tier3_unguarded" in statuses and mismatches == [], statuses
-        assert ran.value == bad
+        assert ran.value == through
     else:
         assert verdict == OPEN
         assert errors == {"E541"}, errors
         assert mismatches, statuses
-        assert ran.value == bad
+        assert ran.value == through
 
 
 # ---------------------------------------------------------------------
@@ -531,10 +598,33 @@ def test_repro_a_get_resume_at_a_refined_set_cell_runs_the_predicate_guard() -> 
 def test_repro_a_nat_payload_built_as_a_handles_value_is_obligated() -> None:
     """The `Nat` requirement reaches a handle's value as a block's tail's
     does: `Some(sc(x))` built there at `Option<Nat>` was listed nowhere,
-    verified clean and returned -5."""
+    verified clean and returned -5.  The handler hands its type to its
+    body (#1812), so the payload is judged where it is built, as with no
+    handler around it: `sc` proves nothing of its result, and `go(-5)`
+    builds `Some(-5)`, refuted (E503) at the construction.  The compiled
+    module still holds the payload's check, and -5 traps there."""
     src = _program("option_nat", "state_value_let", "built")
-    trap = _checked_and_trapping(src, "go", -5, 3, "nat_bind",
-                                 check="component_coercion")
+    line = next(i for i, text in enumerate(src.splitlines(), 1)
+                if text.strip() == "Some(sc(@Int.0))")
+    verified = pipeline.verify(src, reconcile=True)
+    assert [(d.error_code, d.location.line) for d in verified.errors] == [
+        ("E503", line)]
+    assert [(o.status, o.line) for o in verified.obligations
+            if o.kind == "nat_bind"] == [("violated", line)]
+    compiled = pipeline.compile(src)
+    assert compiled.checks(obligation="nat_bind", function="go")
+    assert pipeline.run(compiled, fn="go", args=[3]).value == 3
+    ran = pipeline.run(compiled, fn="go", args=[-5])
+    assert "Negative value bound into a @Nat slot" in str(ran.trap), ran.value
+
+
+def test_repro_a_nat_payload_the_solver_leaves_to_its_check_traps() -> None:
+    """The same payload from a value the solver does not decide
+    (`float_to_int`): `vera verify` accepts it with the row a run-time
+    check, and the guard answers -5.0 where it is built."""
+    src = _PAYLOAD_1837.replace(
+        "type PosInt = { @Int | @Int.0 > 0 };\n\n", "").replace("PosInt", "Nat")
+    trap = _checked_and_trapping(src, "go", -5.0, 3.0, "nat_bind")
     assert "Negative value bound into a @Nat slot" in trap, trap
 
 
@@ -643,8 +733,10 @@ _STORES_IN_HANDLE = {
                 "map_size(@Map<Small, Int>.0)", [("tier3", "E506", 28, 27)]),
     "nested_construction": ("Option<Tuple<Small, Int>>", "Some(Tuple(sc(@Int.0), 0))",
                             "0", [("violated", "E505", 28, 16)]),
+    # The handler hands `Some`'s payload its type (#1812), so the element is
+    # judged where it is built, as `[sc(@Int.0)]` is above.
     "element_below_payload": ("Option<Array<Small>>", "Some([sc(@Int.0)])", "0",
-                              [("tier3", "E506", 28, 11)]),
+                              [("violated", "E505", 28, 11)]),
     "component_below_payload": ("Option<Tuple<Small, Int>>", "Some(pair(@Int.0))",
                                 "0", [("violated", "E505", 28, 10)]),
 }
@@ -885,12 +977,35 @@ def test_repro_a_row_no_check_evaluates_names_its_innermost_reason() -> None:
         assert "the handler clause is inlined at no operation call" in text, text
 
 
+_BLOCK_TAIL_STORE = """\
+public fn go(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Map<Int, Tuple<Nat, Int>> = map_insert(map_new(), 1, handle[State<Bool>](@Bool = true) {
+    get(@Unit) -> { resume(@Bool.0) },
+    put(@Bool) -> { resume(()) }
+  } in {
+    Tuple(float_to_int(@Float64.0), 0)
+  });
+  map_size(@Map<Int, Tuple<Nat, Int>>.0)
+}
+"""
+
+
 def test_a_block_tail_hands_the_store_its_own_component_type() -> None:
-    """A `Tuple<Nat, Int>` built as a handle's value in a constructor's
-    field: the handle body's block tail is handed the store's own component
-    type, so the field's `Nat` row is the store's sign check, answered by
-    the `Nat` guard, not by a composite coercion."""
-    src = _program("tuple_nat", "ctor_field", "built")
+    """A `Tuple<Nat, Int>` built as a handle's value stored as a
+    `map_insert` value: the handle body's block tail is handed the store's
+    own component type, so the field's `Nat` row is the store's sign check,
+    answered by the `Nat` guard, not by a composite coercion.  The handle
+    is a generic call's closed argument, so no expected type reaches the
+    construction and the checker records no target there (at a
+    constructor's field the handler hands the construction its type, #1812,
+    and the store reads the field from it); `float_to_int` leaves the row
+    a run-time check.  With the block tail's hand-down dropped, the row is
+    answered by `_emit_component_coercion`."""
+    src = _BLOCK_TAIL_STORE
     verified = pipeline.verify(src, reconcile=True)
     assert verified.ok, [d.error_code for d in verified.errors]
     reconciled = verified.reconciled

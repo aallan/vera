@@ -637,10 +637,13 @@ def _build(cell: _Cell) -> _Built:
     # it leaves open given by the first later part that fills it; a part of
     # another type fills nothing and is refused.
     if filler.joined is None and (cell.context == "bare" or (
-            cell.head == "array" and cell.context == "generic")):
-        # No context, or an empty literal's element type at a generic
-        # call's argument: a generic's arguments are given no expected
-        # type, so nothing fixes it.
+            cell.head == "array" and cell.context == "generic"
+            and filler.refused is not None)):
+        # No context, or a refused literal at a generic call's argument:
+        # nothing fixes it.  An argument the check accepts is checked
+        # against its instantiated parameter once the call fixes it
+        # (#1812), so an empty literal's element type there is the
+        # instance's, as at any other context.
         element = wrap_type.format(t=head.open_recorded)
     elif filler.joined is None:
         # A position the parts leave open takes the type the context

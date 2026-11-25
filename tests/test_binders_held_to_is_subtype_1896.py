@@ -532,8 +532,8 @@ def _open_shape_codes(position: str, mismatch: str) -> list[str]:
     """A binder under a head, or at the scrutinee's root, holds the value at
     a type its function was not compiled for: E314.  Where the written type
     reaches the call as its expected type (an argument, a whole-type binder
-    over `Some(...)`), the call is instantiated there and the program runs
-    at that type: no refusal.  The join's positions refuse the pair, as on
+    over `Some(...)`, a binder over the call itself, #1812), the call is
+    instantiated there and the program runs at that type: no refusal.  The join's positions refuse the pair, as on
     `main`: a variable inside a function type is not open at the join
     (#1684), and an effect row holding one is compared as written.  A data
     type's behaviour parameter reads as a function type does; its plain
@@ -542,10 +542,10 @@ def _open_shape_codes(position: str, mismatch: str) -> list[str]:
     if mismatch == "open-in-data-plain-parameter":
         return []
     row = mismatch == "open-in-row"
-    if position.startswith("binder-") and position != "binder-whole":
-        return ["E314"]
-    if position == "binder-whole":
+    if position in ("binder-whole", "binder-top"):
         return ["E314"] if row else []
+    if position.startswith("binder-"):
+        return ["E314"]
     if position == "argument":
         return ["E202"] if row else []
     if position == "adopted":
@@ -754,7 +754,7 @@ _SPAN = re.compile(r"`([^`]+)`")
 @pytest.mark.parametrize(("position", "shape", "generic"), [
     pytest.param(position, shape, generic,
                  id=f"{position}-{shape}-{'generic' if generic else 'plain'}")
-    for position in ("binder-top", "binder-some", "binder-tuple",
+    for position in ("binder-some", "binder-tuple",
                      "binder-ctor", "binder-nested")
     for shape in sorted(_OPEN_SHAPES - {"open-in-row", "open-in-data-plain-parameter"})
     for generic in (False, True)])
