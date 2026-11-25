@@ -112,9 +112,9 @@ REASON_MEASURE_NOT_RANKABLE = (
 REASON_NESTED_REFINEMENT = "a refinement over a refinement has no guard"
 REASON_ERASED_BASE = "a refinement over an erased base has no value to check"
 REASON_FUNCTION_BASE = "a refinement over a function type has no binder to check"
-REASON_BELOW_STORE = (
-    "a construction store checks a component's head, not a tuple "
-    "component below it")
+REASON_TUPLE_UNDECOMPOSED = (
+    "a tuple component is decomposed only at a function's or a closure's "
+    "entry, a return and an apply_fn argument")
 REASON_UNWRITTEN = (
     "the check has no written type to bind: the refinement is written over "
     "a generic declaration's type parameter, or nowhere")
@@ -544,6 +544,11 @@ class _Builder:
         #: argument applied to a function value that is no closure literal,
         #: a `set_add` element, a `map_insert` key.
         self._written_args: set[int] = set()
+        #: ``id`` of each argument applied to a function value that is no
+        #: closure literal, and of its value leaves: the one position
+        #: besides a boundary where code generation checks a refined tuple
+        #: component (rule 2, spec §2.6.5).
+        self._apply_args: set[int] = set()
         #: ``(id(node), path)`` of an answering row to its id: a
         #: ``requires`` clause's row, a boundary's entry rows.
         self._answerers: dict[tuple[int, tuple[str, ...]], int] = {}
@@ -1615,6 +1620,9 @@ class _Builder:
             for arg in e.args[1:]:
                 if id(arg) not in self._boundary:
                     self._written(arg)
+                    self._apply_args.add(id(arg))
+                    self._apply_args.update(
+                        id(leaf) for leaf in narrowing.value_leaves(arg))
         if isinstance(e, ast.FnCall) and name in ("set_add", "map_insert"):
             # The two stores whose check binds the refinement as written.
             for arg in e.args[1:2]:
@@ -1659,12 +1667,15 @@ class _Builder:
             self._tree_rows(tree, e, boundary=boundary)
         for p, rty in self._refined_paths(_strip(req), _strip(sem), ()):
             tuple_path = all(s.startswith("Tuple.") for s in p)
-            # A construction's store checks the component's head and not
-            # the components below it, so a tuple component of a stored
-            # value is checked by no store (#1861).
+            # Rule 2 (spec §2.6.5): code generation checks a tuple
+            # component only where it takes the tuple apart, at a boundary
+            # (an entry, a return) and an `apply_fn` argument; at every
+            # other position (a `let`, a join, a store, a `put`, a
+            # `throw`) the row is disclosed (#1861, #1897).
+            decomposed = boundary is not None or id(e) in self._apply_args
             guard = (unguarded(REASON_INSIDE_PAYLOAD) if not tuple_path
-                     else unguarded(REASON_BELOW_STORE) if store
-                     else self._guard_at(e, rty))
+                     else self._guard_at(e, rty) if decomposed and not store
+                     else unguarded(REASON_TUPLE_UNDECOMPOSED))
             self.add("refine_bind", e, target=rty, path=p, guard=guard,
                      answer=boundary, answer_path=p)
 

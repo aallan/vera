@@ -485,13 +485,15 @@ ISSUE = SMALL + textwrap.dedent("""\
 def test_repro_issue_1897() -> None:
     """The reported program: the `let` was `verified` from its reader's
     fact.  Now the narrowing is refuted (E505): its own query never reads
-    the fact.  The `ensures` stays `verified`: the `let`'s row is checked,
-    and the check runs before the reader, so the reader's fact is
-    established for every query but the narrowing's own."""
+    the fact.  The `ensures` is Tier 3 (E534), by rule 2 (spec §2.6.5): a
+    tuple component at a `let` is no position code generation checks, so
+    the `let` establishes nothing and the reader's fact is withheld; the
+    `ensures`'s own check traps the run."""
     verified = _verify(ISSUE)
     let = _line(ISSUE, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
     assert _at_line(verified, let) == ["violated/E505"]
-    assert _at_line(verified, _line(ISSUE, "ensures(@Int.result < 10)"), "ensures") == ["verified"]
+    assert _at_line(verified, _line(ISSUE, "ensures(@Int.result < 10)"),
+                    "ensures") == ["tier3/E534"]
     assert _run(ISSUE, [VIOLATING]).trap is not None
 
 
@@ -602,9 +604,10 @@ def test_repro_call_apply_and_return(position: str, order: str) -> None:
 def test_repro_other_obligations_over_the_value() -> None:
     """Class line 5: an `ensures` over the value read, and a call's
     precondition after the reader, were `verified` beside a narrowing
-    proved from the same fact.  The narrowing is now refuted; the two stay
-    `verified`, since the `let`'s row is checked and its check, which
-    traps the run, stands before the reader."""
+    proved from the same fact.  The narrowing is now refuted; the two are
+    Tier 3, by rule 2 (spec §2.6.5): the `let`'s tuple component is
+    disclosed, not checked, so it establishes no fact for its reader, and
+    their own checks trap the run."""
     body = textwrap.dedent("""\
         private fn need(@Int -> @Int)
           requires(@Int.0 < 10)
@@ -638,8 +641,9 @@ def test_repro_other_obligations_over_the_value() -> None:
     call = _line(source, "need(@Int.0)")
     let = _line(source, "let @Tuple<Small, Int> = @Tuple<Int, Int>.0;")
     assert _at_line(verified, let) == ["violated/E505"]
-    assert _at_line(verified, ensures, "ensures") == ["verified"]
-    assert _at_line(verified, call, "call_pre") == ["verified"]
+    assert _at_line(verified, ensures, "ensures") == ["tier3/E522"]
+    assert [r.split("/")[0] for r in _at_line(verified, call, "call_pre")] \
+        == ["tier3"]
     ran = _run(source, [VIOLATING])
     assert ran.trap is not None
 
@@ -881,23 +885,22 @@ def _checked_narrowing(shape: str, ensures: str, tail: str) -> str:
 
 
 @pytest.mark.parametrize("obligation", list(CHECKED_AFTER_READER))
-def test_repro_a_checked_narrowing_establishes_its_readers_fact(
+def test_repro_a_tuple_let_narrowing_withholds_its_readers_fact_rule_2(
         obligation: str) -> None:
-    """A narrowing whose row is checked (a tuple component at a `let`)
-    establishes the facts a reader takes off the type it gives: its check
-    runs where the value takes the type, before any reader.  An obligation
-    after the reader that the fact proves is `verified`, as it was before
-    #1897; the narrowing itself, over a value the solver cannot read, is
-    Tier 3 with its check (E506), never proved from the fact.  The same
-    reader over an `Option` payload, whose row no check covers, leaves the
-    obligation Tier 3."""
+    """Rule 2 (spec §2.6.5): a refined tuple component at a `let` is no
+    position code generation checks, so the narrowing, over a value the
+    solver cannot read, is disclosed (E506, `tier3_unguarded`) and
+    establishes nothing.  An obligation after the reader that the reader's
+    fact would prove is Tier 3, as it is for the same reader over an
+    `Option` payload, whose row no check covers either."""
     ensures, tail, kind = CHECKED_AFTER_READER[obligation]
     source = _checked_narrowing("tuple", ensures, tail)
     verified = _verify(source)
     let = _line(source, "let @Tuple<Pos, Int> = apply_fn(@MkT.0, @Int.0);")
-    assert _at_line(verified, let) == ["tier3/E506"]
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"]
     line = _line(source, ensures if kind == "ensures" else tail)
-    assert _at_line(verified, line, kind) == ["verified"]
+    assert [r.split("/")[0] for r in _at_line(verified, line, kind)] \
+        == ["tier3"]
     payload = _checked_narrowing("option", ensures, tail)
     verified = _verify(payload)
     line = _line(payload, ensures if kind == "ensures" else tail)
@@ -905,16 +908,90 @@ def test_repro_a_checked_narrowing_establishes_its_readers_fact(
         == ["tier3"]
 
 
+LET_TUPLE_NO_READER = POS + textwrap.dedent("""\
+    type MkT = fn(Int -> Tuple<Int, Int>) effects(pure);
+
+    public fn go(@MkT, @Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Tuple<Pos, Int> = apply_fn(@MkT.0, @Int.0);
+      1
+    }
+
+    public fn main_go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      go(fn(@Int -> @Tuple<Int, Int>) effects(pure) { Tuple(@Int.0, 0) },
+        @Int.0)
+    }
+    """)
+
+
+def _unanswered(verified: pipeline.Verified, source: str,
+                fn: str, line: int) -> list[str]:
+    ran = pipeline.run(source, fn, [0], file=FILE)
+    assert ran.compiled is not None
+    return [m.kind for m in reconcile(
+        verified.result, ran.compiled.result,
+        program=verified.checked.program, file=verified.checked.file)
+        if m.line == line]
+
+
+def test_repro_a_let_tuple_component_is_disclosed_rule_2() -> None:
+    """Rule 2 (spec §2.6.5): a refined tuple component is checked only
+    where code generation takes the tuple apart (a function's or a
+    closure's entry, a return, an `apply_fn` argument).  At a `let` no
+    check is emitted, so its row is disclosed (E506, `tier3_unguarded`),
+    with nothing for the join to miss (no E541), and the run delivers the
+    violating tuple, which is what the disclosure says."""
+    source = LET_TUPLE_NO_READER
+    verified = _verify(source)
+    let = _line(source, "let @Tuple<Pos, Int> = apply_fn(@MkT.0, @Int.0);")
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"]
+    assert _unanswered(verified, source, "main_go", let) == []
+    assert pipeline.run(source, "main_go", [0], file=FILE).value == 1
+
+
+def test_repro_a_disclosed_tuple_let_withholds_its_readers_fact_rule_2(
+) -> None:
+    """Rule 2: the `let` of a refined tuple component is disclosed, not
+    checked, so it establishes nothing: the fact its reader reads is
+    withheld, and the `ensures` it would prove is Tier 3, not `verified`.
+    No E541 stands at the `let`."""
+    source = _checked_narrowing("tuple", "ensures(@Int.result > 0)", "@Int.0")
+    caller = source + textwrap.dedent("""
+        public fn main_go(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          go(fn(@Int -> @Tuple<Int, Int>) effects(pure) { Tuple(@Int.0, 0) },
+            @Int.0)
+        }
+        """)
+    verified = _verify(caller)
+    let = _line(caller, "let @Tuple<Pos, Int> = apply_fn(@MkT.0, @Int.0);")
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"]
+    ensures = _line(caller, "ensures(@Int.result > 0)")
+    assert [r.split("/")[0] for r in _at_line(verified, ensures, "ensures")] \
+        == ["tier3"]
+    assert _unanswered(verified, caller, "main_go", let) == []
+
+
 COMPONENT_OF_A_NARROWING = {
     # shape: (the composite at Pos, its base, the reader of the component,
     #         the `@Nat` narrowing's status)
     "tuple": ("Tuple<Pos, Int>", "Tuple<Int, Int>",
               "match @Tuple<Pos, Int>.0 { Tuple(@Int, @Int) -> @Int.1 }",
-              "verified"),
+              "tier3"),
     "nested": ("Tuple<Tuple<Pos, Int>, Int>", "Tuple<Tuple<Int, Int>, Int>",
                "match @Tuple<Tuple<Pos, Int>, Int>.0 "
                "{ Tuple(Tuple(@Int, @Int), _) -> @Int.1 }",
-               "verified"),
+               "tier3"),
     "option": ("Option<Pos>", "Option<Int>",
                "match @Option<Pos>.0 { Some(@Int) -> @Int.0, None -> 1 }",
                "tier3"),
@@ -929,9 +1006,10 @@ def test_repro_a_component_narrowing_is_not_the_composites_own(
     """A `@Nat` narrowing of a component read off a narrowed composite is
     a narrowing of its own value, not of the composite: the composite's
     reader facts are kept from the composite's own query only.  It reads
-    them as any query does: proved where the composite's row is checked (a
-    tuple component), Tier 3 where they are withheld (a payload), and
-    never refuted (E503) for a value the composite's type bounds."""
+    them as any query does: Tier 3 where they are withheld, which at a `let`
+    is every shape (a payload, and by rule 2, spec §2.6.5, a tuple
+    component, which no check at a `let` covers), and never refuted (E503)
+    for a value the composite's type bounds."""
     refined, base, reader, status = COMPONENT_OF_A_NARROWING[shape]
     source = POS + "public data Wrap<T> { W(T) }\n\n" + (
         f"public fn go(@{base} -> @Nat)\n"
@@ -979,26 +1057,26 @@ CLAUSE_LET_1542 = POS + textwrap.dedent("""\
     """)
 
 
-def test_a_clause_let_the_table_checks_and_codegen_does_not_1542() -> None:
-    """#1542's, pinned as it is: a `let` narrowing inside a handler clause
-    is a row the obligation table lists as checked, and code generation
-    emits no check for it, which `vera verify` reports as the E541 error.
-    The reader's fact is established by the table's account, so the `@Nat`
-    narrowing after it is `verified` from it; the E541 on the same run is
-    what keeps the program from passing.  This cell moves when #1542
-    makes the table and code generation agree on the row."""
+def test_a_clause_let_the_table_discloses_rule_2() -> None:
+    """A `let` narrowing of a tuple component inside a handler clause: by
+    rule 2 (spec §2.6.5) the table lists its row as disclosed (E506,
+    `tier3_unguarded`), which is what code generation does (no check, so
+    no E541 at the `let`).  It establishes nothing, so the `@Nat`
+    narrowing its reader's fact would prove is Tier 3, not `verified`.
+    Until rule 2 the table listed the row as checked and the join reported
+    E541 (#1542's line 2)."""
     verified = _verify(CLAUSE_LET_1542)
     let = _line(CLAUSE_LET_1542, "let @Tuple<Pos, Int> = @Tuple<Int, Int>.0;")
-    assert _at_line(verified, let) == ["tier3/E506"]
+    assert _at_line(verified, let) == ["tier3_unguarded/E506"]
     nat = _line(CLAUSE_LET_1542, "let @Nat = @Int.1;")
-    assert _at_line(verified, nat, "nat_bind") == ["verified"]
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
     ran = _run(CLAUSE_LET_1542, [5])
     assert ran.compiled is not None
     unanswered = [m for m in reconcile(
         verified.result, ran.compiled.result,
         program=verified.checked.program, file=verified.checked.file)
         if m.line == let]
-    assert unanswered
+    assert unanswered == []
 
 
 def _nested_builtins(depth: int, narrow: bool) -> str:
