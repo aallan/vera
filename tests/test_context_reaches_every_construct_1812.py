@@ -141,10 +141,12 @@ def _nodes(value: object) -> list[ast.Node]:
 
 def _open_parts(checked: pipeline.Checked) -> list[str]:
     """Each recorded type holding an unknown or a variable left open,
-    with the line it is recorded at, and each instantiation that leaves a
-    callee's variable unbound or open."""
+    with the line and column it is recorded at, and each instantiation that
+    leaves a callee's variable unbound or open.  The column keeps two
+    expressions of one type on one line two findings."""
     art = checked.artifacts
-    lines = {n.node_id: n.span.line for n in _nodes(checked.program)
+    lines = {n.node_id: f"{n.span.line}:{n.span.column}"
+             for n in _nodes(checked.program)
              if n.node_id is not None and n.span is not None}
     found = {f"{lines.get(node, '?')}: {pretty_type(t)}"
              for node, t in art.node_semantic_types.items()
@@ -557,59 +559,61 @@ def test_the_context_reaches_the_construct(construct: str, value: str,
 
 #: Programs that hold a variable no context names, or one only a
 #: constructor pattern names, by reason, with each open part the census
-#: finds in them (`line: type`, a minted variable's number read as `n`):
+#: finds in them (`line:column: type`, a minted variable's number read as `n`):
 #: a part found beyond these fails, and one of these no longer found makes
 #: the exemption stale.
 CENSUS_EXEMPT: dict[str, tuple[str, frozenset[str]]] = {
     'tests/conformance/ch09_generic_none_nested.vera': (
         '`match nest(()) { Some(@Option<Int>) .. }`: only a constructor pattern names the variable',
         frozenset({
-            '73: Option<Option<T$n>>',
-            '73: nest: T unbound',
-            '74: Option<Option<T$n>>',
-            '74: Option<T$n>',
-            '78: Option<Option<T$n>>',
-            '80: Option<Option<Option<T$n>>>',
-            '80: nest3: T unbound',
-            '81: Option<Option<Option<T$n>>>',
-            '81: Option<Option<T$n>>',
-            '88: Option<Option<Option<T$n>>>',
+            '73:20: Option<Option<T$n>>',
+            '73:20: nest: T unbound',
+            '74:5: Option<Option<T$n>>',
+            '74:10: Option<T$n>',
+            '78:5: Option<Option<T$n>>',
+            '80:20: Option<Option<Option<T$n>>>',
+            '80:20: nest3: T unbound',
+            '81:5: Option<Option<Option<T$n>>>',
+            '81:10: Option<Option<T$n>>',
+            '88:5: Option<Option<Option<T$n>>>',
         })),
     'tests/conformance/ch09_none_err_inference.vera': (
         '`result_unwrap_or(Ok(77), 0)`: no context names the error type',
         frozenset({
-            '50: Result<Int, E$n>',
-            '50: result_unwrap_or: E#b = E$n',
+            '50:3: result_unwrap_or: E#b = E$n',
+            '50:20: Result<Int, E$n>',
         })),
     'tests/conformance/ch09_option_result_combinators.vera': (
         '`result_unwrap_or`/`result_map` over `Ok(..)`: no context names the error type',
         frozenset({
-            '42: Result<Int, E$n>',
-            '42: result_unwrap_or: E#b = E$n',
-            '51: Result<Int, E$n>',
-            '51: result_map: E#b = E$n',
-            '51: result_unwrap_or: E#b = E$n',
+            '42:3: result_unwrap_or: E#b = E$n',
+            '42:20: Result<Int, E$n>',
+            '51:3: result_unwrap_or: E#b = E$n',
+            '51:20: Result<Int, E$n>',
+            '51:20: result_map: E#b = E$n',
+            '51:31: Result<Int, E$n>',
         })),
     'tests/conformance/ch09_prelude.vera': (
         '`match None { Some(@Int) .. }`, `match Ok(99) { .. Err(@String) }`: only a constructor pattern names the variable',
         frozenset({
-            '23: Option<T$n>',
-            '24: Option<T$n>',
-            '24: T$n',
-            '25: Option<T$n>',
-            '37: Result<Int, E$n>',
-            '38: Result<Int, E$n>',
-            '39: E$n',
-            '39: Result<Int, E$n>',
-            '48: Result<T$n, String>',
-            '49: Result<T$n, String>',
-            '49: T$n',
-            '50: Result<T$n, String>',
-            '164: Result<Int, E$n>',
-            '164: result_unwrap_or: E#b = E$n',
-            '219: Result<Int, E$n>',
-            '219: result_map: E#b = E$n',
-            '219: result_unwrap_or: E#b = E$n',
+            '23:9: Option<T$n>',
+            '24:5: Option<T$n>',
+            '24:10: T$n',
+            '25:5: Option<T$n>',
+            '37:9: Result<Int, E$n>',
+            '38:5: Result<Int, E$n>',
+            '39:5: Result<Int, E$n>',
+            '39:9: E$n',
+            '48:9: Result<T$n, String>',
+            '49:5: Result<T$n, String>',
+            '49:8: T$n',
+            '50:5: Result<T$n, String>',
+            '164:6: result_unwrap_or: E#b = E$n',
+            '164:23: Result<Int, E$n>',
+            '219:6: result_unwrap_or: E#b = E$n',
+            '219:23: Result<Int, E$n>',
+            '219:23: result_map: E#b = E$n',
+            '219:34: Result<Int, E$n>',
         })),
 }
 
@@ -665,6 +669,18 @@ def test_census_finds_an_open_part() -> None:
     assert _open_parts(pipeline.check(path)) != []
     assert _open_parts(pipeline.check(_main(
         "let @Nat = map_size(map_new());\n  0"))) != []
+
+
+def test_repro_two_open_parts_on_one_line_are_two_findings() -> None:
+    """Two expressions of one open type on one line are two findings, each
+    at its own column: an exemption of one leaves the other reported."""
+    checked = pipeline.check(_main(
+        "result_unwrap_or(Ok(1), 0) + result_unwrap_or(Ok(2), 0)"))
+    found = _census_parts(checked)
+    same = sorted(f for f in found if f.endswith(": Result<Int, E$n>"))
+    assert len(same) == 2, same
+    exempt = frozenset(f for f in found if f.startswith(same[0].split(" ")[0]))
+    assert same[1] in found - exempt, (found, exempt)
 
 
 @pytest.mark.parametrize(("label", "path", "block"), _CORPUS,
