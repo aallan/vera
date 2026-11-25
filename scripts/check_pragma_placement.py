@@ -57,7 +57,12 @@ line or alone after a decorator; and a pragma alone on its line in any other
 shape: a ``block`` or ``start`` at the end of a block or of a module, at an
 indent no statement next to it has, above an ``else``, ``elif``, ``except``
 or ``finally`` at its column, after a backslash, or with a comment line at
-another column between it and the statement.  The fix is to write the
+another column between it and the statement.  A pragma alone on its line is
+also refused when its own indentation, or that of a line the rule reads to
+place it (the statement above or below it, the next statement, the comment
+lines between), holds anything but spaces (a tab, a form feed): the gate
+compares columns, libcst compares indentation strings, and the two agree
+only in spaces.  Indent with spaces.  The fix is to write the
 comment on the node's own line (inside the brackets on a statement that
 spans lines), or alone directly above the statement it covers, at that
 statement's column.
@@ -138,6 +143,7 @@ def pragmas(source: str) -> list[Pragma]:
     logical_first: str | None = None
     after_decorator = False
     starts: list[int] = []  # the column each logical line so far starts at
+    lines: list[str] = []  # and its first physical line
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
             tokenize.ENCODING, tokenize.ENDMARKER)
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
@@ -145,6 +151,7 @@ def pragmas(source: str) -> list[Pragma]:
         if tok.type not in skip and logical_start is None:
             logical_start, logical_first = tok.start[0], tok.string
             starts.append(tok.start[1])
+            lines.append(tok.line)
             after_decorator = after_decorator and tok.string == "@"
         if tok.type == tokenize.OP and tok.string in "([{":
             depth += 1
@@ -170,12 +177,12 @@ def pragmas(source: str) -> list[Pragma]:
                         # Above a statement at its column: its leading line.
                         placed = (aligned and following is not None and following.start[1] == column
                                   and following.string not in CLAUSES)
+                        back = at
+                        while back > 0 and tokens[back - 1].type in skip:
+                            back -= 1
                         if token == "end" and not placed:
                             # Below a statement at its column, ending its block
                             # or the module: the block's or the module's footer.
-                            back = at
-                            while back > 0 and tokens[back - 1].type in skip:
-                                back -= 1
                             owner = next((c for c in reversed(starts) if c <= column), None)
                             # A shallower comment line below is ignored when the
                             # next statement is shallower too: the block has closed.
@@ -188,7 +195,16 @@ def pragmas(source: str) -> list[Pragma]:
                                       and (following is None or following.start[1] < column
                                            or (following.start[1] == column
                                                and following.string not in CLAUSES)))
-                        found.append(Pragma(line, token, line, "alone") if placed
+                        # A column means what libcst's indentation prefix means
+                        # only in spaces: refuse beside any other indentation
+                        # (the pragma's, the comment lines and statements the
+                        # rule reads to place it).
+                        read = [t.line for t in [tok, *rest[:ahead + 1], *tokens[back:at]]
+                                if t.type == tokenize.COMMENT or t is following]
+                        read += lines[-1:] + [s for c, s in zip(starts, lines) if c <= column][-1:]
+                        spaced = not any(s[:len(s) - len(s.lstrip())].strip(" ") for s in read)
+                        found.append(Pragma(line, token, None, "not spaces") if not spaced
+                                     else Pragma(line, token, line, "alone") if placed
                                      else Pragma(line, token, None, "alone elsewhere"))
                 elif depth > 0:
                     found.append(Pragma(line, token, line if token == "bare" else None, "brackets"))
@@ -224,7 +240,10 @@ def explain(p: Pragma) -> str:
              "alone in brackets": "{a} `{t}` pragma alone inside brackets is read by no visitor",
              "after a decorator": "{a} `{t}` pragma alone after a decorator is read by no visitor",
              "on a decorator": "{a} `{t}` pragma on a decorator's line is read by no visitor",
-             "after a backslash": "{a} `{t}` pragma on a line of its own after a backslash is not placed",
+             "not spaces": ("{a} `{t}` pragma on a line of its own is placed only where it and the "
+                            "lines around it are indented with spaces alone: indent with spaces, "
+                            "not tabs or form feeds"),
+             "after a backslash":"{a} `{t}` pragma on a line of its own after a backslash is not placed",
              "alone elsewhere": ("{a} `{t}` pragma on a line of its own is placed only directly above "
                                  "a statement at its column (an `end` also directly below one, "
                                  "ending its block), with no comment line at another column "

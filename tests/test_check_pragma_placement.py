@@ -178,6 +178,53 @@ def test_repro_an_indented_comment_run_below_a_module_level_comment_is_refused_b
     assert BLOCK_FIX in _refused(f"x = 1\n# a note\n  # another note\n  {P} block\n")
 
 
+#: The reported source: tabs indent the code, two spaces the `end`.  The gate
+#: counted the tab as one column, so the `end` (column 2) sat below `pass`
+#: (column 2); libcst puts it in the `else` clause's own leading lines,
+#: which no visitor scans.
+TABBED = f"if a:\n\tif b:\n\t\t{P} start\n\t\tpass\n  {P} end\nelse:\n\tpass\n"
+
+SPACES_FIX = "indent with spaces"
+
+
+def test_repro_an_end_below_tab_indented_code_is_refused() -> None:
+    (start, end) = gate.pragmas(TABBED)
+    assert end.misplaced and SPACES_FIX in gate.explain(end), end
+
+
+def _own_line_family() -> list[str]:
+    """Every own-line pragma kind, above a statement and (an `end`) below
+    one, crossed with each indentation that is not spaces alone: tabs in the
+    code and spaces on the pragma, spaces in the code and a tab on the
+    pragma, tabs on both, a form feed on the pragma's line or the code's."""
+    indents = [("\t", " "), (" ", "\t"), ("\t", "\t"), (" ", "\f "), ("\f ", " ")]
+    family = []
+    for code, mark in indents:
+        for kind in ("block", "start", "end"):
+            family.append(f"if a:\n{code}x = 1\n{mark}{P} {kind}\n{code}y = 2\n")
+        family.append(f"if a:\n{code}x = 1\n{mark}{P} end\nz = 3\n")
+        family.append(f"if a:\n{code}x = 1\n{mark}{P} end\n")
+    return family
+
+
+@pytest.mark.parametrize("source", _own_line_family())
+def test_an_own_line_pragma_beside_indentation_other_than_spaces_is_refused(source: str) -> None:
+    (p,) = gate.pragmas(source)
+    assert p.misplaced and SPACES_FIX in gate.explain(p), p
+
+
+def test_the_engine_files_the_tabbed_end_elsewhere_than_its_line() -> None:
+    """The differential cell: mutmut's visitor does not mark the `end`'s line
+    (or refuses the region as unclosed), so accepting it would be wrong."""
+    handling = pytest.importorskip("mutmut.mutation.pragma_handling")
+    try:
+        engine = _engine_lines(TABBED)
+    except handling.PragmaParseError as e:  # a `start` with no `end` it sees
+        assert "end" in str(e), e
+        return
+    assert 5 not in engine, sorted(engine)
+
+
 def test_the_message_names_the_line_the_engine_files_it_under() -> None:
     (p,) = gate.check_source(SHAPES["after_a_call_that_spans_lines"][0])
     assert "filed under line 1" in gate.explain(p) and "not under line 3" in gate.explain(p)
