@@ -485,7 +485,10 @@ class ParameterPremise:
     #: only these included.  A head `Nat`'s `>= 0` and a refinement over a
     #: data type inside the type (whose rows can have no check, E506) are
     #: not: every query requires them, as main's guard did a nested
-    #: scalar refinement.
+    #: scalar refinement.  The range parts alone are what a call omits
+    #: from its guard for a component of the caller's parameter: a
+    #: refinement below the head can have no check, so it is omitted only
+    #: where the caller holds it literally.
     ranges: frozenset[int] = frozenset()
 
     def facts(self) -> list[z3.ExprRef]:
@@ -1814,9 +1817,13 @@ class ContractVerifier:
         refinement, a head `Nat`'s `>= 0`, the nested refinements), and the
         rest of the premise, which only a query asking what a type states of
         a value requires (#1928; :py:meth:`ParameterPremise.range_free`).
-        A part the caller already holds is omitted from both
-        (:py:meth:`_premise_held`), of its own parameter or of a component
-        of one (:py:meth:`_component_type`).
+        A part the caller already holds as a standing premise is omitted
+        from both (:py:meth:`_premise_held`); where the argument is a
+        component of one of the caller's parameters
+        (:py:meth:`_component_type`), a range part the caller's premise
+        states of that component is omitted besides.  A refinement part is
+        not: a narrowing below the head can have no check (E506), so the
+        component's refinement is not true at every depth.
 
         Per argument, what the callee's own proof assumed of the parameter,
         read off the one function that proof reads it off
@@ -1854,17 +1861,21 @@ class ContractVerifier:
                 continue
             premise = self._parameter_premise(
                 smt, target.declared, term, standing=False)
-            # #1928: what the caller's premise states of the argument where
-            # the argument is a component of one of its parameters.
+            # #1928: what the caller's premise states of the argument by
+            # representation or construction where the argument is a
+            # component of one of its parameters: its range parts alone.  A
+            # refinement below the head can have no check (E506), so it is
+            # not held at every depth and is omitted only where the caller
+            # holds it literally.
             component = self._component_type(smt, term)
             held: list[z3.ExprRef] = []
             if component is not None:
                 held = [f for f in self._established_facts(
                     self._parameter_premise(
-                        smt, component, term, standing=False).facts(),
+                        smt, component, term, standing=False).range_parts(),
                     source=None, term=term, smt=smt) if z3.is_expr(f)]
             facts.extend(f for f in premise.range_free()
-                         if not self._premise_held(smt, f, held))
+                         if not self._premise_held(smt, f))
             ranges.extend(f for f in premise.range_parts()
                           if not self._premise_held(smt, f, held))
         return facts, ranges
@@ -1876,10 +1887,14 @@ class ContractVerifier:
         accessor path into one of the caller's parameters
         (``SmtContext.standing_parameters``, #1928), read off the
         PARAMETER's declared type through each constructor's field types;
-        else None.  The parameter's premise is true of its value at every
-        depth (each construction of it was checked), so it is true of each
-        component at the component's declared type.  A value that is no
-        such path (a stand-in, a call's result, a construction) has none."""
+        else None.  What the parameter's type states by representation or
+        by construction (its range parts: an `Int`'s range, a `Nat`'s
+        bounds, every `nat_bind` row having a check) is true of its value at
+        every depth, so of each component at the component's declared type;
+        a refinement is not (a narrowing below the head can have no check,
+        E506), and :py:meth:`_call_binding_facts` reads the range parts
+        alone.  A value that is no such path (a stand-in, a call's result, a
+        construction) has none."""
         path: list[tuple[z3.DatatypeSortRef, int, int]] = []
         node = term
         while (z3.is_app(node) and node.num_args() == 1
@@ -1911,16 +1926,19 @@ class ContractVerifier:
     ) -> bool:
         """Whether *fact*, a part of a call's guard, is one of the caller's
         own standing premises (``SmtContext.standing_premises``, #1928), or
-        one of *component*, what the caller's premise states of the
-        argument where it is a component of one of its parameters
-        (:py:meth:`_component_type`).
+        one of *component*, the range parts of what the caller's premise
+        states of the argument where it is a component of one of its
+        parameters (:py:meth:`_component_type`).
 
         The one place a guard part is omitted: where the caller's proof
         already assumes the same fact, as of its own parameter passed on to
         a parameter the callee assumes the same of, `A and (A implies F)` is
         `A and F` in every query, so the omission loses nothing.  A
-        component's premise is held at every depth, where the solver holds
-        two levels of it.  Decided by
+        component's range parts are held at every depth (by representation,
+        or by a check at every construction), where the solver holds two
+        levels of them; its refinements are not (a narrowing below the head
+        can have no check, E506), so the caller passes the range parts alone
+        as *component*.  Decided by
         the premise itself, up to the names of its bound variables (each
         element quantifier is built with a fresh one), not by the shape of
         the argument: a fact the caller holds of a different type's premise

@@ -1688,6 +1688,138 @@ def test_repro_1928_a_call_result_of_a_nat_field_type_keeps_the_ensures() -> Non
     assert ("ensures", "verified", "") in statuses["total"], statuses
 
 
+#: The recursions above over a `Pos` field: a refinement below the head can
+#: have no check (E506), so it is not held at every depth of the caller's
+#: parameter, and the guard keeps it (#1928).
+_POS_CHAIN_RECURSION = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Chain { End, Link(Pos, Chain) }
+
+private fn all_pos(@Chain -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> true,
+    Link(@Pos, @Chain) -> @Pos.0 > 0 && all_pos(@Chain.0)
+  }
+}
+
+private fn first_pos(@Chain -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> true,
+    Link(@Pos, @Chain) -> @Pos.0 > 0
+  }
+}
+
+private fn deep(@Chain -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  match @Chain.0 {
+    Link(@Pos, Link(@Pos, Link(@Pos, @Chain))) -> first_pos(@Chain.0),
+    _ -> true
+  }
+}
+
+private fn total(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> 0,
+    Link(@Pos, @Chain) -> if total(@Chain.0) > 1000 then { 1000 } else { 1 + total(@Chain.0) }
+  }
+}
+"""
+
+
+@pytest.mark.parametrize("fn", ["all_pos", "deep", "total"])
+@pytest.mark.xfail(strict=True, reason=(
+    "#1928: a recursion over a data type with a refined field needs the "
+    "type's facts at every depth; the guard keeps the field's refinement, "
+    "which no check establishes below the head"))
+def test_a_recursion_over_a_refined_field_keeps_its_ensures(fn: str) -> None:
+    """The `Pos` twin of the `Nat` repros above: `violated` (E500) at main
+    and after, `verified` at 342b097b, where the guard omitted the tail's
+    refinement as held at every depth."""
+    assert ("ensures", "verified", "") in _statuses(_POS_CHAIN_RECURSION)[fn]
+
+
+#: A generic list of `Pos` bound from `apply_fn` (its `refine_bind` row
+#: E506, no check), three constructors under literals: `deep` reads the
+#: third tail through `first_pos`, whose binder is an unrefined `Int`.
+_UNCHECKED_TAIL = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Lst<T> { Nil, Cons(T, Lst<T>) }
+
+type MkL = fn(Int -> Lst<Int>) effects(pure);
+
+private fn first_pos(@Lst<Pos> -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  match @Lst<Pos>.0 {
+    Nil -> true,
+    Cons(@Int, @Lst<Pos>) -> @Int.0 > 0
+  }
+}
+
+private fn deep(@Lst<Pos> -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  match @Lst<Pos>.0 {
+    Cons(@Pos, Cons(@Pos, Cons(@Pos, @Lst<Pos>))) -> first_pos(@Lst<Pos>.0),
+    _ -> true
+  }
+}
+
+public fn go(@MkL, @Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  let @Lst<Pos> = apply_fn(@MkL.0, @Int.0);
+  deep(Cons(1, Cons(1, Cons(1, @Lst<Pos>.0))))
+}
+
+public fn main(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  go(fn(@Int -> @Lst<Int>) effects(pure) { Cons(@Int.0, Nil) }, @Int.0)
+}
+"""
+
+
+def test_repro_1928_a_refined_field_four_levels_down_is_not_held() -> None:
+    """The tail `deep` passes on sits four levels into its parameter, where
+    `go` put a list `apply_fn` produced unchecked (E506): the guard keeps
+    `first_pos`'s element refinement, so `deep`'s `ensures` is not
+    `verified` (it was at 342b097b), and the run on `-5` traps."""
+    statuses = _statuses(_UNCHECKED_TAIL)
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses["go"], statuses
+    deep = [s for k, s, _ in statuses["deep"] if k == "ensures"]
+    assert deep and all(s != "verified" for s in deep), statuses
+    ran = pipeline.run(_UNCHECKED_TAIL, "main", [-5], file=FILE)
+    assert isinstance(ran.trap, WasmTrapError), ran
+
+
 def _premise_of(monkeypatch, param: str, decls: str = ""):  # type: ignore[no-untyped-def]
     """The `ParameterPremise` `f(@<param>)`'s own proof builds of its
     parameter, through `ContractVerifier._parameter_premise`."""
