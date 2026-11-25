@@ -197,6 +197,14 @@ repos:
         # broad (same reasoning as diagnostic-fields).
         files: '((vera|scripts|tests)/.*\.py$)'
 
+      - id: pragma-placement
+        name: pragma placement
+        entry: .venv/bin/python scripts/check_pragma_placement.py
+        language: system
+        # A pragma is filed within its own file, so the staged compiler
+        # files are all the hook reads (#1838); the CI lint job reads them all.
+        files: '^vera/.*\.py$'
+
       - id: history-rows
         name: history rows
         entry: .venv/bin/python scripts/check_history_rows.py

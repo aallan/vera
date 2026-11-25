@@ -33,6 +33,9 @@ on:
       - "tests/mutation_oracle.py"
       - "tests/test_mutate_diff.py"
       - "tests/test_mutate_sweep.py"
+      - "scripts/check_pragma_placement.py"
+      - "tests/test_check_pragma_placement.py"
+      - "tests/test_pragma_placement_matrix.py"
       - ".github/workflows/mutation-diff.yml"
       - ".github/workflows/mutation-nightly.yml"
 
@@ -79,9 +82,11 @@ jobs:
       # The tests that need mutmut itself (its status table, its generator
       # honouring the narrowing pragma, a night end to end) skip in the
       # shards, which install [dev] alone; here the engine is installed, so
-      # they run, both lanes' as the nightly sweep runs them.
+      # they run, both lanes' as the nightly sweep runs them.  The pragma
+      # gate's differential against the engine's own visitor runs here too,
+      # its generated matrix whole (`--matrix=full`; the shards skip it).
       - name: Test the lane against the engine it installs
-        run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q
+        run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py tests/test_check_pragma_placement.py tests/test_pragma_placement_matrix.py -q --matrix=full
 
       - name: Mutate the functions this pull request changes
         env:

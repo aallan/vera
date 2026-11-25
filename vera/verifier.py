@@ -8831,7 +8831,9 @@ class ContractVerifier:
         elif (self._is_nat_type(self._written_type(expr.return_type))
                 and self._rows_taking(expr.body, "nat_bind")):
             self._record_nat_bind_tier3(
-                decl, expr.body, _CLOSURE_RETURN_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                decl, expr.body,
+                _CLOSURE_RETURN_SITE,  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                "tier3")
         # #779/#985: descend into the closure BODY under an EMPTY slot
         # environment — the fresh-scope walk.  Interior slot-dependent
         # binding sites are obligated Tier-3, while literal-only shapes
@@ -13324,7 +13326,9 @@ class ContractVerifier:
                             leaf_is_nat)):
                     continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, _SUBPATTERN_BIND_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                    decl, scrutinee,
+                    _SUBPATTERN_BIND_SITE,  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                    "tier3")
 
     def _obligate_destructure_narrowings(
         self,
@@ -13406,7 +13410,7 @@ class ContractVerifier:
             if narrowing.all_sources_opaque(sources):
                 declared_source.add(i)
             if (i < len(field_types) and (refined := self._binder_target(  # pragma: no mutate — equivalent: the checker refuses a destructure whose bindings outnumber its constructor's fields (E314) or whose source has no single constructor (E311), so `i` is below `len(field_types)` here
-                    te, target)) is not None):  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+                    te, target)) is not None):
                 if self._narrowing_binder(
                         decl, te, "refine_bind",
                         self._refined_field_narrows(refined, field_types[i])):

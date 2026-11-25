@@ -860,10 +860,17 @@ class CallsContainersMixin:
         assert row is not None  # noqa: S101 — `_checked`
         te = self.obligations.guard_type_expr(row.target)
         wasm_ty = self._width_of(row.target)
-        if (te is None  # pragma: no mutate — unreachable: the table holds a store row guardable only where guard_type_expr writes its type, over a scalar resolved base, which has a width
-                or wasm_ty is None):  # pragma: no mutate — unreachable: as the line above
+        # The table holds a store row guardable only where guard_type_expr
+        # writes its type, over a scalar resolved base, which has a width.  Two
+        # tests, not one condition of `or`s: with both operands false, `or` to
+        # `and` cannot be told apart.
+        if te is None:
             raise CodegenInvariantError(
-                "the obligation table holds a store's refinement guardable, and this lowering writes no type for it (#1861)", arg,  # pragma: no mutate — unreachable: the table holds a store row guardable only where guard_type_expr writes its type, over a scalar resolved base, which has a width
+                "the obligation table holds a store's refinement guardable, and this lowering writes no type for it (#1861)", arg,  # pragma: no mutate — unreachable: as the comment above the test says
+            )
+        if wasm_ty is None:
+            raise CodegenInvariantError(
+                "the obligation table holds a store's refinement guardable, and this lowering writes no width for it (#1861)", arg,  # pragma: no mutate — unreachable: as the comment above the test says
             )
         tmp = self.alloc_local(wasm_ty)
         guard = self._emit_bind_refine_guard(

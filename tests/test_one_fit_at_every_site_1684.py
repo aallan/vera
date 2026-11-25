@@ -610,11 +610,12 @@ def test_a_variable_a_call_left_open_takes_the_operation_s_parameter(
     assert _holds_and_stops(_OPERATION_HOLE) == {("Int",)}
 
 
-def test_a_variable_a_call_left_open_stays_refused_at_an_ability() -> None:
-    """An ability operation's arguments are given no expected type, so the
-    `None` no argument types stays open there and is refused (`E241`), as
-    at bf6d5003."""
-    assert _codes(_ABILITY_HOLE) == ["E241"]
+def test_a_variable_a_call_left_open_takes_the_ability_s_type() -> None:
+    """An ability operation's argument whose call left its variable open
+    was refused (`E241`, as at bf6d5003); it is checked against its
+    parameter once the other argument fixes the ability's variable (#1812),
+    so `nothing(())` is an `Option<Int>` beside `Some(5)`."""
+    assert _codes(_ABILITY_HOLE) == []
 
 
 def test_a_hole_at_a_rigid_parameter_takes_the_outer_variable() -> None:

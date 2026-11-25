@@ -204,7 +204,8 @@ def _substitute(ty: Type, mapping: dict[str, Type]) -> Type:
     if isinstance(ty, RefinedType):
         return RefinedType(
             _substitute(ty.base, mapping),
-            ty.predicate)  # pragma: no mutate — equivalent: `is_eq_derivable` reads a refinement's base and never its predicate
+            ty.predicate,  # pragma: no mutate — equivalent: `is_eq_derivable` reads a refinement's base and never its predicate
+        )
     return ty
 
 

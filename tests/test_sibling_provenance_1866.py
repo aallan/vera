@@ -206,13 +206,14 @@ FORMS: dict[str, Form] = {
     "op_param": Form(
         "tuple", "Tuple(None, { IO.print(head_ord([])); 1 })",
         "Tuple(Some(1), { IO.print(head_ord([])); 1 })", ()),
-    # An ability operation's parameter fixes no open call's variable
-    # outside a branch either (E241); the branch is judged the same.
+    # An ability operation's parameter fixes an open call's variable once
+    # the other argument fixes the ability's (#1812), outside a branch as
+    # inside one.
     "ability_op_param": Form(
         "tuple", "Tuple(None, match compare(head_ord([]), 5) "
         "{ Less -> 1, _ -> 2 })",
         "Tuple(Some(1), match compare(head_ord([]), 5) "
-        "{ Less -> 1, _ -> 2 })", ("E241",)),
+        "{ Less -> 1, _ -> 2 })", ()),
     "field_other_arg": Form("q", "MkQ(None, head_ord([]), 5)",
                             "MkQ(Some(1), head_ord([]), 5)", ()),
     # A field whose variable no argument's type binds: the sibling gives
@@ -1273,11 +1274,18 @@ _WHOLE_BINDER = (
 
 def test_repro_a_whole_binder_reads_its_own_variable_inside_a_data_type(
         ) -> None:
-    """E314 at `@Tuple<T, WW>` over `mk_tup(@T.0)`: the binder's type
-    holds the function's own `T` inside a `Tuple`, so the reason is the
-    type parameter's; the value's holds the open `X` inside it, so the fix
-    is the `let` that fixes it, and applied it clears the refusal."""
-    (error,) = pipeline.check(_WHOLE_BINDER).errors
+    """`@Tuple<T, WW>` over `mk_tup(@T.0)` names the call's type, which
+    instantiates the call there (#1812; E314 before).  Under `Some(..)` the
+    sub-pattern's binder reaches no call: E314, whose reason is the type
+    parameter's (the binder's type holds the function's own `T` inside a
+    `Tuple`), and whose fix is the `let` that fixes the open `X`, which,
+    applied, clears the refusal."""
+    assert pipeline.check(_WHOLE_BINDER).ok
+    wrapped = _WHOLE_BINDER.replace(
+        "  match mk_tup(@T.0) {\n    @Tuple<T, WW> -> 0\n  }",
+        "  match Some(mk_tup(@T.0)) {\n    Some(@Tuple<T, WW>) -> 0,\n"
+        "    None -> 1\n  }")
+    (error,) = pipeline.check(wrapped).errors
     assert error.error_code == "E314"
     assert error.rationale.startswith(
         "A type parameter of the enclosing function stands for every type")
@@ -1285,13 +1293,14 @@ def test_repro_a_whole_binder_reads_its_own_variable_inside_a_data_type(
         "The scrutinee holds a function whose type variable the call leaves "
         "open, which no binder can name: fix the variable first, so the "
         "call is instantiated at the type this binder needs.  Declare "
-        "`type Instance<T> = Tuple<T, fn(Int -> Int) effects(pure)>;`, bind "
-        "the scrutinee before the `match` with `let @Instance<T> = "
-        "mk_tup(@T.0);`, and match `@Instance<T>.0`.")
-    fixed = ("type Instance<T> = Tuple<T, fn(Int -> Int) effects(pure)>;\n"
-             + _WHOLE_BINDER.replace(
-                 "  match mk_tup(@T.0) {",
-                 "  let @Instance<T> = mk_tup(@T.0);\n"
+        "`type Instance<T> = Option<Tuple<T, fn(Int -> Int) effects(pure)>>;`, "
+        "bind the scrutinee before the `match` with `let @Instance<T> = "
+        "Some(mk_tup(@T.0));`, and match `@Instance<T>.0`.")
+    fixed = ("type Instance<T> = Option<Tuple<T, fn(Int -> Int) "
+             "effects(pure)>>;\n"
+             + wrapped.replace(
+                 "  match Some(mk_tup(@T.0)) {",
+                 "  let @Instance<T> = Some(mk_tup(@T.0));\n"
                  "  match @Instance<T>.0 {"))
     assert pipeline.check(fixed).ok
 

@@ -723,6 +723,7 @@ MARKED_FILES = (
     "test_one_fit_at_every_site_1684.py",
     "test_operation_row_1702.py",
     "test_persistent_map_set_1676.py",
+    "test_pragma_placement_matrix.py",
     "test_reader_fact_1897.py",
     "test_resolver_1694.py",
     "test_result_reference_type_1517.py",
@@ -744,6 +745,7 @@ MARKED_FILES = (
     "test_verifier_reads_the_typed_program_1525.py",
     "test_zero_size_operands_1870.py",
     "test_binders_held_to_is_subtype_1896.py",
+    "test_context_reaches_every_construct_1812.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

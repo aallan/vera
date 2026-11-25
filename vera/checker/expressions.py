@@ -9,7 +9,8 @@ quantifiers, and old/new contract expressions.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from vera import ast, fold, naming
 from vera.formatter import (
@@ -65,6 +66,10 @@ from vera.types import (
     written_effect,
     written_effect_instance,
 )
+
+if TYPE_CHECKING:
+    from vera.checker.core import HoleSite
+    from vera.errors import Diagnostic
 
 # Machine bounds for the integer types (#812): `@Int` is i64 and `@Nat` its
 # non-negative half (spec §2.2).  An integer literal must fit — otherwise
@@ -125,6 +130,36 @@ def _element_list(indices: Sequence[int]) -> str:
         return f"element {indices[0]}"
     head = ", ".join(str(i) for i in indices[:-1])
     return f"elements {head} and {indices[-1]}"
+
+
+@dataclass(frozen=True)
+class Held:
+    """An expression's first synthesis, before the type its position's
+    context names is known (`ExpressionsMixin._synth_held`, #1812): its
+    type, the refusals of an index it could not type, held, and whether it
+    reported no error of its own.  *notes* are the warnings it reported,
+    with the keys that collapse a duplicate of each, and *holes* the typed
+    holes it recorded: a synthesis against the context replaces them."""
+
+    ty: Type | None
+    refusals: tuple[tuple[ast.IndexExpr, bool], ...]
+    clean: bool
+    notes: tuple[Diagnostic, ...] = ()
+    keys: tuple[tuple[str, ...], ...] = ()
+    holes: tuple[HoleSite, ...] = ()
+
+
+def _type_variable_names(ty: Type) -> set[str]:
+    """The names of the type variables *ty* holds, at any depth."""
+    base = base_type(ty)
+    if isinstance(base, TypeVar):
+        return {base.name}
+    if isinstance(base, AdtType):
+        return {v for a in base.type_args for v in _type_variable_names(a)}
+    if isinstance(base, FunctionType):
+        return {v for part in (*base.params, base.return_type)
+                for v in _type_variable_names(part)}
+    return set()
 
 
 def _holds_unknown(ty: Type) -> bool:
@@ -1127,7 +1162,13 @@ class ExpressionsMixin:
         representation, so the program is refused here, with the type to
         write, and not dropped there.  The collection and the index are
         written in canonical form, which every node has, with or without
-        the source text."""
+        the source text.
+
+        Held while a synthesis whose context is not yet known is under way
+        (`_synth_held`, #1812): the context may give the array its type."""
+        if self._held_refusals:
+            self._held_refusals[-1].append((expr, bare))
+            return
         coll = format_expr_canonical(expr.collection)
         idx = format_expr_canonical(expr.index)
         if bare:
@@ -1154,6 +1195,73 @@ class ExpressionsMixin:
             spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
             error_code="E164",
         )
+
+    # -----------------------------------------------------------------
+    # The type a context names (#1812, spec §5.9 rule E)
+    # -----------------------------------------------------------------
+
+    def _synth_held(self, expr: ast.Expr) -> Held:
+        """*expr* synthesized before the type its position's context names
+        is known (a generic call's or an ability operation's argument, a
+        tuple's component, an array literal's element, a `match`
+        scrutinee), with the refusal of an index it could not type held
+        for :meth:`_settle`, and the warnings and typed holes it recorded,
+        which a synthesis against the context replaces."""
+        before = self._errors_raised
+        notes, keys = len(self.errors), len(self._diag_keys_added)
+        holes = self.hole_sites if self.hole_sites is not None else []
+        first_hole = len(holes)
+        self._held_refusals.append([])
+        try:
+            ty = self._synth_expr(expr)
+        finally:
+            held = self._held_refusals.pop()
+        return Held(ty, tuple(held), self._errors_raised == before,
+                    tuple(self.errors[notes:]),
+                    tuple(self._diag_keys_added[keys:]),
+                    tuple(holes[first_hole:]))
+
+    def _settle(self, expr: ast.Expr, held: Held, target: Type | None, *,
+                foreign: frozenset[str] = frozenset()) -> Type | None:
+        """Rule E (spec §5.9): *expr*, synthesized as *held*, is checked
+        against *target*, the type its position's context names, where
+        *target* closes a part its type leaves open (an unknown, a variable
+        a call or a constructor left open, no type at all for an index over
+        an empty literal).  Otherwise the type stands and a held refusal is
+        made.  *foreign* names the variables of *target* that are not the
+        enclosing function's (a callee's no argument fixed)."""
+        if (target is not None and held.clean
+                and self._closes(target, foreign)
+                and (held.ty is None or contains_unknown(held.ty)
+                     or self._leaves_open(held.ty))):
+            # The first synthesis's warnings and typed holes are withdrawn:
+            # this one reports them at the type the context names (a hole's
+            # `expected Int`, not `expected unknown`).
+            self.errors[:] = [d for d in self.errors
+                              if not any(d is n for n in held.notes)]
+            self._seen_diag_keys.difference_update(held.keys)
+            if self.hole_sites is not None:
+                self.hole_sites[:] = [h for h in self.hole_sites
+                                      if not any(h is n for n in held.holes)]
+            return self._synth_expr(expr, expected=target)
+        self._release(held)
+        return held.ty
+
+    def _release(self, held: Held) -> None:
+        """Make the refusals *held* holds: no context gave the index its
+        array's type."""
+        for index, bare in held.refusals:
+            self._refuse_untyped_index(index, bare=bare)
+
+    def _closes(self, ty: Type, foreign: frozenset[str] = frozenset(),
+                ) -> bool:
+        """Whether *ty* is a type with no open part: no unknown, no
+        literal's hole, and no type variable but the enclosing function's
+        own (none of *foreign*)."""
+        if contains_unknown(ty) or contains_literal_hole(ty):
+            return False
+        names = _type_variable_names(ty)
+        return names <= set(self.env.type_params) and not names & foreign
 
     def _error_reported(self) -> bool:
         """Whether an error-severity diagnostic has been reported: the
@@ -1559,7 +1667,10 @@ class ExpressionsMixin:
         # An element is synthesized with no expected type; where *expected*
         # makes it a `Nat` and a generic call in it let a negative literal
         # fix an `Int` there, it is checked against the element type
-        # (`_check_in_literal_context`; PR #1583 review).
+        # (`_check_in_literal_context`; PR #1583 review).  An element that
+        # leaves a part open is then checked against the literal's element
+        # type, or against the context's where no element gives one
+        # (`_settle`, #1812).
         expected_base = base_type(expected) if expected is not None else None
         element_ctx = (
             expected_base.type_args[0]
@@ -1568,12 +1679,36 @@ class ExpressionsMixin:
                 and len(expected_base.type_args) == 1)
             else None)
         elem_types: list[Type | None] = []
+        helds: list[Held] = []
         for elem in expr.elements:
-            et = self._synth_expr(elem)
+            held = self._synth_held(elem)
+            et = held.ty
             if element_ctx is not None:
                 et = self._check_in_literal_context(elem, et, element_ctx)
+            # Synthesized again against the context: what it holds stands.
+            helds.append(held if et is held.ty else Held(et, (), held.clean))
             elem_types.append(et)
 
+        element_type = self._array_element_type(
+            expr, elem_types, expected_base, element_ctx)
+        known = not isinstance(element_type, UnknownType)
+        settled = [self._settle(elem, held,
+                                element_type if known else element_ctx)
+                   for elem, held in zip(expr.elements, helds)]
+        if (not known and element_ctx is not None
+                and all(t is not None and not contains_unknown(t)
+                        for t in settled)):
+            element_type = element_ctx
+        return AdtType("Array", (element_type,))
+
+    def _array_element_type(
+        self, expr: ast.ArrayLit, elem_types: Sequence[Type | None],
+        expected_base: Type | None, element_ctx: Type | None,
+    ) -> Type:
+        """The element type of the array literal *expr*, whose elements
+        synthesized *elem_types*, with *expected_base* and *element_ctx*
+        its context's array type and element type; `Unknown` where no
+        element has a type."""
         first = None
         first_at = 0
         for i, et in enumerate(elem_types):
@@ -1582,7 +1717,7 @@ class ExpressionsMixin:
                 break
 
         if first is None:
-            return AdtType("Array", (UnknownType(),))
+            return UnknownType()
 
         # #945: a bare array literal `[()]` whose element erases to a zero-size
         # type has no valid WASM layout (the store acts on an empty stack →
@@ -1643,7 +1778,7 @@ class ExpressionsMixin:
                 expr, elem_types, held, first_at, completed_by,
                 conflicting, judge_first=held is not structure)
 
-        return AdtType("Array", (element_type,))
+        return element_type
 
     def _element_type_by_rule(
         self, expr: ast.ArrayLit, elem_types: Sequence[Type | None],
@@ -2626,7 +2761,8 @@ _SYNTH_ARMS: Mapping[type[ast.Expr], _SynthArm] = fold.dispatch(
         ast.Block:
             lambda ctx, e, expected: ctx._check_block(e, expected=expected),
         ast.AnonFn: lambda ctx, e, expected: ctx._check_anon_fn(e),
-        ast.HandleExpr: lambda ctx, e, expected: ctx._check_handle(e),
+        ast.HandleExpr:
+            lambda ctx, e, expected: ctx._check_handle(e, expected=expected),
         ast.ArrayLit: lambda ctx, e, expected:
             ctx._check_array_lit(e, expected=expected),
         ast.AssertExpr: lambda ctx, e, expected: ctx._check_assert(e),
