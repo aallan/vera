@@ -1491,8 +1491,9 @@ def test_repro_acc_generic_a_generic_call_carries_the_narrowing() -> None:
 
 
 def test_repro_acc_pass_a_non_generic_call_carries_the_narrowing() -> None:
-    """The reason no call is exempt: `pass`'s own return row establishes
-    nothing about the unchecked argument it returns."""
+    """A pure first-order call handed the unchecked value: `pass`'s own
+    return row establishes nothing about the argument it returns, so its
+    result is noted as made from the argument's narrowing."""
     _acc_check("pass")
 
 
@@ -1506,6 +1507,158 @@ def test_repro_acc_closure_an_apply_fn_carries_the_capture() -> None:
 
 def test_repro_a_norow_a_clause_binder_carries_the_thrown_narrowing() -> None:
     _acc_check("a_norow")
+
+
+# The call rule of `_note_minted`: a call to a pure callee none of whose
+# parameters may hold a function is linked through its arguments.  Beside
+# an unchecked narrowing elsewhere in `go` (an `apply_fn` result, disclosed
+# E506), such a call with a clean argument keeps its result's facts; the
+# same call handed the unchecked value does not (`acc_pass` above), and a
+# call to an effectful callee or to one with a function-typed parameter
+# keeps the function-wide rule.
+_R1_CALLEES = {
+    "pure": ("fn mk(@Int -> @Option<Pos>)", "pure", "mk(5)"),
+    "effectful": ("fn mk(@Int -> @Option<Pos>)", "<IO>", "mk(5)"),
+    "higher_order": ("fn mk(@MkO, @Int -> @Option<Pos>)", "pure",
+                     "mk(@MkO.0, 5)"),
+}
+_R1_EXPECT = {"pure": ["verified"], "effectful": ["tier3"],
+              "higher_order": ["tier3"]}
+
+
+def _r1_program(callee: str) -> str:
+    sig, effects, call = _R1_CALLEES[callee]
+    return (POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n"
+            + f"private {sig}\n  requires(true)\n  ensures(true)\n"
+            + f"  effects({effects})\n{{\n  Some(5)\n}}\n\n"
+            + "public fn go(@MkO, @Int -> @Int)\n  requires(true)\n"
+            + f"  ensures(true)\n  effects({effects})\n{{\n"
+            + "  let @Option<Pos> = apply_fn(@MkO.0, @Int.0);\n"
+            + f"  match {call} {{\n    Some(@Int) -> {{\n"
+            + "      let @Nat = @Int.0 - 1;\n      nat_to_int(@Nat.0)\n"
+            + "    },\n    None -> 1\n  }\n}\n")
+
+
+@pytest.mark.parametrize("callee", list(_R1_CALLEES))
+def test_repro_a_pure_first_order_call_is_linked_through_its_arguments(
+        callee: str) -> None:
+    source = _r1_program(callee)
+    verified = _verify(source)
+    assert verified.ok, callee
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == _R1_EXPECT[callee], callee
+
+
+# A pure first-order callee whose own narrowing has no row (issue 1542's
+# line: a value let-bound from a construction at an unrefined type counts
+# as built at the site) returns an unchecked value its table does not
+# answer for, and the call rule reads its result as established.  False at
+# main without the call rule too (`go` with no unchecked narrowing).
+_UNLISTED_CALLEE = POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n" + \
+    textwrap.dedent("""\
+    private fn mk(@Int -> @Option<Pos>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Option<Int> = Some(@Int.0);
+      let @Option<Pos> = @Option<Int>.0;
+      @Option<Pos>.0
+    }
+
+    public fn go(@MkO, @Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+      match mk(@Int.0) {
+        Some(@Int) -> {
+          let @Nat = @Int.0 - 1;
+          nat_to_int(@Nat.0)
+        },
+        None -> 1
+      }
+    }
+
+    public fn main_go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      go(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0)
+    }
+    """)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "issue 1542: a value let-bound from a construction at an unrefined type "
+    "counts as built at the site, so the callee's `let @Option<Pos> = "
+    "@Option<Int>.0` has no row and its table does not answer for the "
+    "value it returns"))
+def test_repro_a_callee_whose_narrowing_has_no_row_is_not_trusted() -> None:
+    source = _UNLISTED_CALLEE
+    verified = _verify(source)
+    assert verified.ok
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith(_OWN_CHECK["nat"]), str(ran.trap)
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") != ["verified"]
+
+
+# An effect operation's result is not noted by the function-wide rule (a
+# `get` over a refined cell whose initial value is a proved literal keeps
+# its facts).  What that leaves open: a `get` read inside the handle's body
+# after a `put` of the unchecked value.  (`acc_state` above reads the value
+# at the handle's own result, a stand-in the rule still notes.)
+_STATE_UNCHECKED_GET = ("a value written to a `State` cell by an unchecked "
+                        "narrowing and read back by `get` is read as "
+                        "established; deciding it needs a row's status, which "
+                        "is known only after the facts are assumed")
+_STATE_IN_BODY = POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n" + \
+    textwrap.dedent("""\
+    public fn go(@MkO, @Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+      handle[State<Option<Pos>>](@Option<Pos> = Some(1)) {
+        get(@Unit) -> { resume(@Option<Pos>.0) },
+        put(@Option<Pos>) -> { resume(()) }
+      } in {
+        put(@Option<Pos>.0);
+        match get(()) {
+          Some(@Int) -> {
+            let @Nat = @Int.0 - 1;
+            nat_to_int(@Nat.0)
+          },
+          None -> 1
+        }
+      }
+    }
+
+    public fn main_go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      go(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0)
+    }
+    """)
+
+
+@pytest.mark.xfail(strict=True, reason=_STATE_UNCHECKED_GET)
+def test_repro_a_get_in_the_body_reads_back_the_put_narrowing() -> None:
+    source = _STATE_IN_BODY
+    verified = _verify(source)
+    assert verified.ok
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith(_OWN_CHECK["nat"]), str(ran.trap)
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
 
 
 # =====================================================================

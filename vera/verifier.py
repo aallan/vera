@@ -12533,30 +12533,44 @@ class ContractVerifier:
         # to read (`_holds_narrowed`); the env is kept with it, so an id a
         # collected env leaves free is never read as another's.
         frame.met[(key, id(env))] = (env, term)
-        self._note_minted(expr, term, smt)
+        self._note_minted(expr, term, smt, env)
 
     def _note_minted(
         self, expr: ast.Expr, term: object, smt: SmtContext,
+        env: SlotEnv | None = None,
     ) -> None:
-        """THE rule for a minted term (#1897, W155): in a function whose
-        table holds a narrowing with no check, a term the solver mints for
-        a value (a stand-in, a call's or an effect operation's result, a
-        clause binder) may stand for that narrowing's value carried where
-        the lineage cannot follow (a callee's parameter, a thrown value, a
-        `put` read back by `get`, a closure's capture), so its type is
-        established no further than that row's proof, which is discharged
-        without its readers' facts.  It is noted as made from every
-        unestablished narrowing noted so far.
+        """THE rule for a minted term (#1897): in a function whose table
+        holds a narrowing with no check, a term the solver mints for a value
+        (a stand-in, a clause binder, `apply_fn`'s result, a call's result)
+        may stand for that narrowing's value carried where the lineage
+        cannot follow (a thrown value, a closure's capture, a function
+        value's result), so its type is established no further than that
+        row's proof, which is discharged without its readers' facts.  It is
+        noted as made from every unestablished narrowing noted so far.
 
-        No call is exempt: a callee's guarantee holds under what it assumed
-        of its parameters, and one may return the unchecked argument it was
-        passed.  An array literal and a built-in other than `apply_fn` are:
+        Two kinds of term leave that function-wide rule.  A call to a
+        declared callee whose effect row is pure and none of whose
+        parameters may hold a function returns a value made from its
+        arguments or from its own rows, and its own table answers for
+        those: its result is noted only where an argument holds an
+        unestablished narrowed value, as made from the ids its arguments
+        hold (`_call_lineage`).  An effect operation's result (a `get`, any
+        operation call) is not noted: an unchecked narrowing whose row the
+        solver proves (a handler's initial value) and one it does not are
+        told apart only after the facts are assumed, so the function-wide
+        rule would withdraw a `get`'s facts wherever a refined cell starts
+        from a proved value.  What that leaves open, a value written to a
+        `State` cell by an unchecked narrowing and read back by `get`, is
+        pinned in `tests/test_reader_fact_1897.py`.
+
+        An array literal and a built-in other than `apply_fn` are exempt:
         `_note_narrowing` reads them through their parts.
 
         Asked by `_note_narrowing`, the hook every translated term passes
-        through, and by `_call_result_facts` before its gate: a call's
-        result facts are asked of `_established_facts` while the call is
-        translated, before the hook meets its term."""
+        through, with the term's *env*, and by `_call_result_facts` before
+        its gate, without one: a call's result facts are asked of
+        `_established_facts` while the call is translated, before the hook
+        meets its term."""
         frame = self._fn_frames[-1] if self._fn_frames else None
         if (frame is not None and frame.rows
                 and _holds_unchecked_narrowing(frame)
@@ -12565,10 +12579,120 @@ class ContractVerifier:
                 and not isinstance(expr, ast.ArrayLit)
                 and not (isinstance(expr, ast.FnCall)
                          and expr.name in _builtin_fn_names()
-                         and expr.name != "apply_fn")):
-            smt.note_narrowed(
-                cast("z3.ExprRef", term), False,
-                parents=set(smt.unestablished_narrowed_ids()))
+                         and expr.name != "apply_fn")
+                and not self._performs_an_operation(expr, smt)):
+            linked = self._call_lineage(expr, term, env, smt, frame)
+            if linked is None:
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term), False,
+                    parents=set(smt.unestablished_narrowed_ids()))
+            elif linked[0]:
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term), False, parents=linked[1])
+
+    def _performs_an_operation(
+        self, expr: ast.Expr, smt: SmtContext,
+    ) -> bool:
+        """Whether *expr* performs an effect operation (`_note_minted`): a
+        qualified operation call, or a bare call whose name no built-in and
+        no declared function takes and an operation in scope does."""
+        if isinstance(expr, ast.QualifiedCall):
+            return True
+        return (isinstance(expr, ast.FnCall)
+                and expr.name not in _builtin_fn_names()
+                and not smt._is_user_fn(expr.name)
+                and self.env.lookup_effect_op(expr.name) is not None)
+
+    def _call_lineage(
+        self, expr: ast.Expr, term: object, env: SlotEnv | None,
+        smt: SmtContext, frame: _FnFrame,
+    ) -> tuple[bool, set[int]] | None:
+        """The call rule of `_note_minted`: for a call to a declared callee
+        whose effect row is pure and none of whose parameters holds a
+        function, whether an argument holds an unestablished narrowed value
+        and the narrowed ids the arguments hold; ``None`` for any other
+        term, and for a call whose arguments' terms cannot all be read (the
+        function-wide rule then holds).
+
+        The arguments are read as `_holds_narrowed` reads a built-in's
+        parts, off the terms the translation made of them: under *env*
+        where the hook asks, and otherwise under the environment whose
+        terms the result is named by (`SmtContext._named`'s key for a call
+        is its arguments' term ids)."""
+        if (not isinstance(expr, (ast.FnCall, ast.ModuleCall))
+                or smt._fn_lookup is None
+                or expr.name in _builtin_fn_names()):
+            return None
+        info = smt._fn_lookup(expr.name)
+        if (info is None or not isinstance(info.effect, PureEffectRow)
+                or any(self._may_hold_function(t, set())
+                       for t in info.param_types)):
+            return None
+        args = [a for a in expr.args if not isinstance(a, ast.UnitLit)]
+        if not args:
+            return False, set()
+        if env is None:
+            env = self._call_env(expr, term, args, smt, frame)
+            if env is None:
+                return None
+        unestablished = False
+        ids: set[int] = set()
+        for arg in args:
+            met = frame.met.get(
+                (obligation_table.ObligationTable._key(arg), id(env)))
+            if met is None or met[0] is not env:
+                return None
+            held, established, found = self._holds_narrowed(
+                arg, env, smt, frame)
+            unestablished = unestablished or (held and not established)
+            ids |= found
+        return unestablished, ids
+
+    @staticmethod
+    def _call_env(
+        expr: ast.FnCall | ast.ModuleCall, term: object,
+        args: Sequence[ast.Expr], smt: SmtContext, frame: _FnFrame,
+    ) -> SlotEnv | None:
+        """The environment *expr*'s arguments were translated under, found
+        by the term ids *term*, the call's result, is named by; ``None``
+        where no met argument's term is one of them."""
+        name = cast("z3.ExprRef", term).decl().name()  # an app: `_minted`
+        arg_ids: set[int] = set()
+        for key, spelled in smt._names.get(
+                f"_call_{expr.name}_{expr.span.line}_{expr.span.column}"
+                if expr.span is not None else f"_call_{expr.name}",
+                {}).items():
+            if spelled == name and isinstance(key, tuple):
+                arg_ids = set(key)
+        keys = {obligation_table.ObligationTable._key(a) for a in args}
+        for (key, _), (env, met_term) in frame.met.items():
+            if (key in keys
+                    and cast("z3.ExprRef", met_term).get_id() in arg_ids):
+                return env
+        return None
+
+    def _may_hold_function(self, ty: Type, seen: set[str]) -> bool:
+        """Whether a value of *ty* may hold a function (`_call_lineage`): a
+        function type, or a type whose arguments, base or constructors'
+        fields may; a data type this namespace does not know is taken as
+        one that may."""
+        if isinstance(ty, FunctionType):
+            return True
+        if isinstance(ty, RefinedType):
+            return self._may_hold_function(ty.base, seen)
+        if not isinstance(ty, AdtType):
+            return False
+        if any(self._may_hold_function(t, seen) for t in ty.type_args):
+            return True
+        if ty.name in seen or ty.name in ("Tuple", "Array", "Map", "Set"):
+            return False
+        seen.add(ty.name)
+        adt = self.env.lookup_type(ty.name)
+        if adt is None:
+            return True
+        return any(self._may_hold_function(f, seen)
+                   for c in adt.constructors.values()
+                   for f in c.field_types or ())
 
     def _note_narrowed_binder(
         self, value: ast.Expr, steps: tuple[tuple[str, int], ...],
