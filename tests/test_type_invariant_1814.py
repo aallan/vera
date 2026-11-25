@@ -1451,6 +1451,85 @@ def test_a_call_guards_by_the_query_kind(cell: tuple[str, str, str]) -> None:
         assert ("ensures", "verified") in [(k, s) for k, _e, s in rows], rows
 
 
+#: A caller `k` passing its own parameter on to `c` (#1928): (k's type,
+#: c's, the entry's, the value the entry passes to k, the arithmetic on k's
+#: parameter after the call).  The first three are the same premise on both
+#: sides, which the guard omits as already held; the last two are a premise
+#: of a different type, of which only what the caller holds is omitted.  An
+#: `Int` passed to a `Nat` parameter is narrowed, so `k` requires it.
+_PASSED_ON = {
+    "int": ("Int", "Int", "Int", "@Int.0", "@Int.1 + 1"),
+    "nat": ("Nat", "Nat", "Nat", "@Nat.0", "@Nat.0 + 1"),
+    "array": ("Array<Int>", "Array<Int>", "Int", "[@Int.0]",
+              "@Array<Int>.0[0] + 1"),
+    "nat_to_int": ("Nat", "Int", "Nat", "@Nat.0", "@Nat.0 + 1"),
+    "int_to_nat": ("Int", "Nat", "Int", "@Int.0", "@Int.1 + 1"),
+}
+
+
+def _passed_on_program(cell: str) -> str:
+    caller, callee, entry, value, arith = _PASSED_ON[cell]
+    read = ("array_length(@Array<Int>.0) < 1 || @Array<Int>.0[0]"
+            if callee.startswith("Array") else f"@{callee}.0")
+    requires = {"array": "array_length(@Array<Int>.0) > 0",
+                "int_to_nat": "@Int.0 >= 0"}.get(cell, "true")
+    return (_fn("private", f"c(@{callee} -> @Int)",
+                f"{read} <= {INT_MAX} && @Int.result == 0", "0") + "\n"
+            + f"private fn k(@{caller} -> @Int)\n  requires({requires})\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n"
+            f"  let @Int = c(@{caller}.0);\n  {arith}\n}}\n\n"
+            + _fn("public", f"entry(@{entry} -> @Int)", "true",
+                  f"k({value})"))
+
+
+@pytest.mark.parametrize("cell", list(_PASSED_ON))
+def test_a_call_passing_its_own_parameter_on_omits_only_what_it_holds(
+        cell: str) -> None:
+    """The guard's part the caller already holds as a premise of its own
+    is omitted (#1928): `k`'s `int_overflow` row over its own parameter is
+    never `verified`, and the run at `INT_MAX` reaches it and traps on the
+    overflow, whether the callee's parameter is of the caller's type or of
+    another's."""
+    source = _passed_on_program(cell)
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    rows = [(o.kind, o.expr_text, o.status) for o in verified.obligations
+            if o.fn_name == "k"]
+    overflow = [s for kd, _e, s in rows if kd == "int_overflow"]
+    assert overflow and all(s != "verified" for s in overflow), rows
+    ran = pipeline.run(source, "entry", [INT_MAX], file=FILE)
+    assert isinstance(ran.trap, WasmTrapError), (ran, rows)
+    assert "overflow" in str(ran.trap).lower(), str(ran.trap)
+
+
+def test_a_premise_held_is_omitted_up_to_its_bound_names() -> None:
+    """The one test of "the same premise" (`_premise_held`): a fact the
+    caller holds, the same quantifier under another bound name, and
+    nothing else: not a fact over another term, not a quantifier of the
+    other kind or over another sort."""
+    import z3
+
+    from vera.smt import SmtContext
+    from vera.verifier import ContractVerifier
+
+    x, y = z3.Int("x"), z3.Int("y")
+    i, j = z3.Int("i"), z3.Int("j")
+    a = z3.Array("a", z3.IntSort(), z3.IntSort())
+    held = z3.ForAll([i], z3.Implies(i >= 0, a[i] >= 0))
+    smt = SmtContext()
+    smt.standing_premises = (x >= 0, held)
+    same = ContractVerifier._premise_held
+    assert same(smt, x >= 0)
+    assert same(smt, z3.ForAll([j], z3.Implies(j >= 0, a[j] >= 0)))
+    assert not same(smt, y >= 0)
+    assert not same(smt, x > 0)
+    assert not same(smt, z3.Exists([j], z3.Implies(j >= 0, a[j] >= 0)))
+    assert not same(smt, z3.ForAll(
+        [z3.Real("r")], z3.Implies(z3.Real("r") >= 0, a[0] >= 0)))
+    smt.reset()
+    assert not same(smt, x >= 0)
+
+
 @pytest.mark.parametrize(
     "cell", [pytest.param(c, id=".".join(c)) for c in _REACH_CELLS])
 def test_a_call_guards_what_the_callee_assumed(

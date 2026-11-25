@@ -2677,10 +2677,6 @@ public fn f(@List<Int>, @{ty} -> @Nat)
 """
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#1928: the recursive call's guard holds the argument's element range, "
-    "a quantifier under an implication that no regime covers, so the slice "
-    "is outside the fragment (E540)"))
 @pytest.mark.parametrize("ty", [
     "Array<Int>", "Array<Nat>", "Array<Option<Nat>>"])
 def test_1451_an_element_range_keeps_an_undecided_slice_inside(
@@ -2690,7 +2686,11 @@ def test_1451_an_element_range_keeps_an_undecided_slice_inside(
     axioms, stage 2 finds a model, the halves share the array, and a foreign
     quantifier read the slice as outside the fragment, withholding Tier 1
     (`E540`) from a function main's tree certified.  The verdict is asserted
-    beside it, so the cell cannot pass on a stage-1 `sat`."""
+    beside it, so the cell cannot pass on a stage-1 `sat`.  The recursive
+    call passes `f`'s own array parameter on, whose element range `f`
+    already holds as a premise, so the call's guard omits it (#1928); held
+    there, it was a quantifier under an implication that no regime covers,
+    and the slice was outside the fragment again (E540)."""
     seen, result = _premise_verdicts(_write(
         tmp_path, _measure_over(ty, f"array_length(@{ty}.0) > 2")))
     assert "unknown" in seen, seen

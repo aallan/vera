@@ -1115,9 +1115,19 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     #: translation, which assumes the callee's facts only under them.  It
     #: assumes nothing; a guard read through the gate would be WEAKER, and a
     #: weaker guard assumes the callee's facts where they are not promised.
+    #: `_parameter_premise` builds what a function's proof assumes of a
+    #: parameter (#1928) and hands it back to its two readers, assuming
+    #: nothing itself: `_declared_type_facts`, which asks the gate, and
+    #: `_call_binding_facts`, whose facts over an argument's term stand only
+    #: as the ANTECEDENT of the callee's facts (`SmtContext._call_binding`,
+    #: `_under_call_bindings`), so a fact over a disclosed argument is asked,
+    #: never assumed.  Measured: a disclosed `Option<PosInt>` passed to a
+    #: callee whose ensures rests on its payload, directly and `let`-bound,
+    #: leaves the caller's ensures Tier 3 (E534) beside a run that traps.
     producers = {"_term_source_fact", "_subpattern_source_facts_term",
                  "_nested_refinement_facts", "_carrier_element_facts",
-                 "_element_facts", "_call_binding_facts"}
+                 "_element_facts", "_call_binding_facts",
+                 "_parameter_premise"}
 
     # Both modules (#1418 review F5).  Every producer lives in the verifier
     # today, so the SMT half of this walk currently finds none and is

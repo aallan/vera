@@ -435,6 +435,30 @@ class ArgumentTarget:
     declared: Type | None
 
 
+def _alpha_equal(a: z3.ExprRef, b: z3.ExprRef) -> bool:
+    """Whether *a* and *b* are the same formula up to the names of their
+    bound variables (#1928).  A bound variable is a de Bruijn index in the
+    body, so two quantifiers agree when their kind, their variables' sorts
+    and their bodies do; everything else agrees by structure."""
+    if a.eq(b):
+        return True
+    if z3.is_quantifier(a) or z3.is_quantifier(b):
+        if not (z3.is_quantifier(a) and z3.is_quantifier(b)):
+            return False
+        qa, qb = cast("z3.QuantifierRef", a), cast("z3.QuantifierRef", b)
+        return (qa.is_forall() == qb.is_forall()
+                and qa.is_lambda() == qb.is_lambda()
+                and qa.num_vars() == qb.num_vars()
+                and all(qa.var_sort(i).eq(qb.var_sort(i))
+                        for i in range(qa.num_vars()))
+                and _alpha_equal(qa.body(), qb.body()))
+    if not (z3.is_app(a) and z3.is_app(b)):
+        return False
+    return (a.decl().eq(b.decl()) and a.num_args() == b.num_args()
+            and all(_alpha_equal(a.arg(i), b.arg(i))
+                    for i in range(a.num_args())))
+
+
 @dataclass(frozen=True)
 class ParameterPremise:
     """What a function's proof assumes of a parameter's value (#1928).
@@ -1811,9 +1835,28 @@ class ContractVerifier:
                 continue
             premise = self._parameter_premise(
                 smt, target.declared, term, standing=False)
-            facts.extend(premise.range_free())
-            ranges.extend(premise.range_parts())
+            facts.extend(f for f in premise.range_free()
+                         if not self._premise_held(smt, f))
+            ranges.extend(f for f in premise.range_parts()
+                          if not self._premise_held(smt, f))
         return facts, ranges
+
+    @staticmethod
+    def _premise_held(smt: SmtContext, fact: z3.ExprRef) -> bool:
+        """Whether *fact*, a part of a call's guard, is one of the caller's
+        own standing premises (``SmtContext.standing_premises``, #1928).
+
+        The one place a guard part is omitted: where the caller's proof
+        already assumes the same fact, as of its own parameter passed on to
+        a parameter the callee assumes the same of, `A and (A implies F)` is
+        `A and F` in every query, so the omission loses nothing.  Decided by
+        the premise itself, up to the names of its bound variables (each
+        element quantifier is built with a fresh one), not by the shape of
+        the argument: a fact the caller holds of a different type's premise
+        (a `Nat`'s upper bound, guarding an `Int` parameter) is omitted
+        alone, and every other part stays."""
+        return any(_alpha_equal(fact, held)
+                   for held in smt.standing_premises)
 
     def _call_result_facts(
         self,
@@ -4578,6 +4621,11 @@ class ContractVerifier:
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
             entry_params.append((z3_name, var))
+        # #1928: what a call's guard may omit, being held already: these
+        # premises are asserted into the base context below (step 4), and
+        # every proof this function makes rests on them.
+        smt.standing_premises = tuple(
+            f for f in refined_param_assumptions if z3.is_expr(f))
         # #1763: the scope a `requires` clause is read in, so a fix can
         # offer a clause only where it means at entry what it means at
         # the site it is computed from.  Held on the context, which a reset
