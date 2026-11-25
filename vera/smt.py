@@ -780,6 +780,11 @@ class SmtContext:
         #: a call's guard omits a fact this holds (`A and (A implies F)` is
         #: `A and F`).
         self.standing_premises: tuple[z3.ExprRef, ...] = ()
+        #: The function's parameters, each constant with its declared type
+        #: (#1928): a call's guard also omits what the caller's premise
+        #: states of a component of one, read off the parameter's type.
+        #: Recorded and cleared with :attr:`standing_premises`.
+        self.standing_parameters: tuple[tuple[z3.ExprRef, Type], ...] = ()
         self._call_violations: list[CallViolation] = []
         # #1696: the stand-ins this function's model holds, one per node the
         # translation has no term for (`_stand_in`), keyed by the node's
@@ -828,11 +833,12 @@ class SmtContext:
         # Empty outside a call's translation, where nothing reads it.
         self._call_bindings: list[z3.ExprRef] = []
         # #1928: the one decision of which import a query sees.  A call's
-        # binding holds its arguments' i64 range parts under this constant
-        # (`_call_binding`), and every query fixes it (`_premises`): true for
-        # a query asking whether arithmetic stays in range (`check_valid`'s
-        # *in_range*, an `int_overflow` row's), false for every other.  One
-        # translation of the call, one import, two guards.
+        # binding holds what its arguments' types state of a value (ranges,
+        # a `Nat` inside the type) under this constant (`_call_binding`), and
+        # every query fixes it (`_premises`): true for a query asking what a
+        # type states of a value (`check_valid`'s *in_range*: an
+        # `int_overflow`, `nat_sub` or `nat_bind` row's), false for every
+        # other.  One translation of the call, one import, two guards.
         self._range_premise = z3.Bool("$call_range_premise")
         self._asking_range = False
         # #1363: declared-type facts whose OWN obligation resolved
@@ -3636,11 +3642,12 @@ class SmtContext:
         resolves each formal the way its binding-obligation walk does; this
         layer hands it one term per argument, ``None`` at a zero-size
         position, whose argument :meth:`_translate_call_args` translated and
-        dropped (#1214).  The hook's second list, the arguments' i64 range
-        parts, is held under ``_range_premise`` (#1928): required by a
-        query that asks whether arithmetic stays in range, and by no other,
-        since an argument that reaches its call is a value, in range by its
-        own evaluation.
+        dropped (#1214).  The hook's second list, what the arguments' types
+        state of a value by representation or by construction (a range, a
+        `Nat` inside the type), is held under ``_range_premise`` (#1928):
+        required by a query that asks what a type states of a value, and by
+        no other, since an argument that reaches its call is a value its
+        own evaluation and constructions checked.
         """
         if self._call_binding_hook is None:
             return None
@@ -4910,9 +4917,10 @@ class SmtContext:
         something we admitted we could not establish", which asserting them
         into the base context makes indistinguishable.
 
-        *in_range*: the goal asks whether arithmetic stays in the i64 range
-        (an `int_overflow` row, #1928), so a call's facts are assumed only
-        where its arguments meet their parameters' ranges too
+        *in_range*: the goal asks what a type states of a value (an
+        `int_overflow`, `nat_sub` or `nat_bind` row, #1928), so a call's
+        facts are assumed only where its arguments meet their parameters'
+        whole premise, ranges and a `Nat` inside the type included
         (``_range_premise``): a callee's postcondition proved from its
         parameter's range is not evidence of the argument's.
         """
@@ -5402,6 +5410,7 @@ class SmtContext:
         self._disclosed_term_sites.clear()  # and the citations riding on them
         self.entry_scope = None  # #1858: the previous function's entry
         self.standing_premises = ()  # #1928: and its parameters' premises
+        self.standing_parameters = ()  # and the parameters themselves
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

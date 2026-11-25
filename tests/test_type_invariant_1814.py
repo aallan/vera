@@ -1596,6 +1596,130 @@ def test_a_premise_held_is_omitted_up_to_its_bound_names() -> None:
     assert not same(smt, x >= 0)
 
 
+_CHAIN = "private data Chain {\n  End,\n  Link(Nat, Chain)\n}\n\n"
+
+#: A recursion over a data type with a `Nat` field (#1928, the generator's
+#: seed 173): the recursive call passes the tail, a component of `f`'s own
+#: parameter, whose premise `f` holds at every depth.
+_CHAIN_RECURSION = _CHAIN + """\
+private fn f(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result >= 2)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> 2,
+    Link(@Nat, @Chain) -> @Nat.0 + f(@Chain.0)
+  }
+}
+"""
+
+#: The same, the tail reached through a second `match`.
+_CHAIN_RECURSION_TWICE = _CHAIN + """\
+private fn f(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result >= 2)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> 2,
+    Link(@Nat, @Chain) -> match @Chain.0 {
+      End -> @Nat.0 + 2,
+      Link(@Nat, @Chain) -> @Nat.1 + @Nat.0 + f(@Chain.0)
+    }
+  }
+}
+"""
+
+#: The argument a call's result of the data type, which states nothing of
+#: its fields (#1925).
+_CHAIN_FROM_A_CALL = _CHAIN + """\
+private fn rev(@Chain -> @Chain)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Chain.0
+}
+
+private fn total(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    End -> 0,
+    Link(@Nat, @Chain) -> @Nat.0 + total(@Chain.0)
+  }
+}
+
+public fn k(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  total(rev(@Chain.0))
+}
+"""
+
+
+def test_repro_1928_a_recursion_over_a_nat_field_keeps_its_ensures() -> None:
+    """The guard's nested `Nat` `>= 0` is not what every query requires,
+    and the tail's premise is held: `f`'s `ensures` is `verified`
+    (violated, E500, at 873a4e84)."""
+    assert ("ensures", "verified", "") in _statuses(_CHAIN_RECURSION)["f"]
+
+
+def test_repro_1928_a_tail_through_a_second_match_keeps_its_ensures() -> None:
+    """The same, two accessors down the caller's parameter."""
+    assert ("ensures", "verified", "") in _statuses(
+        _CHAIN_RECURSION_TWICE)["f"]
+
+
+def test_repro_1928_a_call_result_of_a_nat_field_type_keeps_the_ensures() -> None:
+    """`total(rev(..))`: the argument is a call's result, of which nothing
+    is held, and `total`'s `ensures` holds of any argument: `k`'s is
+    `verified`, as at main."""
+    statuses = _statuses(_CHAIN_FROM_A_CALL)
+    assert ("ensures", "verified", "") in statuses["k"], statuses
+    assert ("ensures", "verified", "") in statuses["total"], statuses
+
+
+def _restating_program(depth: int) -> str:
+    """`g` restates the `Nat` field *depth* levels into its parameter; `k`
+    constructs the argument with that field narrowed from `@Int.0 - 1`."""
+    read = "@Nat.0 >= 0"
+    field = "Link(@Int.0 - 1, End)"
+    for _ in range(depth - 1):
+        read = (f"match @Chain.0 {{ End -> true, Link(@Nat, @Chain) -> "
+                f"{read} }}")
+        field = f"Link(5, {field})"
+    ens = f"match @Chain.0 {{ End -> true, Link(@Nat, @Chain) -> {read} }}"
+    return (_CHAIN + _fn("private", "g(@Chain -> @Int)", ens, "0") + "\n"
+            + _fn("public", "k(@Int -> @Int)", "true", f"g({field})"))
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_a_nat_field_narrowed_into_a_call_is_not_proved_by_the_callee(
+        depth: int) -> None:
+    """The `Nat` rows require the whole premise (#1928): a callee whose
+    postcondition restates its parameter's `Nat` field does not prove the
+    narrowing of the field the caller constructs, which traps at 0."""
+    source = _restating_program(depth)
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.ran, [d.format() for d in verified.checked.errors]
+    rows = [(o.kind, o.expr_text, o.status) for o in verified.obligations
+            if o.fn_name == "k"]
+    narrowed = [s for kd, e, s in rows
+                if kd == "nat_bind" and e == "@Int.0 - 1"]
+    assert narrowed and all(s != "verified" for s in narrowed), rows
+    ran = pipeline.run(source, "k", [0], file=FILE)
+    assert isinstance(ran.trap, WasmTrapError), (ran, rows)
+
+
 @pytest.mark.parametrize(
     "cell", [pytest.param(c, id=".".join(c)) for c in _REACH_CELLS])
 def test_a_call_guards_what_the_callee_assumed(
