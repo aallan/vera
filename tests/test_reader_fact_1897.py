@@ -772,13 +772,15 @@ def test_repro_a_clause_binder_the_walk_cannot_read_is_narrowed() -> None:
     assert _at_line(verified, nat, "nat_bind") == ["tier3"]
 
 
-def test_a_built_in_over_a_call_on_a_narrowed_value_is_not_narrowed() -> None:
-    """A built-in's part is read off the term its translation made: a call's
-    result over a narrowed value is the callee's, whose own return type
-    establishes it, so an array literal holding it is not narrowed and the
-    reader of its element keeps the fact.  Read by the part's nodes instead,
-    the part would hold the narrowed argument, and the `ensures` would be
-    Tier 3 for a fact the callee proves."""
+def test_a_built_in_over_a_call_on_an_unestablished_narrowing_is_not_proved(
+) -> None:
+    """A call's result over a narrowed value is NOT established by the
+    callee's return type: the callee's guarantee holds under what it assumed
+    of its parameters, and `idp` hands back the unchecked argument it was
+    passed (W155; this test pinned the `ensures` `verified` before, a false
+    proof: `go(0)` violates it).  So an array literal holding the result
+    holds an unestablished value, and the `ensures` its reader proves is not
+    Tier 1."""
     source = POS_MK_OPTION + textwrap.dedent("""\
         private fn idp(@Option<Pos>, @Int -> @Option<Pos>)
           requires(true)
@@ -802,7 +804,52 @@ def test_a_built_in_over_a_call_on_a_narrowed_value_is_not_narrowed() -> None:
     assert _at_line(verified, _line(source, "let @Option<Pos> = mk(@Int.0);")) \
         == ["violated/E505"]
     ensures = _line(source, "ensures(@Int.result > 0)")
-    assert _at_line(verified, ensures, "ensures") == ["verified"]
+    assert "verified" not in _at_line(verified, ensures, "ensures")
+
+
+# The established twin: a narrowing code generation checks (a `Nat`
+# payload) or the context proves (a `requires` over the parameter).
+_ESTABLISHED_OVER_A_CALL = {
+    # name: (the payload type, the ensures, go's requires, the narrowed
+    #        value, the narrowing's row kind and status)
+    "checked": ("Nat", "@Int.result >= 0", "true", "mk(@Int.0)",
+                "nat_bind", "tier3"),
+    "proved": ("Pos", "@Int.result > 0", "@Int.0 > 0", "Some(@Int.0)",
+               "refine_bind", "verified"),
+}
+
+
+@pytest.mark.parametrize("narrowing", sorted(_ESTABLISHED_OVER_A_CALL))
+def test_a_built_in_over_a_call_on_an_established_narrowing_keeps_its_fact(
+        narrowing: str) -> None:
+    """Over a narrowing that is established (checked, or proved), the call's
+    result is no unestablished value: the reader of the array literal's
+    element keeps its fact and the `ensures` stays `verified`."""
+    ty, ens, pre, value, kind, row = _ESTABLISHED_OVER_A_CALL[narrowing]
+    source = POS_MK_OPTION + textwrap.dedent(f"""\
+        private fn idp(@Option<{ty}>, @Int -> @Option<{ty}>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {{
+          if @Int.0 > 3 then {{ @Option<{ty}>.0 }} else {{ Some(7) }}
+        }}
+
+        public fn go(@Int -> @Int)
+          requires({pre})
+          ensures({ens})
+          effects(pure)
+        {{
+          let @Option<{ty}> = {value};
+          let @Array<Option<{ty}>> = [idp(@Option<{ty}>.0, @Int.0)];
+          match @Array<Option<{ty}>>.0[0] {{ Some(@Int) -> @Int.0, None -> 1 }}
+        }}
+        """)
+    verified = _verify(source)
+    let = _line(source, f"let @Option<{ty}> = {value};")
+    assert _at_line(verified, let, kind) == [row]
+    assert _at_line(verified, _line(source, f"ensures({ens})"), "ensures") \
+        == ["verified"]
 
 
 # =====================================================================
@@ -1362,6 +1409,105 @@ def test_repro_f2b_a_handle_over_an_apply_fn_narrowing() -> None:
     assert _at_line(verified, nat, "nat_bind") == ["tier3"]
 
 
+# The coordinator's probes (W155): an unchecked narrowing of an opaque
+# `apply_fn` result, disclosed (E506) in a program `vera verify` accepts,
+# carried to the reader by a flow the lineage cannot follow.  Each was a
+# false proof: the `@Nat` `verified`, and `main_go(0)` traps at its check.
+_ACC_DECLS = {
+    "generic": textwrap.dedent("""\
+        private forall<T> fn ident(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @T.0
+        }
+
+        """),
+    "pass": textwrap.dedent("""\
+        private fn pass(@Option<Pos> -> @Option<Pos>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @Option<Pos>.0
+        }
+
+        """),
+    "closure": "type MkS = fn(Int -> Option<Pos>) effects(pure);\n\n",
+}
+_ACC_BODY = {
+    "generic": ("let @Option<Pos> = apply_fn(@MkO.0, @Int.0);",
+                "ident(@Option<Pos>.0)"),
+    "pass": ("let @Option<Pos> = apply_fn(@MkO.0, @Int.0);",
+             "pass(@Option<Pos>.0)"),
+    "state": ("let @Option<Pos> = apply_fn(@MkO.0, @Int.0);\n"
+              "let @Option<Pos> = handle[State<Option<Pos>>](@Option<Pos> = "
+              "Some(1)) { get(@Unit) -> { resume(@Option<Pos>.0) }, "
+              "put(@Option<Pos>) -> { resume(()) } } in "
+              "{ put(@Option<Pos>.0); get(()) };", "@Option<Pos>.0"),
+    "closure": ("let @Option<Pos> = apply_fn(@MkO.0, @Int.0);\n"
+                "let @MkS = fn(@Int -> @Option<Pos>) effects(pure) "
+                "{ @Option<Pos>.0 };", "apply_fn(@MkS.0, 0)"),
+    "a_norow": ("let @Option<Pos> = handle[Exn<Option<Pos>>] "
+                "{ throw(@Option<Pos>) -> @Option<Pos>.0 } in "
+                "{ let @Option<Pos> = apply_fn(@MkO.0, @Int.0); "
+                "throw(@Option<Pos>.0) };", "@Option<Pos>.0"),
+}
+
+
+def _acc_program(probe: str) -> str:
+    """One probe: `go` narrows an `apply_fn` result and reads it back."""
+    narrow, scrut = _ACC_BODY[probe]
+    extra = ", @Option<Pos>" if probe == "a_norow" else ""
+    arg = ", None" if probe == "a_norow" else ""
+    body = textwrap.indent(narrow, "  ")
+    return (POS + "type MkO = fn(Int -> Option<Int>) effects(pure);\n\n"
+            + _ACC_DECLS.get(probe, "")
+            + f"public fn go(@MkO{extra}, @Int -> @Int)\n  requires(true)\n"
+            + "  ensures(true)\n  effects(pure)\n{\n" + body + "\n"
+            + f"  match {scrut} {{\n    Some(@Int) -> {{\n"
+            + "      let @Nat = @Int.0 - 1;\n      nat_to_int(@Nat.0)\n"
+            + "    },\n    None -> 1\n  }\n}\n\n"
+            + "public fn main_go(@Int -> @Int)\n  requires(true)\n"
+            + "  ensures(true)\n  effects(pure)\n{\n"
+            + "  go(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }"
+            + f"{arg}, @Int.0)\n}}\n")
+
+
+def _acc_check(probe: str) -> None:
+    source = _acc_program(probe)
+    verified = _verify(source)
+    assert verified.ok, probe
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"], probe
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, (probe, ran.value)
+    assert str(ran.trap).startswith(_OWN_CHECK["nat"]), (probe, str(ran.trap))
+
+
+def test_repro_acc_generic_a_generic_call_carries_the_narrowing() -> None:
+    _acc_check("generic")
+
+
+def test_repro_acc_pass_a_non_generic_call_carries_the_narrowing() -> None:
+    """The reason no call is exempt: `pass`'s own return row establishes
+    nothing about the unchecked argument it returns."""
+    _acc_check("pass")
+
+
+def test_repro_acc_state_a_get_carries_the_put_narrowing() -> None:
+    _acc_check("state")
+
+
+def test_repro_acc_closure_an_apply_fn_carries_the_capture() -> None:
+    _acc_check("closure")
+
+
+def test_repro_a_norow_a_clause_binder_carries_the_thrown_narrowing() -> None:
+    _acc_check("a_norow")
+
+
 # =====================================================================
 # The class instrument for the lineage (#1897, W145).  Every flow that
 # carries a narrowed value to a reader in the same function: the fact the
@@ -1420,7 +1566,13 @@ FLOW_SHAPES = {
 FLOWS = ("direct", "array_literal", "array_append", "map", "if_join",
          "match_join", "block_tail", "handle_body", "clause_outer",
          "clause_leaf", "throw_outer", "throw_inner", "throw_inner_noouter",
-         "closure", "generic", "state")
+         "closure", "generic", "state", "pass")
+# The second source of an unchecked narrowing (W155): an opaque `apply_fn`
+# result, whose row is disclosed (E506) and which `vera verify` accepts,
+# over every flow that held a soundness member and the direct control.
+FLOW_SOURCES = ("param", "apply")
+APPLY_FLOWS = ("direct", "throw_inner", "throw_inner_noouter", "closure",
+               "generic", "state", "pass")
 FLOW_CONSUMERS = {"requires": "call_pre", "nat": "nat_bind", "ensures": "ensures"}
 NARROWINGS = ("u", "c", "p")
 
@@ -1429,20 +1581,10 @@ _OWN_CHECK = {"requires": "Precondition violation in need(",
               "nat": "Negative value bound into a @Nat slot",
               "ensures": "Postcondition violation in inner("}
 
-_THROWN = ("a narrowed value thrown into an `Exn` clause's binder (narrowed "
-           "inside the handle's body): the binder is a new value with no "
-           "lineage and the hook never sees the throw, so the consumer is "
-           "`verified` from a fact no narrowing established; the run traps at "
-           "the consumer's own check")
-_GENERIC = ("a generic identity call's result is a new term with no lineage: "
-            "the consumer is `verified` and the run traps at its own check")
-_STATE = ("a narrowed value `put` into a `State` cell and read back by `get`: "
-          "the `get`'s result has no lineage, the consumer is `verified` and "
-          "the run traps at its own check")
-_CLOSURE = ("a capturing closure over an `Option` payload, called through "
-            "`apply_fn`: the result has no lineage and no return check (the "
-            "tuple shapes trap at the closure's return check), so the "
-            "consumer is `verified` and the run traps at its own check")
+# The 38 soundness members W145 found (a thrown value, a generic call's
+# result, a `State` `get`, an `Option` closure result) are closed by the
+# minted-term rule (`ContractVerifier._note_minted`, W155); every member
+# left is an incompleteness.
 _JOIN_NAT = ("a checked `Nat` component through a join with a literal leaf: "
              "the reader's fact is lost entirely, the consumer is REFUTED "
              "(E501/E503/postcondition) though it holds; the same at main")
@@ -1454,14 +1596,8 @@ _CLOSURE_ENSURES = ("an `ensures` over a closure's `apply_fn` result is "
 def _flow_members() -> dict[str, str]:
     members: dict[str, str] = {}
     for shape, consumer in itertools.product(FLOW_SHAPES, FLOW_CONSUMERS):
-        for flow, reason in (("throw_inner", _THROWN),
-                             ("throw_inner_noouter", _THROWN),
-                             ("generic", _GENERIC), ("state", _STATE)):
-            members[f"{flow}-{shape}-{consumer}-u"] = "soundness: " + reason
         for flow in ("if_join", "match_join"):
             members[f"{flow}-{shape}-{consumer}-c"] = "incompleteness: " + _JOIN_NAT
-    for consumer in ("requires", "nat"):
-        members[f"closure-option-{consumer}-u"] = "soundness: " + _CLOSURE
     for shape, narrowing in itertools.product(FLOW_SHAPES, ("c", "p")):
         members[f"closure-{shape}-ensures-{narrowing}"] = (
             "incompleteness: " + _CLOSURE_ENSURES)
@@ -1477,10 +1613,12 @@ class FlowCell:
     shape: str
     consumer: str
     narrowing: str
+    source: str = "param"
 
     @property
     def id(self) -> str:
-        return f"{self.flow}-{self.shape}-{self.consumer}-{self.narrowing}"
+        tail = "" if self.source == "param" else f"-{self.source}"
+        return f"{self.flow}-{self.shape}-{self.consumer}-{self.narrowing}{tail}"
 
 
 def _flow_statements(flow: str, s: str, lit: str, narrow: str,
@@ -1517,6 +1655,19 @@ def _flow_statements(flow: str, s: str, lit: str, narrow: str,
     if flow == "closure":
         return ([narrow, f"let @MkS = fn(@Int -> @{s}) effects(pure) {{ {slot} }};"],
                 "apply_fn(@MkS.0, 0)", f"type MkS = fn(Int -> {s}) effects(pure);\n\n")
+    if flow == "pass":
+        # A NON-generic pass-through: its return type is the narrowed one,
+        # and it returns the argument it was handed (W155).
+        return [narrow], f"pass({slot})", textwrap.dedent(f"""\
+            private fn pass(@{s} -> @{s})
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {{
+              @{s}.0
+            }}
+
+            """)
     assert flow == "generic", flow
     return [narrow], f"ident({slot})", textwrap.dedent("""\
         private forall<T> fn ident(@T -> @T)
@@ -1540,12 +1691,20 @@ def _flow_program(cell: FlowCell) -> tuple[str, str, str]:
         narrow = f"let @{s} = {sh.ctor.format(e='@Int.0')};"
         leaf = (f"handle[Exn<Int>] {{ throw(@Int) -> {sh.ctor.format(e='@Int.1')} }} "
                 "in { throw(@Int.0) }")
+    elif cell.source == "apply":
+        param, pre = "@MkO, @Int", "true"
+        call = (f"inner(fn(@Int -> @{base}) effects(pure) "
+                f"{{ {sh.ctor.format(e='@Int.0')} }}, @Int.0)")
+        narrow = f"let @{s} = apply_fn(@MkO.0, @Int.0);"
+        leaf = ""
     else:
         param, pre = f"@{base}", "true"
         call = f"inner({sh.ctor.format(e='@Int.0')})"
         narrow = f"let @{s} = @{base}.0;"
         leaf = f"handle[Exn<{base}>] {{ throw(@{base}) -> @{base}.0 }} in {{ throw(@{base}.0) }}"
     stmts, scrut, decls = _flow_statements(cell.flow, s, sh.lit, narrow, leaf)
+    if cell.source == "apply":
+        decls = f"type MkO = fn(Int -> {base}) effects(pure);\n\n" + decls
     narrow_line = stmts[0] if cell.flow == "clause_leaf" else narrow
     ge = ">=" if cell.narrowing == "c" else ">"
     ensures = "true"
@@ -1614,7 +1773,10 @@ def _flow_run(source: str, arg: int) -> tuple[str, Any]:
 
 
 FLOW_CELLS = [FlowCell(*p) for p in itertools.product(
-    FLOWS, FLOW_SHAPES, FLOW_CONSUMERS, NARROWINGS)]
+    FLOWS, FLOW_SHAPES, FLOW_CONSUMERS, NARROWINGS)] + [
+    FlowCell(flow, shape, consumer, "u", "apply")
+    for flow, shape, consumer in itertools.product(
+        APPLY_FLOWS, FLOW_SHAPES, FLOW_CONSUMERS)]
 
 
 def _flow_param(cell: FlowCell) -> Any:
@@ -1627,8 +1789,9 @@ def test_the_flow_matrix_is_the_product() -> None:
     """Every flow, shape, consumer and narrowing is a cell, every member
     names a cell, and the direct flow (the yardstick) has none."""
     ids = [c.id for c in FLOW_CELLS]
-    assert len(ids) == len(set(ids)) == 16 * 3 * 3 * 3 == 432
+    assert len(ids) == len(set(ids)) == 17 * 3 * 3 * 3 + 7 * 3 * 3 == 522
     assert set(FLOW_MEMBERS) <= set(ids)
+    assert {c.source for c in FLOW_CELLS} == set(FLOW_SOURCES)
     assert not [m for m in FLOW_MEMBERS if m.startswith("direct-")]
 
 
@@ -1653,7 +1816,12 @@ def test_a_flow_keeps_the_narrowings_lineage(
                       lambda self, scrutinee, scrutinee_z3, pattern, smt: [])
             withheld, _ = _flow_verdicts(cell)
         assert rows == withheld, (cell.id, rows, withheld)
-        if cell.flow != "clause_leaf":
+        if cell.source == "apply":
+            # Disclosed, and the program accepted: the false proof would
+            # ship.
+            assert rows == ["tier3_unguarded/E506"], (cell.id, rows)
+            assert _verify(source).ok, cell.id
+        elif cell.flow != "clause_leaf":
             assert rows == ["violated/E505"], (cell.id, rows)
     else:
         # 3: nothing withheld that holds.

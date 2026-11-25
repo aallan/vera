@@ -331,6 +331,9 @@ class _FnFrame:
     #: environment kept alive beside it (`ContractVerifier._holds_narrowed`).
     met: dict[tuple[object, int], tuple[SlotEnv, object]] = field(
         default_factory=dict)
+    #: Whether the table holds a narrowing row with no check
+    #: (`_holds_unchecked_narrowing`), computed once.
+    unchecked_narrowing: bool | None = None
 
 
 class _Path(NamedTuple):
@@ -1209,6 +1212,30 @@ def _narrowed_at(
     return frame.narrowed_at
 
 
+def _holds_unchecked_narrowing(frame: _FnFrame) -> bool:
+    """Whether *frame*'s table holds a narrowing (a ``refine_bind`` or a
+    ``nat_bind`` row) that code generation does not check (#1897): the
+    static form, known before any term is minted, of "a value in this
+    function may carry a type only that row's proof establishes"."""
+    if frame.unchecked_narrowing is None:
+        frame.unchecked_narrowing = any(
+            row.kind in ("refine_bind", "nat_bind") and not row.guard.check
+            for row in frame.rows or ())
+    return frame.unchecked_narrowing
+
+
+def _minted(term: object, smt: SmtContext) -> bool:
+    """Whether *term* is a value the solver minted (#1897): an uninterpreted
+    symbol that is not one of the function's inputs, a stand-in or a
+    binder (0-ary), or a call's result (a non-generic callee's, applied to
+    its arguments)."""
+    if not (isinstance(term, z3.ExprRef) and z3.is_app(term)
+            and term.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+        return False
+    tid = term.get_id()
+    return all(var.get_id() != tid for _, var, _ in smt._inputs)
+
+
 def _source_component(source: obligation_table.Source) -> ast.Node | None:
     """The written expression a binder row's *source* names: its value,
     taken apart along the steps through constructor applications written
@@ -1828,6 +1855,10 @@ class ContractVerifier:
         ret_ty = getattr(callee, "return_type", None)
         if ret_ty is None or not self._has_nested_refinement(ret_ty):
             return []
+        # The callee's guarantee holds under what it assumed of its
+        # arguments; in a function with an unchecked narrowing, one may be
+        # that narrowing's value (W155).
+        self._note_minted(call, result, smt)
         with smt._callee_contract_scope(callee):
             facts, _ = self._nested_refinement_facts(smt, ret_ty, result)
         return cast("list[z3.ExprRef]", self._established_facts(
@@ -12502,6 +12533,42 @@ class ContractVerifier:
         # to read (`_holds_narrowed`); the env is kept with it, so an id a
         # collected env leaves free is never read as another's.
         frame.met[(key, id(env))] = (env, term)
+        self._note_minted(expr, term, smt)
+
+    def _note_minted(
+        self, expr: ast.Expr, term: object, smt: SmtContext,
+    ) -> None:
+        """THE rule for a minted term (#1897, W155): in a function whose
+        table holds a narrowing with no check, a term the solver mints for
+        a value (a stand-in, a call's or an effect operation's result, a
+        clause binder) may stand for that narrowing's value carried where
+        the lineage cannot follow (a callee's parameter, a thrown value, a
+        `put` read back by `get`, a closure's capture), so its type is
+        established no further than that row's proof, which is discharged
+        without its readers' facts.  It is noted as made from every
+        unestablished narrowing noted so far.
+
+        No call is exempt: a callee's guarantee holds under what it assumed
+        of its parameters, and one may return the unchecked argument it was
+        passed.  An array literal and a built-in other than `apply_fn` are:
+        `_note_narrowing` reads them through their parts.
+
+        Asked by `_note_narrowing`, the hook every translated term passes
+        through, and by `_call_result_facts` before its gate: a call's
+        result facts are asked of `_established_facts` while the call is
+        translated, before the hook meets its term."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if (frame is not None and frame.rows
+                and _holds_unchecked_narrowing(frame)
+                and _minted(term, smt)
+                and cast("z3.ExprRef", term).get_id() not in smt._narrowed_ids
+                and not isinstance(expr, ast.ArrayLit)
+                and not (isinstance(expr, ast.FnCall)
+                         and expr.name in _builtin_fn_names()
+                         and expr.name != "apply_fn")):
+            smt.note_narrowed(
+                cast("z3.ExprRef", term), False,
+                parents=set(smt.unestablished_narrowed_ids()))
 
     def _note_narrowed_binder(
         self, value: ast.Expr, steps: tuple[tuple[str, int], ...],
