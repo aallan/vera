@@ -47,6 +47,7 @@ from vera.types import (
     default_literal_holes,
     erases_to_unit,
     fill_literal_holes,
+    fresh_typevar_origin,
     is_unknown_like,
     is_literal_hole,
     merge_inferred_types,
@@ -1260,6 +1261,27 @@ class ResolutionMixin:
             soft = dict(mapping)
             for tv in holed:
                 mapping[tv] = default_literal_holes(mapping[tv])
+                # #1812: rule C for a binding that also holds a literal,
+                # once its holes are filled: the variable a nested call left
+                # open beside it (`idg(Tuple(head_ord([]), 1))`) takes the
+                # type the result is expected at, in the instance and in the
+                # soft record alike, whose holes it leaves where they are.
+                ctx_ty = from_context.get(tv)
+                if ctx_ty is not None and contains_fresh_typevar(mapping[tv]):
+                    filled = self._join(ctx_ty, mapping[tv])
+                    if (filled is not None
+                            and not contains_fresh_typevar(filled)):
+                        # The instance's holes are defaulted above, so no
+                        # literal's hole is bound here: the soft record takes
+                        # the minted variables a nested call left open
+                        # (`fresh_typevar_origin`), and keeps the rest.
+                        sigma: dict[str, Type] = {}
+                        self._unify_for_inference(mapping[tv], filled, sigma)
+                        sigma = {v: t for v, t in sigma.items()
+                                 if fresh_typevar_origin(TypeVar(v))
+                                 is not None}
+                        mapping[tv] = filled
+                        soft[tv] = substitute(soft[tv], sigma)
         else:
             soft = dict(mapping)
         if pinned:

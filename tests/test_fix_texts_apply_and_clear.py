@@ -839,8 +839,10 @@ WHOLE: dict[str, tuple[str, str, str, str]] = {
     "E321-field-not-written": ("E321", "check", _fn("@Int", "@Int",
         "match None {\n    Some(@Int, @Int) -> 1,\n    None -> 0\n  }"),
         "Give 'Some' exactly 1 sub-pattern(s), one per field."),
+    # No context names the body's type: a typed `let` would give it one
+    # (#1812), and the fix would write it.
     "E341-body-type-not-written": ("E341", "check", _fn("@Unit", "@Int",
-        "let @Array<Int> = handle[Exn<Int>] {\n    throw(@Int) -> { 0 }\n"
+        "handle[Exn<Int>] {\n    throw(@Int) -> { 0 }\n"
         "  } in {\n    []\n  };\n  0"),
         "Make the clause's value the handled body's type: replace '0' with "
         "'[]', or give the handled body the clause's type."),
