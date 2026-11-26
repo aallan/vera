@@ -1708,6 +1708,9 @@ def test_kills_1928_alpha_equal_reads_inside_an_app_and_tells_bound_names() -> N
                             z3.ForAll([i], a[0] >= 0))
     assert not _alpha_equal(z3.ForAll([i], a[0] >= 0),
                             z3.ForAll([i], a[i] >= 0))
+    # A quantifier facing a formula that is not one, on either side.
+    assert not _alpha_equal(qi, x >= 0)
+    assert not _alpha_equal(x >= 0, qi)
 
 
 _CHAIN = "private data Chain {\n  End,\n  Link(Nat, Chain)\n}\n\n"
@@ -3011,3 +3014,79 @@ def test_1928_the_generic_fast_path_holds_every_hook_the_main_path_holds(
     _returns_1928(_GENERIC_PRODUCER_1928)
     assert seen[True] and seen[False], seen
     assert seen[False] - seen[True] == set(), sorted(seen[False] - seen[True])
+
+
+#: #1928's battery: an element refinement whose helper constant `constants`
+#: meets only after a subterm the walk has already visited (`@Int.0 ==
+#: @Int.0`, the conjunct popped first, reads the element term twice).
+_SHARED_HELPER_AFTER_A_REVISIT_1928 = """\
+private fn ident(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+type R = { @Int | ident(@Int.0) == @Int.0 && @Int.0 == @Int.0 };
+
+public fn f(@Array<R> -> @Bool)
+  requires(array_length(@Array<R>.0) == 2)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  @Array<R>.0[0] == @Array<R>.0[1]
+}
+
+public fn go(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f([1, 2])
+}
+"""
+
+
+def test_kills_1928_a_helper_constant_after_a_revisited_subterm_is_found() -> None:
+    """`_per_element`'s walk skips a node it has visited and goes on: RED
+    with its `continue` as `break` (verifier#11033), where the walk ends at
+    the element term's second visit, never meets the helper's constant, and
+    states the predicate under the index quantifier, so every element
+    shares one `ident` result and `a[0] == a[1]` is proved, which `go`
+    refutes at run time."""
+    verified = pipeline.verify(_SHARED_HELPER_AFTER_A_REVISIT_1928, file=FILE)
+    statuses = [(o.kind, o.status) for o in verified.obligations
+                if o.fn_name == "f" and o.kind == "ensures"]
+    assert statuses and all(s != "verified" for _, s in statuses), statuses
+    ran = pipeline.run(
+        pipeline.compile(_SHARED_HELPER_AFTER_A_REVISIT_1928, file=FILE),
+        "go", [0])
+    assert not ran.ok, ran
+
+
+def test_kills_1928_an_element_instance_after_a_revisited_subterm_is_taken(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stage 2 of the premise screen instantiates the `Nat` element range at
+    every index term the kept premises read, walking on past a node it has
+    visited: RED with that `continue` as `break` (verifier#4704), where the
+    walk ends at `array_length`'s second occurrence, never reaches `a[0]`,
+    and stage 2 finds a model of a precondition no value meets (a vacuous
+    Tier 1 in place of `E538`).  Stage 1 is forced undecided."""
+    from vera import verifier as vmod
+
+    source = """\
+public fn f(@Array<Nat> -> @Int)
+  requires(array_length(@Array<Nat>.0) > 0 && @Array<Nat>.0[0] < 0 && array_length(@Array<Nat>.0) + array_length(@Array<Nat>.0) > 0)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+    monkeypatch.setattr(vmod.ContractVerifier, "_full_premises_satisfiable",
+                        lambda self, smt, assumed: None)
+    verified = pipeline.verify(source, file=FILE)
+    codes = [d.error_code for d in verified.errors]
+    assert "E538" in codes, (codes, [(o.kind, o.status)
+                                     for o in verified.obligations])

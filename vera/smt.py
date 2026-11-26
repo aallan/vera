@@ -307,7 +307,7 @@ class AxiomKind(enum.Enum):
     its refutation-completeness for the slice without needing disjointness.
     """
 
-    ELEMENT = "element"
+    ELEMENT = "element"  # pragma: no mutate — equivalent: members are compared by identity and no code reads a kind's value (grep: no `.value`, `.name` or `AxiomKind(...)` lookup); measured (W172): with the value None, "XXelementXX" or "ELEMENT", every obligation row and every stated fact over 361 programs is unchanged
     """Constrains each element of ONE sequence, pointwise, by ranges alone:
     `forall i. 0 <= i < length(s) => lo <= index(s, i) <= hi`, the range an
     `Array<Int>` or `Array<Nat>` parameter's type states of its elements

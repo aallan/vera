@@ -442,16 +442,14 @@ def _alpha_equal(a: z3.ExprRef, b: z3.ExprRef) -> bool:
     and their bodies do; everything else agrees by structure."""
     if a.eq(b):
         return True
-    if z3.is_quantifier(a) or z3.is_quantifier(b):
-        if not (z3.is_quantifier(a) and z3.is_quantifier(b)):
-            return False
-        qa, qb = cast("z3.QuantifierRef", a), cast("z3.QuantifierRef", b)
-        return (qa.is_forall() == qb.is_forall()
-                and qa.is_lambda() == qb.is_lambda()
-                and qa.num_vars() == qb.num_vars()
-                and all(qa.var_sort(i).eq(qb.var_sort(i))
-                        for i in range(qa.num_vars()))
-                and _alpha_equal(qa.body(), qb.body()))
+    if z3.is_quantifier(a) and z3.is_quantifier(b):
+        return (a.is_forall() == b.is_forall()
+                and a.is_lambda() == b.is_lambda()
+                and a.num_vars() == b.num_vars()
+                and all(a.var_sort(i).eq(b.var_sort(i))
+                        for i in range(a.num_vars()))
+                and _alpha_equal(a.body(), b.body()))
+    # A quantifier facing anything else is no app, so it is unequal here.
     if not (z3.is_app(a) and z3.is_app(b)):
         return False
     return (a.decl().eq(b.decl()) and a.num_args() == b.num_args()
@@ -489,7 +487,7 @@ class ParameterPremise:
     #: from its guard for a component of the caller's parameter: a
     #: refinement below the head can have no check, so it is omitted only
     #: where the caller holds it literally.
-    ranges: frozenset[int] = frozenset()
+    ranges: frozenset[int]
 
     def facts(self) -> list[z3.ExprRef]:
         """Every fact, as the function's own proof assumes them."""
@@ -5538,13 +5536,15 @@ class ContractVerifier:
                 stack.pop())
             if expr.get_id() in seen or not z3.is_app(expr):
                 continue
-            seen.add(expr.get_id())
+            seen.add(expr.get_id())  # pragma: no mutate — equivalent: the set only spares a revisit, and a revisit records the same index terms in the same dict; measured (W172): with `add(None)`, every instance and every obligation row over 361 programs is unchanged
             children = expr.children()
             if expr.decl().name() in indices and len(children) == 2:
                 indices[expr.decl().name()][children[1].get_id()] = children[1]
             stack.extend(children)
         return [
-            z3.substitute_vars(cast("z3.QuantifierRef", quantifier).body(), t)
+            z3.substitute_vars(cast(
+                "z3.QuantifierRef",  # pragma: no mutate — equivalent: `cast` returns its second argument; measured (W172): with this argument None or retexted, every instance and every obligation row over 361 programs is unchanged
+                quantifier).body(), t)
             for quantifier, symbol in axioms
             for t in indices[symbol].values()]
 
@@ -11609,7 +11609,7 @@ class ContractVerifier:
 
     def _invariant_at(
         self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
-        head: bool, seen: frozenset[str],
+        seen: frozenset[str], head: bool = False,
         ranged: dict[int, tuple[z3.ExprRef, str]] | None = None,
         ranges: set[int] | None = None,
     ) -> list[z3.ExprRef]:
@@ -11682,7 +11682,7 @@ class ContractVerifier:
             for j, field_ty in enumerate(field_types):
                 for fact in self._invariant_at(
                         smt, field_ty, sort.accessor(i, j)(term),
-                        head=False, seen=deeper, ranged=ranged,
+                        seen=deeper, ranged=ranged,
                         ranges=ranges):
                     held = (fact if recognizer is None
                             else z3.Implies(recognizer, fact))
@@ -11719,11 +11719,11 @@ class ContractVerifier:
         element = index_fn(sequence, idx)
         inner: set[int] = set()
         body = [fact for fact in self._invariant_at(
-            smt, element_ty, element, head=False, seen=seen, ranged=ranged,
+            smt, element_ty, element, seen=seen, ranged=ranged,
             ranges=inner)
             if self._per_element(fact, element)]
         element_ranges = {fact.get_id() for fact in self._invariant_at(
-            smt, element_ty, element, head=False, seen=seen)}
+            smt, element_ty, element, seen=seen)}
         in_range = z3.And(idx >= 0, idx < length_fn(sequence))
         out: list[z3.ExprRef] = []
         for part, tag in (
@@ -11762,7 +11762,7 @@ class ContractVerifier:
                 e = stack.pop()
                 if e.get_id() in visited:
                     continue
-                visited.add(e.get_id())
+                visited.add(e.get_id())  # pragma: no mutate — equivalent: the set only spares a revisit, and a revisit finds the same constants; measured (W172): with `add(None)`, every `_per_element` answer and every obligation row over 361 programs is unchanged
                 if (z3.is_const(e)
                         and e.decl().kind() == z3.Z3_OP_UNINTERPRETED):
                     found.add(e.get_id())
@@ -12831,7 +12831,7 @@ class ContractVerifier:
             if isinstance(cur, ast.FnCall):
                 lexical[key(cur)] = tuple(
                     c for c in scope if c.op_name == cur.name)
-            inner = scope
+            inner = scope  # pragma: no mutate — equivalent: `inner` is read only when `cur` is a `HandleExpr`, where the next line reassigns it; measured (W172): with None, every obligation row over 361 programs is unchanged
             if isinstance(cur, ast.HandleExpr):
                 inner = scope + cur.clauses
                 for c in cur.clauses:
