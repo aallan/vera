@@ -4007,13 +4007,13 @@ class SmtContext:
         reach = self.reach_conditions()
         if hook is None or reach is None:  # pragma: no mutate — equivalent: the verifier sets the hook on every context whose translation knows where it stands, so one is never present without the other
             return components
-        # A shape named by its type or an alias (`let Box<…>`) binds the
-        # value's one constructor, the one the caller projected, as
-        # `ContractVerifier._destructure_ctor_name` resolves it: under the
-        # written name the hook finds no constructor and records no guard.
-        name = stmt.constructor
-        if self._find_ctor_index(term.sort(), name) is None:
-            name = term.sort().constructor(0).name()
+        # A destructure binds its value's one constructor (E311 refuses one
+        # over a type with several), the one the caller projected, by the
+        # sort's own name for it, as
+        # `ContractVerifier._destructure_ctor_name` resolves it: under a
+        # shape named by its type or an alias (`let Box<…>`) the hook would
+        # find no constructor and record no guard.
+        name = term.sort().constructor(0).name()
         pattern = ast.ConstructorPattern(
             name=name,
             sub_patterns=tuple(

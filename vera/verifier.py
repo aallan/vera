@@ -1902,7 +1902,10 @@ class ContractVerifier:
                          for j in range(sort.constructor(i).arity())
                          if sort.accessor(i, j).eq(node.decl())), None)
             if step is None:
-                break
+                # A step that is no accessor (a call's or a recognizer's
+                # application) leaves a node no parameter is: a parameter
+                # is a constant.
+                return None
             path.append((sort, *step))
             node = node.arg(0)
         ty = next((t for var, t in smt.standing_parameters if var.eq(node)),
