@@ -65,6 +65,7 @@ from typing import Any, Callable
 import pytest
 
 from tests import pipeline
+from vera import smt as smt_mod
 from vera import verifier as verifier_mod
 from vera.reconcile import reconcile
 
@@ -2252,5 +2253,69 @@ def test_repro_a_kept_fact_read_in_a_call_holds_under_its_binding() -> None:
                if o.fn_name == "go" and o.kind == "ensures"]
     assert ensures == ["violated"], ensures
     ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith("Postcondition violation in"), str(ran.trap)
+
+
+# =====================================================================
+# The kept flow (W175).  No cell of the matrix above stores a KEPT fact
+# (`SmtContext.assume_narrowed`): each narrowing its positions make is a
+# row code generation does not check, or one whose value no reader reads
+# at another type, so a reader's fact is returned or withheld.  A call's
+# argument row is checked, and the callee's `requires` `match` reads its
+# formal's type there: the fact is kept, true only under the call's
+# binding.  One cell per shape; the caller's `ensures` needs the fact
+# where the call is not made, and the run at the violating value stops on
+# it.
+# =====================================================================
+
+
+def _kept_program(shape: str) -> str:
+    sh = SHAPES[shape]
+    S, B = sh.refined, sh.base
+    arms = ", ".join(f"{p} -> true" for p, _ in sh.ref)
+    consume = _fn("consume", _slot(S), "@Int", "1").replace(
+        "requires(true)", f"requires(match {_slot(S)}.0 {{ {arms} }})")
+    reads = _reader(sh, "bind", f"{_slot(B)}.0")
+    assert reads is not None
+    go = ("public fn go(@Int -> @Int)\n  requires(true)\n"
+          "  ensures(@Int.result < 10)\n  effects(pure)\n{\n  "
+          + "\n  ".join([f"let {_slot(B)} = mk(@Int.0);",
+                         f"let @Int = if @Int.0 > 100 then {{ consume("
+                         f"{_slot(B)}.0) }} else {{ 0 }};",
+                         *reads[0], reads[1]]) + "\n}")
+    return "\n\n".join([
+        f"type Small = {{ @Int | {PREDICATES['solver']} }};",
+        "public data Wrap<T> { W(T) }",
+        _fn("mk", "@Int", _slot(B), sh.build), consume, go]) + "\n"
+
+
+#: The shapes whose argument row at `consume` is checked: an `Option` or
+#: `Wrap` payload of `mk`'s opaque result is refuted there (E505), so no
+#: fact is kept.
+KEPT_SHAPES = ("tuple", "nested")
+
+
+@pytest.mark.parametrize("shape", KEPT_SHAPES)
+def test_a_kept_fact_proves_nothing_where_its_call_is_not_made(
+    shape: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cell stores a kept fact, and `go`'s `ensures`, which needs it on
+    the branch with no call, is not proved; the run stops on it."""
+    kept: list[object] = []
+    original = smt_mod.SmtContext.assume_narrowed
+
+    def counting(self: Any, facts: Any, owners: Any) -> None:
+        kept.extend(facts)
+        original(self, facts, owners)
+
+    monkeypatch.setattr(smt_mod.SmtContext, "assume_narrowed", counting)
+    source = _kept_program(shape)
+    verified = _verify(source)
+    assert kept, "the cell stores no kept fact"
+    ensures = [_status(o) for o in verified.obligations
+               if o.fn_name == "go" and o.kind == "ensures"]
+    assert ensures and "verified" not in ensures, ensures
+    ran = pipeline.run(source, "go", [VIOLATING], file=FILE)
     assert ran.trap is not None, ran.value
     assert str(ran.trap).startswith("Postcondition violation in"), str(ran.trap)
