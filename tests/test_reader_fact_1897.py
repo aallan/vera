@@ -2319,3 +2319,98 @@ def test_a_kept_fact_proves_nothing_where_its_call_is_not_made(
     ran = pipeline.run(source, "go", [VIOLATING], file=FILE)
     assert ran.trap is not None, ran.value
     assert str(ran.trap).startswith("Postcondition violation in"), str(ran.trap)
+
+
+#: One call node, `f(1, @Option<Pos>.0)` in `g`'s `requires`, translated at
+#: two call sites of `g`: the first clean (`None`), the second handed an
+#: unchecked narrowing.  The two translations share the first argument's
+#: term (the literal) and differ in the second.
+CALL_ENV_TWO_SITES = POS + textwrap.dedent("""\
+    type MkO = fn(Int -> Option<Int>) effects(pure);
+
+    private fn f(@Int, @Option<Pos> -> @Pos)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      match @Option<Pos>.0 {
+        Some(@Pos) -> @Pos.0,
+        None -> 1
+      }
+    }
+
+    private fn g(@Option<Pos> -> @Int)
+      requires(f(1, @Option<Pos>.0) > 0)
+      ensures(true)
+      effects(pure)
+    {
+      1
+    }
+
+    public fn go(@MkO, @Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      let @Option<Pos> = apply_fn(@MkO.0, @Int.0);
+      let @Int = g(None);
+      let @Int = g(@Option<Pos>.0);
+      @Int.0
+    }
+    """)
+
+
+def test_repro_call_env_matches_the_whole_argument_vector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_call_env` returns the environment that met EVERY kept argument at
+    the id the result's name holds at its position, not the first that met
+    any one of them (#1933 review).  Matched by one argument, the unchecked
+    call's result was read under the clean call's environment: its argument
+    lineage came back empty (it was still noted unestablished, by
+    `narrowed_nodes`, which is keyed by node).  Each call's returned
+    environment must hold, at every argument, the term its key names, and
+    the unchecked call's lineage must name its narrowed id."""
+    cv = verifier_mod.ContractVerifier
+    orig_env = vars(cv)["_call_env"].__func__
+    orig_lineage = cv._call_lineage
+    seen: list[tuple[tuple[int, ...], list[int | None]]] = []
+    lineages: list[tuple[str, tuple[bool, set[int]] | None]] = []
+
+    def env_spy(*a: Any) -> Any:
+        expr, term, frame = a[0], a[1], a[-1]
+        env = orig_env(*a)
+        if expr.name != "f":
+            return env
+        smt = a[-2]
+        name = term.decl().name()
+        key = next(k for k, s in smt._names[
+            f"_call_f_{expr.span.line}_{expr.span.column}"].items()
+            if s == name)
+        got: list[int | None] = []
+        for arg in expr.args:
+            met = (None if env is None else frame.met.get(
+                (verifier_mod.obligation_table.ObligationTable._key(arg),
+                 id(env))))
+            got.append(None if met is None else met[1].get_id())
+        seen.append((key, got))
+        return env
+
+    def lineage_spy(self: Any, expr: Any, term: Any, env: Any, smt: Any,
+                    frame: Any) -> Any:
+        result = orig_lineage(self, expr, term, env, smt, frame)
+        if env is None and str(term).startswith("_call_f"):
+            lineages.append((str(term), result))
+        return result
+
+    monkeypatch.setattr(cv, "_call_env", staticmethod(env_spy))
+    monkeypatch.setattr(cv, "_call_lineage", lineage_spy)
+    _verify(CALL_ENV_TWO_SITES)
+    assert len({key for key, _ in seen}) >= 2, seen
+    assert all(list(key) == got for key, got in seen), seen
+    # The second call site's result is the second name minted at the node.
+    names = list(dict.fromkeys(name for name, _ in lineages))
+    assert len(names) >= 2, lineages
+    unchecked = [r for name, r in lineages if name == names[1]]
+    assert unchecked and all(r is not None and r[0] and r[1]
+                             for r in unchecked), lineages

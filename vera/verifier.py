@@ -12650,7 +12650,7 @@ class ContractVerifier:
         if not args:
             return False, set()
         if env is None:
-            env = self._call_env(expr, term, args, smt, frame)
+            env = self._call_env(expr, term, smt, frame)
             if env is None:
                 return None
         unestablished = False
@@ -12669,23 +12669,41 @@ class ContractVerifier:
     @staticmethod
     def _call_env(
         expr: ast.FnCall | ast.ModuleCall, term: object,
-        args: Sequence[ast.Expr], smt: SmtContext, frame: _FnFrame,
+        smt: SmtContext, frame: _FnFrame,
     ) -> SlotEnv | None:
         """The environment *expr*'s arguments were translated under, found
-        by the term ids *term*, the call's result, is named by; ``None``
-        where no met argument's term is one of them."""
+        by the term ids *term*, the call's result, is named by
+        (`SmtContext._named`'s key: one id per argument the translation
+        kept, a zero-size position dropped as `_translate_call_args` drops
+        it); ``None`` where no environment met every kept argument at the
+        id its position holds.  The whole vector, position by position: an
+        environment that met one argument at its id may be another
+        translation of the same node, one that shares that argument's term
+        and holds another value in the rest."""
         name = cast("z3.ExprRef", term).decl().name()  # an app: `_minted`
-        arg_ids: set[int] = set()
+        arg_ids: tuple[int, ...] | None = None
         for key, spelled in smt._names.get(
                 f"_call_{expr.name}_{expr.span.line}_{expr.span.column}"
                 if expr.span is not None else f"_call_{expr.name}",
                 {}).items():
             if spelled == name and isinstance(key, tuple):
-                arg_ids = set(key)
-        keys = {obligation_table.ObligationTable._key(a) for a in args}
-        for (key, _), (env, met_term) in frame.met.items():
-            if (key in keys
-                    and cast("z3.ExprRef", met_term).get_id() in arg_ids):
+                arg_ids = key
+        info = smt._fn_lookup(expr.name) if smt._fn_lookup else None
+        if arg_ids is None or info is None:
+            return None
+        zero_size = smt._zero_size_params(info)
+        kept = [obligation_table.ObligationTable._key(a)
+                for i, a in enumerate(expr.args)
+                if not (i < len(zero_size) and zero_size[i])]
+        if not kept or len(kept) != len(arg_ids):
+            return None
+        for (key, env_id), (env, _) in frame.met.items():
+            if key != kept[0]:
+                continue
+            if all((met := frame.met.get((k, env_id))) is not None
+                   and met[0] is env
+                   and cast("z3.ExprRef", met[1]).get_id() == want
+                   for k, want in zip(kept, arg_ids)):
                 return env
         return None
 
