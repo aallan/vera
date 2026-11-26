@@ -424,6 +424,14 @@ def _at_line(verified: pipeline.Verified, line: int,
 
 def _site_records(verified: pipeline.Verified, source: str, line: int,
                   position: str) -> list[str]:
+    """The statuses of the narrowing's `refine_bind` records
+    (`_site_obligations`)."""
+    return sorted(_status(o) for o in _site_obligations(
+        verified, source, line, position))
+
+
+def _site_obligations(verified: pipeline.Verified, source: str, line: int,
+                      position: str) -> list[Any]:
     """The narrowing's `refine_bind` records.  A return's are every one in
     `inner`, whose only narrowings are the return's and the `let` a reader
     before it reads (of the same value, or, for a `handle`, of the same
@@ -433,15 +441,15 @@ def _site_records(verified: pipeline.Verified, source: str, line: int,
     at the argument, after the closure on the same line, whose own records
     stand inside it; every other position's at its line."""
     if position == "return":
-        return sorted(_status(o) for o in verified.obligations
-                      if o.kind == "refine_bind" and o.fn_name == "inner")
+        return [o for o in verified.obligations
+                if o.kind == "refine_bind" and o.fn_name == "inner"]
     first = 0
     if position == "apply":
         text = source.splitlines()[line - 1]
         first = text.rindex("}, ") + len("}, ") + 1
-    return sorted(_status(o) for o in verified.obligations
-                  if o.kind == "refine_bind" and o.line == line
-                  and o.column >= first)
+    return [o for o in verified.obligations
+            if o.kind == "refine_bind" and o.line == line
+            and o.column >= first]
 
 
 #: A verified record: its kind, line and column, then the table rows it
@@ -1211,13 +1219,17 @@ def test_no_narrowing_is_proved_from_its_readers_fact(cell: Cell) -> None:
         # narrowing (`tier3_unguarded`, E506), or claimed a check the module
         # does not hold, which `vera verify` reports as the E541 error
         # (#1542's loud line): a guarded claim of the site's own narrowing
-        # with no check, not any mismatch on its line.
+        # with no check, matched by the site's own records' positions, not
+        # by its line, which an `apply_fn` closure's records share.
         disclosed = "tier3_unguarded/E506" in records
         assert ran.compiled is not None
+        targets = {(o.line, o.column) for o in _site_obligations(
+            verified, source, line, cell.position)}
         unanswered = [m for m in reconcile(
             verified.result, ran.compiled.result,
             program=verified.checked.program, file=verified.checked.file)
-            if m.line == line and m.kind == "recorded_unguarded"
+            if (m.line, m.column) in targets
+            and m.kind == "recorded_unguarded"
             and m.obligation == "refine_bind" and m.status in ("tier3",
                                                                "timeout")]
         assert not verified.ok or disclosed or unanswered, (
