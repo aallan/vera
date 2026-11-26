@@ -334,6 +334,9 @@ class _FnFrame:
     #: Whether the table holds a narrowing row with no check
     #: (`_holds_unchecked_narrowing`), computed once.
     unchecked_narrowing: bool | None = None
+    #: The ids of the call results `_note_minted`'s call rule decided at the
+    #: call, which a reference to the result reads as the call left them.
+    linked_results: set[int] = field(default_factory=set)
 
 
 class _Path(NamedTuple):
@@ -12568,7 +12571,10 @@ class ContractVerifier:
         pinned in `tests/test_reader_fact_1897.py`.
 
         An array literal and a built-in other than `apply_fn` are exempt:
-        `_note_narrowing` reads them through their parts.
+        `_note_narrowing` reads them through their parts.  So is a reference
+        (a slot, ``@T.result``) to a call's result the call rule decided:
+        the rule is the producer's, and a reference keeps the note the call
+        left, clean or made from its arguments' narrowings.
 
         Asked by `_note_narrowing`, the hook every translated term passes
         through, with the term's *env*, and, without one, by the SMT
@@ -12587,7 +12593,13 @@ class ContractVerifier:
                          and expr.name in _builtin_fn_names()
                          and expr.name != "apply_fn")
                 and not self._performs_an_operation(expr, smt)):
+            tid = cast("z3.ExprRef", term).get_id()
+            if (isinstance(expr, (ast.SlotRef, ast.ResultRef))
+                    and tid in frame.linked_results):
+                return
             linked = self._call_lineage(expr, term, env, smt, frame)
+            if linked is not None:
+                frame.linked_results.add(tid)
             if linked is None:
                 smt.note_narrowed(
                     cast("z3.ExprRef", term), False,

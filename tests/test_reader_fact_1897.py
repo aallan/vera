@@ -58,6 +58,7 @@ from __future__ import annotations
 import itertools
 import re
 import textwrap
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -70,7 +71,8 @@ from vera.reconcile import reconcile
 # The modules that decide the class: the translation that records a narrowed
 # value and asserts a reader's facts, and the verifier's gate, its hook and
 # the narrowing discharges.
-pytestmark = pytest.mark.matrix(decides=["vera/smt.py", "vera/verifier.py"])
+pytestmark = pytest.mark.matrix(
+    decides=["vera/smt.py", "vera/verifier.py", "vera/obligations/table.py"])
 
 FILE = "reader_fact_1897.vera"
 VIOLATING = 50
@@ -441,9 +443,15 @@ def _site_records(verified: pipeline.Verified, source: str, line: int,
                   and o.column >= first)
 
 
-def _verified_records(verified: pipeline.Verified) -> set[tuple[str, int, int]]:
-    return {(o.kind, o.line, o.column) for o in verified.obligations
-            if o.status == "verified"}
+#: A verified record: its kind, line and column, then the table rows it
+#: discharges and its text, which tell two records at one position apart.
+Record = tuple[str, int, int, tuple[int, ...], str]
+
+
+def _verified_records(verified: pipeline.Verified) -> Counter[Record]:
+    """The verified records, counted, so two at one position are two."""
+    return Counter((o.kind, o.line, o.column, o.rows, o.expr_text)
+                   for o in verified.obligations if o.status == "verified")
 
 
 @pytest.fixture
@@ -778,9 +786,11 @@ def test_a_built_in_over_a_call_on_an_unestablished_narrowing_is_not_proved(
     callee's return type: the callee's guarantee holds under what it assumed
     of its parameters, and `idp` hands back the unchecked argument it was
     passed (W155; this test pinned the `ensures` `verified` before, a false
-    proof: `go(0)` violates it).  So an array literal holding the result
-    holds an unestablished value, and the `ensures` its reader proves is not
-    Tier 1."""
+    proof).  So an array literal holding the result holds an unestablished
+    value, and the `ensures` its reader proves is not Tier 1.  Whether `idp`
+    forwards its argument is chosen by `go`'s second parameter, not by the
+    payload, so `go(0, 5)` forwards `Some(0)` and violates the `ensures`
+    (its check traps), and `go(0, 0)` returns `Some(7)`'s 7."""
     source = POS_MK_OPTION + textwrap.dedent("""\
         private fn idp(@Option<Pos>, @Int -> @Option<Pos>)
           requires(true)
@@ -790,21 +800,28 @@ def test_a_built_in_over_a_call_on_an_unestablished_narrowing_is_not_proved(
           if @Int.0 > 3 then { @Option<Pos>.0 } else { Some(7) }
         }
 
-        public fn go(@Int -> @Int)
+        public fn go(@Int, @Int -> @Int)
           requires(true)
           ensures(@Int.result > 0)
           effects(pure)
         {
-          let @Option<Pos> = mk(@Int.0);
+          let @Option<Pos> = mk(@Int.1);
           let @Array<Option<Pos>> = [idp(@Option<Pos>.0, @Int.0)];
           match @Array<Option<Pos>>.0[0] { Some(@Int) -> @Int.0, None -> 1 }
         }
         """)
     verified = _verify(source)
-    assert _at_line(verified, _line(source, "let @Option<Pos> = mk(@Int.0);")) \
+    assert _at_line(verified, _line(source, "let @Option<Pos> = mk(@Int.1);")) \
         == ["violated/E505"]
     ensures = _line(source, "ensures(@Int.result > 0)")
     assert "verified" not in _at_line(verified, ensures, "ensures")
+    violating = _run(source, [0, 5])
+    assert violating.trap is not None, violating.value
+    assert str(violating.trap).startswith("Postcondition violation in go("), \
+        str(violating.trap)
+    satisfying = _run(source, [0, 0])
+    assert satisfying.trap is None and satisfying.value == 7, (
+        satisfying.trap, satisfying.value)
 
 
 # The established twin: a narrowing code generation checks (a `Nat`
@@ -1190,15 +1207,18 @@ def test_no_narrowing_is_proved_from_its_readers_fact(cell: Cell) -> None:
     ran = _run(source, [VIOLATING])
     if ran.trap is None and cell.position not in NO_RECORD_1542:
         # Delivered: verification refused the program, disclosed the
-        # narrowing (E506), or claimed a check the module does not hold,
-        # which `vera verify` reports as the E541 error (#1542's loud line).
-        disclosed = any(r.startswith("tier3_unguarded") or r.endswith("/E506")
-                        for r in records)
+        # narrowing (`tier3_unguarded`, E506), or claimed a check the module
+        # does not hold, which `vera verify` reports as the E541 error
+        # (#1542's loud line): a guarded claim of the site's own narrowing
+        # with no check, not any mismatch on its line.
+        disclosed = "tier3_unguarded/E506" in records
         assert ran.compiled is not None
         unanswered = [m for m in reconcile(
             verified.result, ran.compiled.result,
             program=verified.checked.program, file=verified.checked.file)
-            if m.line == line]
+            if m.line == line and m.kind == "recorded_unguarded"
+            and m.obligation == "refine_bind" and m.status in ("tier3",
+                                                               "timeout")]
         assert not verified.ok or disclosed or unanswered, (
             records, [d.error_code for d in verified.warnings])
 
@@ -1218,7 +1238,7 @@ def test_every_proof_survives_with_the_readers_facts_withheld(
     source, site = made
     without = _verified_records(_verify(source))
     with_facts = _verified_with_facts(source)
-    extra = sorted(with_facts - without)
+    extra = sorted((with_facts - without).elements())
     if not extra:
         return
     line = _line(source, site)
@@ -1228,7 +1248,7 @@ def test_every_proof_survives_with_the_readers_facts_withheld(
     assert ran.trap is not None, extra
 
 
-def _verified_with_facts(source: str) -> set[tuple[str, int, int]]:
+def _verified_with_facts(source: str) -> Counter[Record]:
     """The verified records with the readers' facts in force: the
     fixture's patch is lifted for this one verification."""
     patched = verifier_mod.ContractVerifier._subpattern_source_facts
@@ -1547,6 +1567,45 @@ def test_repro_a_pure_first_order_call_is_linked_through_its_arguments(
     assert verified.ok, callee
     nat = _line(source, "let @Nat = @Int.0 - 1;")
     assert _at_line(verified, nat, "nat_bind") == _R1_EXPECT[callee], callee
+
+
+#: A postcondition that reads the result's tag and not its payload: the
+#: callee's facts are read through a reference to the result.
+_TAG_ENSURES = "ensures(match @Option<Pos>.result { Some(_) -> true, None -> {0} })"
+
+
+def test_repro_a_reference_to_a_clean_call_result_keeps_its_note() -> None:
+    """The call rule is the producer's: `@Option<Pos>.result` in `mk`'s
+    postcondition, read at the call, is a reference to a result the rule
+    left clean, so the payload's `Pos` still proves the caller's `Nat`
+    (it was noted under the function-wide rule, and withheld, before)."""
+    source = _r1_program("pure").replace(
+        "ensures(true)\n  effects(pure)\n{\n  Some(5)",
+        _TAG_ENSURES.replace("{0}", "false")
+        + "\n  effects(pure)\n{\n  Some(5)", 1)
+    assert "@Option<Pos>.result" in source
+    verified = _verify(source)
+    assert verified.ok
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["verified"]
+
+
+def test_repro_a_reference_to_an_unchecked_call_result_keeps_its_note() -> None:
+    """The counterpart: `pass` handed the unchecked value, its postcondition
+    reading its result's tag, keeps the result noted as made from the
+    argument's narrowing, so the `Nat` is not proved and its check traps."""
+    source = _acc_program("pass").replace(
+        "ensures(true)\n  effects(pure)\n{\n  @Option<Pos>.0",
+        _TAG_ENSURES.replace("{0}", "true")
+        + "\n  effects(pure)\n{\n  @Option<Pos>.0", 1)
+    assert "@Option<Pos>.result" in source
+    verified = _verify(source)
+    assert verified.ok
+    nat = _line(source, "let @Nat = @Int.0 - 1;")
+    assert _at_line(verified, nat, "nat_bind") == ["tier3"]
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith(_OWN_CHECK["nat"]), str(ran.trap)
 
 
 # A pure first-order callee whose own narrowing has no row (issue 1542's
