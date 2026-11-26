@@ -1098,11 +1098,22 @@ class TestObligationKinds:
         unsatisfiable predicate asserted at base level makes the solver UNSAT and
         discharges every obligation vacuously.  Pin the wiring instead.
         """
-        import pathlib as _pathlib
+        import ast as _ast
+        import inspect as _inspect
+        import textwrap as _textwrap
 
-        import vera.smt
+        from vera.smt import SmtContext
 
-        src = _pathlib.Path(vera.smt.__file__).read_text(encoding="utf-8")
+        # Read off `_assume_callee_facts` alone, and its `take` alone, so a
+        # match elsewhere in `vera/smt.py` (the nested-return hook states the
+        # same guarded call) cannot stand in for `take`'s.
+        tree = _ast.parse(_textwrap.dedent(
+            _inspect.getsource(SmtContext._assume_callee_facts)))
+        takes = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.FunctionDef) and n.name == "take"]
+        assert len(takes) == 1, "`_assume_callee_facts` defines one `take`"
+        take = takes[0]
+        src = _ast.unparse(tree)
         # Asserted through `assume`, the one writer of the solver's base
         # context, which states a guarded binder over its projection (#1480).
         # Both go through `take`, which assumes the guarded fact or, where
@@ -1112,12 +1123,18 @@ class TestObligationKinds:
             "the callee postcondition and the refined-return predicate must "
             "go through `take`"
         )
-        assert "self.assume(self._guard_fact(fact))" in src, (
-            "the callee's facts must be guarded by the path conditions"
-        )
-        assert "self.withhold_narrowed([self._guard_fact(fact)], held)" in src, (
-            "a withheld callee fact must be guarded by the path conditions"
-        )
+        # Every fact `take` publishes, to the base context or the withheld
+        # pool, is `_guard_fact` of its parameter, and it publishes both ways.
+        published = sorted(
+            (call.func.attr, _ast.unparse(call.args[0]))
+            for call in _ast.walk(take)
+            if isinstance(call, _ast.Call)
+            and isinstance(call.func, _ast.Attribute)
+            and call.func.attr in ("assume", "withhold_narrowed", "add"))
+        assert published == [
+            ("assume", "self._guard_fact(fact)"),
+            ("withhold_narrowed", "[self._guard_fact(fact)]"),
+        ], published
         for bare in ("self.solver.add(z3_post)", "self.solver.add(fact)",
                      "self.assume(z3_post)", "self.assume(fact)"):
             assert bare not in src, f"bare, unguarded assumption: {bare}"
