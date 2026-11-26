@@ -239,6 +239,51 @@ def test_a_quotient_row_whose_premise_holds_is_proved() -> None:
 
 
 # =====================================================================
+# The violation queries: `_check_overflow_obligation`'s and
+# `_check_quotient_obligation`'s second ask
+# =====================================================================
+
+
+def _constant(name: str, value: str) -> str:
+    # A callee whose postcondition is a constant: its guard is the range
+    # part alone, which the argument below does not meet where it leaves
+    # the range.
+    return (f"private fn {name}(@Int -> @Int)\n  requires(true)\n"
+            f"  ensures(@Int.result == {value})\n  effects(pure)\n{{\n"
+            f"  {value}\n}}\n\n")
+
+
+def test_kills_1928_an_overflow_violation_asks_under_the_range_premise(
+        ) -> None:
+    """`cm(@Int.0 + 1) + 1`, `cm`'s result `<max>`: the row is not proved
+    safe, and it is provably out of range only from `cm`'s postcondition,
+    whose guard (the argument `@Int.0 + 1` in range) the violation query
+    requires too.  Tier 3, no E528; asked without the range premise
+    (`in_range` False, None, or the keyword removed) it is refuted (E528)."""
+    source = _constant("cm", _MAX) + _k(
+        "@Int -> @Int", "true", "  cm(@Int.0 + 1) + 1")
+    verified = _verify(source)
+    rows = [r for r in _rows(verified, "int_overflow")
+            if r[0] == "cm(@Int.0 + 1) + 1"]
+    assert rows == [("cm(@Int.0 + 1) + 1", "tier3")], rows
+    assert "E528" not in _codes(verified), _codes(verified)
+    assert "overflow" in _trap(source, 0)
+
+
+def test_kills_1928_a_quotient_violation_asks_under_the_range_premise(
+        ) -> None:
+    """The quotient's twin: `cn(@Int.0 - 1) / -1`, `cn`'s result `<min>`."""
+    source = _constant("cn", _MIN) + _k(
+        "@Int -> @Int", "true", "  cn(@Int.0 - 1) / -1")
+    verified = _verify(source)
+    rows = [r for r in _rows(verified, "int_overflow")
+            if r[0] == "cn(@Int.0 - 1) / -1"]
+    assert rows == [("cn(@Int.0 - 1) / -1", "tier3")], rows
+    assert "E528" not in _codes(verified), _codes(verified)
+    assert "overflow" in _trap(source, 0)
+
+
+# =====================================================================
 # `_check_nat_binding_obligation_term`: a projected value's `nat_bind` row
 # =====================================================================
 
@@ -304,6 +349,81 @@ def test_repro_the_placeholder_re_ask_requires_the_range_premise(
     rows = _rows(verified, "nat_bind")
     assert rows == [("@Nat", "tier3")], rows
     assert True in seen, seen
+
+
+def _placeholder_judgements(
+        monkeypatch: pytest.MonkeyPatch, source: str) -> list[bool]:
+    """`_refuted_only_over_a_placeholder`'s answers for the `nat_bind` rows
+    `_check_nat_binding_obligation` asks it of (a `let @Nat` binding)."""
+    seen: list[bool] = []
+    real = ContractVerifier._refuted_only_over_a_placeholder
+    real_site = ContractVerifier._check_nat_binding_obligation
+    inside: list[bool] = []
+
+    def spy(self: ContractVerifier, *args: Any, **kwargs: Any) -> bool:
+        answer = real(self, *args, **kwargs)
+        if inside:
+            seen.append(answer)
+        return answer
+
+    def site(self: ContractVerifier, *args: Any, **kwargs: Any) -> None:
+        inside.append(True)
+        try:
+            real_site(self, *args, **kwargs)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(
+        ContractVerifier, "_refuted_only_over_a_placeholder", spy)
+    monkeypatch.setattr(ContractVerifier, "_check_nat_binding_obligation", site)
+    rows = _rows(_verify(source), "nat_bind")
+    assert rows == [("@Int.0 - @Int.0 - @Int.3", "tier3")], rows
+    return seen
+
+
+def test_kills_1928_a_let_nat_placeholder_re_ask_requires_the_range_premise(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`let @Nat = s - s - @Int.0`, `s` a destructure's shadow: negative
+    exactly where `@Int.0 >= 1`, which `c` states of `<max> - @Int.0 + 1`
+    only in range.  The re-ask `value < 0` is not proved under the range
+    premise, so the refutation is one over a placeholder (True); asked
+    without it, `c`'s postcondition proves it (False)."""
+    seen = _placeholder_judgements(monkeypatch, _BELOW_MAX + _MKT + _k(
+        "@Int -> @Int", "true",
+        f"  let @Int = c({_MAX} - @Int.0 + 1);\n"
+        "  let Tuple<@Int, @Int> = mkt(@Int.1);\n"
+        "  let @Nat = @Int.0 - @Int.0 - @Int.3;\n"
+        "  0"))
+    assert seen == [True], seen
+
+
+def test_kills_1928_a_let_nat_placeholder_re_ask_is_strict(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under `requires(@Int.1 >= 0)` the value `s - s - @Int.3` (that
+    parameter, after the destructure) is `<= 0` and `< 1`, and not `< 0`
+    (at 0): the re-ask is `value < 0`, not proved, so the refutation is one
+    over a placeholder."""
+    seen = _placeholder_judgements(monkeypatch, _MKT + _k(
+        "@Int, @Int -> @Int", "@Int.1 >= 0",
+        "  let Tuple<@Int, @Int> = mkt(@Int.0);\n"
+        "  let @Nat = @Int.0 - @Int.0 - @Int.3;\n"
+        "  0"))
+    assert seen == [True], seen
+
+
+def test_kills_1928_a_let_nat_refuted_for_every_placeholder_value_is_violated(
+        ) -> None:
+    """`s - s - @Int.3` under `requires(@Int.1 >= 1)` is negative whatever
+    the shadow `s`: the re-ask `value < 0` is proved, so the refutation is
+    not one over a placeholder, and the row is `violated` (E503)."""
+    verified = _verify(_MKT + _k(
+        "@Int, @Int -> @Int", "@Int.1 >= 1",
+        "  let Tuple<@Int, @Int> = mkt(@Int.0);\n"
+        "  let @Nat = @Int.0 - @Int.0 - @Int.3;\n"
+        "  0"))
+    rows = _rows(verified, "nat_bind")
+    assert rows == [("@Int.0 - @Int.0 - @Int.3", "violated")], rows
+    assert "E503" in _codes(verified), _codes(verified)
 
 
 # =====================================================================

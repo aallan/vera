@@ -1681,6 +1681,35 @@ def test_a_premise_held_is_omitted_up_to_its_bound_names() -> None:
     assert not same(smt, x >= 0)
 
 
+def test_kills_1928_alpha_equal_reads_inside_an_app_and_tells_bound_names() -> None:
+    """`_alpha_equal` below the top: two terms that are not `eq` but differ
+    only in a quantifier's bound name inside an app are equal; two bound
+    variables at one position, and a bound variable facing an app, are
+    not."""
+    import z3
+
+    from vera.verifier import _alpha_equal
+
+    x = z3.Int("x")
+    i, j = z3.Int("i"), z3.Int("j")
+    a = z3.Array("a", z3.IntSort(), z3.IntSort())
+    qi = z3.ForAll([i], z3.Implies(i >= 0, a[i] >= 0))
+    qj = z3.ForAll([j], z3.Implies(j >= 0, a[j] >= 0))
+    inside_i, inside_j = z3.And(qi, x >= 0), z3.And(qj, x >= 0)
+    assert not inside_i.eq(inside_j)
+    assert _alpha_equal(inside_i, inside_j)
+    assert _alpha_equal(z3.Not(inside_i), z3.Not(inside_j))
+    # The same bound variables in the other order: `a[i] < a[j]` against
+    # `a[j] < a[i]` (de Bruijn indices 1, 0 against 0, 1).
+    assert not _alpha_equal(z3.ForAll([i, j], a[i] < a[j]),
+                            z3.ForAll([i, j], a[j] < a[i]))
+    # A bound variable facing a constant at one position.
+    assert not _alpha_equal(z3.ForAll([i], a[i] >= 0),
+                            z3.ForAll([i], a[0] >= 0))
+    assert not _alpha_equal(z3.ForAll([i], a[0] >= 0),
+                            z3.ForAll([i], a[i] >= 0))
+
+
 _CHAIN = "private data Chain {\n  End,\n  Link(Nat, Chain)\n}\n\n"
 
 #: A recursion over a data type with a `Nat` field (#1928, the generator's
@@ -1771,6 +1800,140 @@ def test_repro_1928_a_call_result_of_a_nat_field_type_keeps_the_ensures() -> Non
     statuses = _statuses(_CHAIN_FROM_A_CALL)
     assert ("ensures", "verified", "") in statuses["k"], statuses
     assert ("ensures", "verified", "") in statuses["total"], statuses
+
+
+#: A component of the caller's parameter passed on (#1928,
+#: `_component_type`): `g`'s `ensures` is guarded, in an `int_overflow`
+#: query, by the range parts of its parameter's premise over the argument,
+#: the tail's `Nat` bounds at every depth.  The caller holds them at the
+#: tail's position only through its own parameter's declared type, so the
+#: row `g(..) + 1` is `verified` only where the guard omits them as held:
+#: a tail one level and two levels down, a generic list's tail (read
+#: through the instantiation), a tuple's component.  `notparam` matches a
+#: call's result, no component of its parameter, of which nothing is held;
+#: `ptail` passes a tail whose field is refined, and a refinement below
+#: the head is never omitted (E506): neither row is `verified`.
+_COMPONENT_PASSED_ON = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Chain { End, Link(Nat, Chain) }
+
+private data Lst<T> { Nil, Cons(T, Lst<T>) }
+
+private data PChain { PEnd, PLink(Pos, PChain) }
+
+private fn g(@Chain -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+private fn gl(@Lst<Nat> -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+private fn gp(@PChain -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+private fn rev(@Chain -> @Chain)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Chain.0
+}
+
+private fn tail1(@Chain -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Chain.0 {
+    Link(@Nat, @Chain) -> g(@Chain.0) + 1,
+    End -> 0
+  }
+}
+
+private fn tail2(@Chain -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Chain.0 {
+    Link(@Nat, Link(@Nat, @Chain)) -> g(@Chain.0) + 1,
+    _ -> 0
+  }
+}
+
+private fn gen(@Lst<Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Lst<Nat>.0 {
+    Cons(@Nat, @Lst<Nat>) -> gl(@Lst<Nat>.0) + 1,
+    Nil -> 0
+  }
+}
+
+private fn tup(@Tuple<Chain, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Tuple<Chain, Int>.0 {
+    Tuple(Link(@Nat, @Chain), @Int) -> g(@Chain.0) + 1,
+    _ -> 0
+  }
+}
+
+private fn notparam(@Chain -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Chain = rev(@Chain.0);
+  match @Chain.0 {
+    Link(@Nat, @Chain) -> g(@Chain.0) + 1,
+    End -> 0
+  }
+}
+
+private fn ptail(@PChain -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @PChain.0 {
+    PLink(@Pos, @PChain) -> gp(@PChain.0) + 1,
+    PEnd -> 0
+  }
+}
+"""
+
+
+def test_kills_1928_a_component_of_the_parameter_passed_on_is_held() -> None:
+    """The held range part of a component decides the row; a value that
+    is no component of the parameter, and a refined component, are not
+    held."""
+    statuses = _statuses(_COMPONENT_PASSED_ON)
+    rows = {fn: [s for kd, s, _c in statuses[fn] if kd == "int_overflow"]
+            for fn in ("tail1", "tail2", "gen", "tup", "notparam", "ptail")}
+    for fn in ("tail1", "tail2", "gen", "tup"):
+        assert rows[fn] == ["verified"], (fn, rows)
+    for fn in ("notparam", "ptail"):
+        assert rows[fn] and "verified" not in rows[fn], (fn, rows)
 
 
 #: The recursions above over a `Pos` field: a refinement below the head can
@@ -2393,6 +2556,115 @@ def test_1928_an_operation_is_disclosed_by_its_own_handler() -> None:
     assert ("other", "refine_bind", "tier3_unguarded", "E506") in statuses
 
 
+#: The stand-in's facts by how it is minted (#1928, `SmtContext._stand_in`):
+#: `kh`'s and `khn`'s handles perform a refined operation, so each is a
+#: stand-in of its type's base alone (`base_only`); `kp`'s `apply_fn` is a
+#: stand-in of its whole type; `kd`'s argument reads `mk`'s disclosed
+#: payload (#1406's fixture), so its stand-in is disclosed: its ranges and
+#: base are stated, its refinement offered on the second attempt only.
+_STAND_IN_KINDS_1928 = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type PosNat = { @Nat | @Nat.0 > 0 };
+
+type MkP = fn(Int -> Pos) effects(pure);
+
+type MkN = fn(Int -> PosNat) effects(pure);
+
+private fn mk(@Float64 -> @Option<PosNat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = Some(float_to_int(@Float64.0));
+  @Option<Int>.0
+}
+
+public fn kh(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  handle[State<Pos>](@Pos = 1) {
+    get(@Unit) -> { resume(@Pos.0) },
+    put(@Pos) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+
+public fn khn(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  handle[State<PosNat>](@PosNat = 1) {
+    get(@Unit) -> { resume(@PosNat.0) },
+    put(@PosNat) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+
+public fn kp(@MkP, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  apply_fn(@MkP.0, @Int.0)
+}
+
+public fn kd(@MkP, @Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  apply_fn(@MkP.0, match mk(@Float64.0) { Some(@PosNat) -> 1, None -> 0 })
+}
+
+public fn kdn(@MkN, @Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  apply_fn(@MkN.0, match mk(@Float64.0) { Some(@PosNat) -> 1, None -> 0 })
+}
+"""
+
+
+def test_kills_1928_a_stand_in_states_what_its_minting_allows() -> None:
+    """A `base_only` stand-in states its base and not its refinement (`kh`
+    not proved, `khn`'s `Nat` floor proved); a whole stand-in states its
+    refinement (`kp` proved); a disclosed one offers its refinement on the
+    second attempt only (`kd` is E534's, not proved and not refuted), its
+    `Nat` floor on the first (`kdn` proved)."""
+    statuses = _statuses(_STAND_IN_KINDS_1928)
+    ensures = {fn: [(s, c) for k, s, c in statuses[fn] if k == "ensures"]
+               for fn in ("kh", "khn", "kp", "kd", "kdn")}
+    assert ensures["kh"] == [("tier3", "E522")], ensures
+    assert ensures["khn"] == [("verified", "")], ensures
+    assert ensures["kp"] == [("verified", "")], ensures
+    assert ensures["kd"] == [("tier3", "E534")], ensures
+    assert ensures["kdn"] == [("verified", "")], ensures
+
+
+def test_kills_1928_a_stand_in_with_no_verifier_driving_is_not_disclosed(
+        ) -> None:
+    """With no verifier driving (no disclosed-call hook, no unchecked-
+    producer hook), a stand-in over a call is not disclosed, and no hook is
+    called."""
+    import z3
+
+    from vera import ast
+    from vera.smt import SmtContext
+
+    smt = SmtContext()
+    stand_in = z3.Int("s")
+    assert smt._inherit_disclosure(
+        ast.FnCall(name="f", args=(ast.IntLit(1),)), stand_in) is False
+    assert not smt.term_is_disclosed(stand_in)
+
+
 # Where the handler clause stands (#1928, round 5): in the function that
 # performs the operation, in a generic's instance clone, or in an imported
 # module's function.  A `get` inside a handler's body is answered by its
@@ -2519,6 +2791,33 @@ def test_1928_the_answering_clause_at_each_placement(
         assert not pipeline.run(entry, "main").ok, place
 
 
+def _two_handlers_1928(first: str, second: str) -> str:
+    """`first` and `second` each handle a `get` of their own with the
+    clause given; `reader`'s `get` stands outside every handler, so every
+    clause of the name answers it (the name fallback)."""
+    def handler(name: str, clause: str) -> str:
+        return _fn("private", f"{name}(@Unit -> @Bool)", "true",
+                   f"let @Option<Pos> = {_handle_1928(clause, 'get(())')};"
+                   "\n  true") + "\n"
+    reader = _fn("private", "reader(@Unit -> @Bool)", "@Bool.result",
+                 f"let @Option<Pos> = get(());\n  {_POS_READ_1928}").replace(
+        "  effects(pure)\n", "  effects(<State<Option<Pos>>>)\n")
+    return (_POS_1928 + _PICK_1928 + "\n" + handler(*first.split(":", 1))
+            + handler(*second.split(":", 1)) + reader)
+
+
+def test_kills_1928_the_name_fallback_reads_every_handler_of_the_name() -> None:
+    """Two handlers with a `get` clause, the unchecked one first and then
+    last: the name fallback keeps both, so `reader` is E534's in either
+    order (a map keeping one clause a name reads the clean one in one)."""
+    bad = "bad:" + _GET_CLAUSE_1928
+    good = "good:" + _CLEAN_CLAUSE_1928
+    for first, second in ((bad, good), (good, bad)):
+        statuses = _statuses(_two_handlers_1928(first, second))
+        reader = [(s, c) for k, s, c in statuses["reader"] if k == "ensures"]
+        assert reader == [("tier3", "E534")], (first, statuses)
+
+
 # The generic refined-return path (#746; #1928, review round 6): a generic
 # function no call instantiates still has its concrete refined return
 # discharged, in a context of its own.  That context held a hand-kept list
@@ -2623,6 +2922,55 @@ def test_repro_1928_generic_return_discloses_an_unchecked_producer() -> None:
     rows = _returns_1928(_GENERIC_PRODUCER_1928)
     assert rows["g"] == rows["h"] == ("tier3", "E506"), rows
     assert not pipeline.run(_GENERIC_PRODUCER_1928, "h", [0], file=FILE).ok
+
+
+#: The generic fast path's context and declarations (#1928, round 6):
+#: `g1`'s return is a `where`-free helper's result, proved from the
+#: helper's contract (the lexical callee scope); `g3` matches a concrete
+#: `Option<Int>` parameter (declared at its own sort); `g5`'s two `Int`
+#: parameters are two constants (each declared under its own name), so a
+#: return that differs where they differ is refuted.
+_GENERIC_DECLARATIONS_1928 = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  if @Int.0 > 0 then { @Int.0 } else { 1 }
+}
+
+public forall<T> fn g1(@T, @Int -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  helper(@Int.0)
+}
+
+public forall<T> fn g3(@T, @Option<Int> -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 { Some(@Int) -> 1, None -> 2 }
+}
+
+public forall<T> fn g5(@T, @Int, @Int -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.1 - @Int.0 + 1
+}
+"""
+
+
+def test_kills_1928_the_generic_fast_path_declares_as_the_main_path() -> None:
+    rows = _returns_1928(_GENERIC_DECLARATIONS_1928)
+    assert rows == {"g1": ("verified", ""), "g3": ("verified", ""),
+                    "g5": ("violated", "E505")}, rows
 
 
 def _hooks_1928(smt: object) -> frozenset[str]:
