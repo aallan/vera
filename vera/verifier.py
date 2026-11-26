@@ -128,6 +128,14 @@ _TRUNCATED_SCAN = "\x00truncated"
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 
+#: #1814: how many times the invariant walk re-enters a recursive type below
+#: its first occurrence.  Each unfolded level is a true fact of every value,
+#: so a bound is a weaker statement, never a wrong one.  A Z3 recursive
+#: function stating every level was measured instead: a satisfiable query
+#: over it (a refuted goal two elements down a list) took 93 s where this
+#: takes 0.14 s.
+_RECURSIVE_UNFOLDING = 2
+
 #: The E506 reason shared by the two sub-pattern sites whose SCRUTINEE the SMT
 #: layer cannot project (#1251).  Nothing about the predicate or its base is at
 #: fault there — the field the predicate is about was never formed — so saying
@@ -421,6 +429,89 @@ class ArgumentTarget:
     #: The type to read refinements written INSIDE the formal off, when it
     #: carries any (:py:meth:`ContractVerifier._nested_refinement_formal`).
     nested: Type | None
+    #: The type the callee's parameter is declared at, a generic one's
+    #: instantiation included (the same resolution as *nested*), or None:
+    #: what the callee's proof assumed of it is the guard (#1928).
+    declared: Type | None
+
+
+def _alpha_equal(a: z3.ExprRef, b: z3.ExprRef) -> bool:
+    """Whether *a* and *b* are the same formula up to the names of their
+    bound variables (#1928).  A bound variable is a de Bruijn index in the
+    body, so two quantifiers agree when their kind, their variables' sorts
+    and their bodies do; everything else agrees by structure."""
+    if a.eq(b):
+        return True
+    if z3.is_quantifier(a) and z3.is_quantifier(b):
+        return (a.is_forall() == b.is_forall()
+                and a.is_lambda() == b.is_lambda()
+                and a.num_vars() == b.num_vars()
+                and all(a.var_sort(i).eq(b.var_sort(i))
+                        for i in range(a.num_vars()))
+                and _alpha_equal(a.body(), b.body()))
+    # A quantifier facing anything else is no app, so it is unequal here.
+    if not (z3.is_app(a) and z3.is_app(b)):
+        return False
+    return (a.decl().eq(b.decl()) and a.num_args() == b.num_args()
+            and all(_alpha_equal(a.arg(i), b.arg(i))
+                    for i in range(a.num_args())))
+
+
+@dataclass(frozen=True)
+class ParameterPremise:
+    """What a function's proof assumes of a parameter's value (#1928).
+
+    Built by :py:meth:`ContractVerifier._parameter_premise` and read twice:
+    by the function's own proof, which assumes it of the parameter
+    (:py:meth:`ContractVerifier._declared_type_facts`), and by a call, which
+    assumes the callee's facts only under the argument meeting all of it
+    (:py:meth:`ContractVerifier._call_binding_facts`).  One function, so the
+    guard cannot come to be less than what the callee assumed.
+    """
+
+    #: The head refinement's predicates, whatever the base (#1696).
+    head: list[z3.ExprRef]
+    #: The refinements written inside the type (#1430).
+    nested: list[z3.ExprRef]
+    #: What the type states at every position besides (#1814).
+    invariant: list[z3.ExprRef]
+    #: The ids of the *invariant* facts beyond what every query requires
+    #: of an argument (#1928): what the type states of a value by
+    #: representation (an `Int`'s range, a `Nat`'s upper bound) or by
+    #: construction (a `Nat`'s `>= 0` inside the type, every `nat_bind` row
+    #: having a check), at every position, an element quantifier holding
+    #: only these included.  A head `Nat`'s `>= 0` and a refinement over a
+    #: data type inside the type (whose rows can have no check, E506) are
+    #: not: every query requires them, as main's guard did a nested
+    #: scalar refinement.  The range parts alone are what a call omits
+    #: from its guard for a component of the caller's parameter: a
+    #: refinement below the head can have no check, so it is omitted only
+    #: where the caller holds it literally.
+    ranges: frozenset[int]
+
+    def facts(self) -> list[z3.ExprRef]:
+        """Every fact, as the function's own proof assumes them."""
+        return [*self.head, *self.nested, *self.invariant]
+
+    def range_free(self) -> list[z3.ExprRef]:
+        """What a call's guard requires of an argument for every query
+        (#1928): the head refinement's predicates, a head `Nat`'s `>= 0`,
+        the refinements nested in the formal, a refinement over a data type
+        inside it (and an element quantifier holding one).  An argument that
+        reaches its
+        call is a value, in range by its own evaluation and of its type
+        inside by its constructions' checks; only a query asking what a type
+        states of a value may not take that as given."""
+        return [*self.head, *self.nested,
+                *(f for f in self.invariant if f.get_id() not in self.ranges)]
+
+    def range_parts(self) -> list[z3.ExprRef]:
+        """What the type states of a value by representation or by
+        construction (an `Int`'s range, a `Nat`'s upper bound, a `Nat`'s
+        `>= 0` inside the type), which only a query asking that also
+        requires (an `int_overflow`, `nat_sub` or `nat_bind` row's;
+        :py:meth:`SmtContext.check_valid`, *in_range*)."""
+        return [f for f in self.invariant if f.get_id() in self.ranges]
 
 
 @dataclass(frozen=True)
@@ -1251,6 +1342,10 @@ class ContractVerifier:
         # typed program and decides which a runtime check can guard; this
         # verifier discharges its rows (`_settle_rows`) and lists none.
         self._table = obligation_table.build(typed)
+        # #1928: for each operation call, the handler clauses that may
+        # answer it (`_answering_clauses`), built on first use.
+        self._answers: tuple[dict[object, tuple[ast.HandlerClause, ...]],
+                             dict[str, tuple[ast.HandlerClause, ...]]] | None = None
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
@@ -1702,6 +1797,7 @@ class ContractVerifier:
                 refined=self._refined_binding_target(arg, formal),
                 nat=self._nat_binding_target(arg, formal),
                 nested=nested if self._has_nested_refinement(nested) else None,
+                declared=nested,
             ))
         return targets
 
@@ -1711,16 +1807,32 @@ class ContractVerifier:
         callee: FunctionInfo,
         terms: Sequence[z3.ExprRef | None],
         smt: SmtContext,
-    ) -> list[z3.ExprRef]:
+    ) -> tuple[list[z3.ExprRef], list[z3.ExprRef]]:
         """The SMT layer's hook (``SmtContext._call_binding_hook``): the facts
         *call*'s arguments owe *callee*'s parameters, over *terms*, the
-        arguments as the call's translation translated them (#1706).
+        arguments as the call's translation translated them (#1706), in two
+        parts: what every query requires (main's guard: the head
+        refinement, a head `Nat`'s `>= 0`, the nested refinements), and the
+        rest of the premise, which only a query asking what a type states of
+        a value requires (#1928; :py:meth:`ParameterPremise.range_free`).
+        A part the caller already holds as a standing premise is omitted
+        from both (:py:meth:`_premise_held`); where the argument is a
+        component of one of the caller's parameters
+        (:py:meth:`_component_type`), a range part the caller's premise
+        states of that component is omitted besides.  A refinement part is
+        not: a narrowing below the head can have no check (E506), so the
+        component's refinement is not true at every depth.
 
-        Per argument, what the callee's own proof assumed of the parameter
-        (`_declare_value`'s `>= 0` for a `@Nat`, and the refinement
-        predicate and nested facts of `_declared_type_facts`): the
-        refinement's predicate, `>= 0` for a `@Nat`, and the refinements
-        nested in the formal.  For every argument, whether or not it narrows
+        Per argument, what the callee's own proof assumed of the parameter,
+        read off the one function that proof reads it off
+        (:py:meth:`_parameter_premise`, #1928), over the argument's term:
+        the head refinement's predicates, the refinements nested in the
+        formal, and what the type states at every position (an `Int`'s
+        range, a `Nat`'s, at the head and inside).  A guard short of the
+        premise let a postcondition the callee proved from a parameter's
+        range stand as a fact over the argument's term, and the argument's
+        own `int_overflow` row was proved from it while the run trapped.
+        For every argument, whether or not it narrows
         at this call, because a fact over the argument's TERM is a fact over
         whatever produced it — a `let` whose slot it is, a constructor field
         inside it.  A statically fitting argument's guard discharges where the
@@ -1729,33 +1841,112 @@ class ContractVerifier:
         element or a `State<T>` read's value, the guard does not discharge
         and the callee's facts are lost to the proofs after the call: the
         caller is refused what it cannot show, never granted what it has not
-        shown.  The nested facts are
-        taken raw rather than through :py:meth:`_established_facts`: the
-        guard has to be at least what the callee assumed, and the callee's
-        own parameter carries no disclosure.  An untranslatable refinement
-        predicate is one the callee could not assume either, so only its
-        base's `>= 0`, which it did assume, stands for it.
+        shown.  The facts are taken raw rather than through
+        :py:meth:`_established_facts`: the guard has to be at least what the
+        callee assumed, and the callee's own parameter carries no
+        disclosure.  A refinement predicate the solver reads only in part is
+        assumed in part, its untranslatable rest a stand-in, and the guard
+        requires the same part.
         """
         formals = getattr(callee, "param_types", None)
         if formals is None:
-            return []
+            return [], []
         facts: list[z3.ExprRef] = []
+        ranges: list[z3.ExprRef] = []
         for target, term in zip(
                 self._argument_targets(call.args, formals), terms):
-            if term is None:
+            if term is None or target.declared is None:
                 continue
-            if target.refined is not None:
-                predicate = self._translate_refined_predicate(
-                    smt, target.refined, term)
-                if predicate is not None:
-                    facts.append(predicate)
-            if target.nat and isinstance(term, z3.ArithRef):
-                facts.append(term >= 0)
-            if target.nested is not None:
-                nested, _ = self._nested_refinement_facts(
-                    smt, target.nested, term)
-                facts.extend(nested)
-        return facts
+            premise = self._parameter_premise(
+                smt, target.declared, term, standing=False)
+            # #1928: what the caller's premise states of the argument by
+            # representation or construction where the argument is a
+            # component of one of its parameters: its range parts alone.  A
+            # refinement below the head can have no check (E506), so it is
+            # not held at every depth and is omitted only where the caller
+            # holds it literally.
+            component = self._component_type(smt, term)
+            held: list[z3.ExprRef] = []
+            if component is not None:
+                held = [f for f in self._established_facts(
+                    self._parameter_premise(
+                        smt, component, term, standing=False).range_parts(),
+                    source=None, term=term, smt=smt) if z3.is_expr(f)]
+            facts.extend(f for f in premise.range_free()
+                         if not self._premise_held(smt, f))
+            ranges.extend(f for f in premise.range_parts()
+                          if not self._premise_held(smt, f, held))
+        return facts, ranges
+
+    def _component_type(
+        self, smt: SmtContext, term: z3.ExprRef,
+    ) -> Type | None:
+        """The declared type at *term*'s position where *term* is an
+        accessor path into one of the caller's parameters
+        (``SmtContext.standing_parameters``, #1928), read off the
+        PARAMETER's declared type through each constructor's field types;
+        else None.  What the parameter's type states by representation or
+        by construction (its range parts: an `Int`'s range, a `Nat`'s
+        bounds, every `nat_bind` row having a check) is true of its value at
+        every depth, so of each component at the component's declared type;
+        a refinement is not (a narrowing below the head can have no check,
+        E506), and :py:meth:`_call_binding_facts` reads the range parts
+        alone.  A value that is no such path (a stand-in, a call's result, a
+        construction) has none."""
+        path: list[tuple[z3.DatatypeSortRef, int, int]] = []
+        node = term
+        while (z3.is_app(node) and node.num_args() == 1
+               and isinstance(node.arg(0).sort(), z3.DatatypeSortRef)):
+            sort = node.arg(0).sort()
+            step = next(((i, j) for i in range(sort.num_constructors())
+                         for j in range(sort.constructor(i).arity())
+                         if sort.accessor(i, j).eq(node.decl())), None)
+            if step is None:
+                # A step that is no accessor (a call's or a recognizer's
+                # application) leaves a node no parameter is: a parameter
+                # is a constant.
+                return None
+            path.append((sort, *step))
+            node = node.arg(0)
+        ty = next((t for var, t in smt.standing_parameters if var.eq(node)),
+                  None)
+        for sort, i, j in reversed(path):
+            if ty is None:
+                return None
+            fields = self._payload_field_types(
+                sort.constructor(i).name(), self._strip_refinements(ty))
+            if fields is None or len(fields) != sort.constructor(i).arity():
+                return None
+            ty = fields[j]
+        return ty
+
+    @staticmethod
+    def _premise_held(
+        smt: SmtContext, fact: z3.ExprRef,
+        component: Sequence[z3.ExprRef] = (),
+    ) -> bool:
+        """Whether *fact*, a part of a call's guard, is one of the caller's
+        own standing premises (``SmtContext.standing_premises``, #1928), or
+        one of *component*, the range parts of what the caller's premise
+        states of the argument where it is a component of one of its
+        parameters (:py:meth:`_component_type`).
+
+        The one place a guard part is omitted: where the caller's proof
+        already assumes the same fact, as of its own parameter passed on to
+        a parameter the callee assumes the same of, `A and (A implies F)` is
+        `A and F` in every query, so the omission loses nothing.  A
+        component's range parts are held at every depth (by representation,
+        or by a check at every construction), where the solver holds two
+        levels of them; its refinements are not (a narrowing below the head
+        can have no check, E506), so the caller passes the range parts alone
+        as *component*.  Decided by
+        the premise itself, up to the names of its bound variables (each
+        element quantifier is built with a fresh one), not by the shape of
+        the argument: a fact the caller holds of a different type's premise
+        (a `Nat`'s upper bound, guarding an `Int` parameter) is omitted
+        alone, and every other part stays."""
+        return any(_alpha_equal(fact, held)
+                   for held in (*smt.standing_premises, *component))
 
     def _call_result_facts(
         self,
@@ -2367,14 +2558,43 @@ class ContractVerifier:
         it is a bug, and a term can acquire a disclosed site through
         cross-module widening.
         """
-        nested_facts, _ = self._nested_refinement_facts(smt, ty, var)
+        premise = self._parameter_premise(smt, ty, var)
         # #1696: the head refinement's predicates over any base, and the
         # value registered as one no refutation may rest on where a
         # predicate of its type holds a stand-in (#1470).
-        facts: list[object] = list(smt.declared_facts(var, ty, nested_facts))
+        facts: list[object] = list(smt.declared_facts(
+            var, premise.head, premise.nested))
         facts.extend(self._established_facts(
-            nested_facts, source=None, term=var, smt=smt))
+            list(premise.nested), source=None, term=var, smt=smt))
+        # #1814: and what the type states at every position that neither
+        # walk above states, through the same gate.  The caller's argument
+        # rows and the composite-coercion guards at the call (#1818), or an
+        # exported function's entry guard, establish it before the body runs.
+        facts.extend(self._established_facts(
+            list(premise.invariant), source=None, term=var, smt=smt))
         return facts
+
+    def _parameter_premise(
+        self, smt: SmtContext, ty: Type, term: z3.ExprRef, *,
+        standing: bool = True,
+    ) -> ParameterPremise:
+        """What a function's proof assumes of a parameter of type *ty* whose
+        value is *term* (#1928): THE source of both the function's own
+        premise (:py:meth:`_declared_type_facts`) and the guard a call puts
+        on the callee's facts (:py:meth:`_call_binding_facts`), the second
+        over the argument's term.  `_declare_value`'s `Nat` range is the
+        head of :py:meth:`_type_invariant`'s walk.  A guard's facts stand
+        under an implication, not as premises of their own, so they are
+        built with *standing* False: the same facts, no element tagged for
+        the premise screen."""
+        nested, _ = self._nested_refinement_facts(smt, ty, term)
+        ranges: set[int] = set()
+        return ParameterPremise(
+            head=smt.head_facts(term, ty),
+            nested=list(nested),
+            invariant=list(self._type_invariant(
+                smt, ty, term, standing=standing, ranges=ranges)),
+            ranges=frozenset(ranges))
 
     def _fresh_smt(self, scope: CalleeScope) -> SmtContext:
         """A solver context for one declaration, read in *scope*.
@@ -2413,6 +2633,17 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1814: and let a stand-in carry what its type states at every
+        # position.  Stateless but for the process-wide recursive-function
+        # cache, so safe on the warm (shared) smt too.
+        smt._type_invariant_hook = (
+            lambda ctx, ty, term: self._type_invariant(ctx, ty, term))
+        # #1928: and let a stand-in hold back what its type states beyond
+        # the ranges where a row producing its value has no check.
+        smt._type_ranges_hook = (
+            lambda ctx, ty, term: self._invariant_at(
+                ctx, ty, term, head=True, seen=frozenset()))
+        smt._unchecked_producer_hook = self._produces_unchecked
         # #1468: and let a generic call's precondition be read off the clone
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
@@ -4486,6 +4717,15 @@ class ContractVerifier:
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
             entry_params.append((z3_name, var))
+        # #1928: what a call's guard may omit, being held already: these
+        # premises are asserted into the base context below (step 4), and
+        # every proof this function makes rests on them.
+        smt.standing_premises = tuple(
+            f for f in refined_param_assumptions if z3.is_expr(f))
+        smt.standing_parameters = tuple(
+            (var, ty) for (_n, var), ty in zip(
+                entry_params, param_types, strict=True)
+            if z3.is_expr(var) and ty is not None)
         # #1763: the scope a `requires` clause is read in, so a fix can
         # offer a clause only where it means at entry what it means at
         # the site it is computed from.  Held on the context, which a reset
@@ -5248,6 +5488,7 @@ class ContractVerifier:
         probe.set("timeout", smt._timeout_ms)
         kept: list[object] = []
         totality: list[tuple[object, str]] = []
+        element: list[tuple[object, str]] = []
         for fact in (*smt.solver.assertions(), *assumed):
             if not self._has_quantifier(fact):
                 kept.append(fact)
@@ -5255,8 +5496,14 @@ class ContractVerifier:
             record = smt.registered_axiom(fact)
             if record is not None and record.kind is AxiomKind.TOTALITY:
                 totality.append((fact, record.symbol))
+            elif record is not None and record.kind is AxiomKind.ELEMENT:
+                element.append((fact, record.symbol))
         if not kept:
             return None
+        # An ELEMENT axiom is instantiated at every index term the kept
+        # premises read (#1814), before the TOTALITY axioms, whose instances
+        # then cover the `length(s)` its guard reads.
+        kept.extend(self._element_instances(element, kept))
         for fact in kept:
             probe.add(fact)
         # A TOTALITY axiom is not dropped: it is INSTANTIATED on the ground
@@ -5271,6 +5518,38 @@ class ContractVerifier:
         for instance in self._totality_instances(totality, kept):
             probe.add(instance)
         return self._verdict(probe.check())
+
+    @staticmethod
+    def _element_instances(
+        axioms: list[tuple[object, str]], ground: list[object],
+    ) -> list[object]:
+        """Ground instances of each ELEMENT axiom at the index terms *ground*
+        reads: for `forall i. B(i)` over `index` and every `index(_, t)` in
+        the kept premises, `B(t)` (`AxiomKind.ELEMENT`).  *ground* is
+        quantifier-free."""
+        indices: dict[str, dict[int, object]] = {
+            symbol: {} for _q, symbol in axioms}
+        stack: list[object] = list(ground)
+        seen: set[int] = set()
+        while stack:
+            # `cast` returns its second argument at run time: the type is
+            # read by mypy alone, so no program sees a change to it.
+            expr = cast(
+                "z3.ExprRef",  # pragma: no mutate
+                stack.pop())
+            if expr.get_id() in seen or not z3.is_app(expr):
+                continue
+            seen.add(expr.get_id())  # pragma: no mutate — equivalent: the set only spares a revisit, and a revisit records the same index terms in the same dict; measured (W172): with `add(None)`, every instance and every obligation row over 361 programs is unchanged
+            children = expr.children()
+            if expr.decl().name() in indices and len(children) == 2:
+                indices[expr.decl().name()][children[1].get_id()] = children[1]
+            stack.extend(children)
+        return [
+            z3.substitute_vars(cast(
+                "z3.QuantifierRef",  # pragma: no mutate — equivalent: `cast` returns its second argument; measured (W172): with this argument None or retexted, every instance and every obligation row over 361 programs is unchanged
+                quantifier).body(), t)
+            for quantifier, symbol in axioms
+            for t in indices[symbol].values()]
 
     @staticmethod
     def _totality_instances(
@@ -5383,9 +5662,10 @@ class ContractVerifier:
         free: set[str] = set()
         for fact in (*smt.solver.assertions(), *assumed):
             record = smt.registered_axiom(fact)
-            if record is not None and record.kind is AxiomKind.TOTALITY:
+            if record is not None and record.kind is not AxiomKind.RANK:
                 # Instantiated rather than dropped, so nothing about it has to
-                # be disjoint from the kept half (#1457 review, ruling C).
+                # be disjoint from the kept half (#1457 review, ruling C): a
+                # TOTALITY axiom, and an ELEMENT one (#1814).
                 continue
             symbols = self._uninterpreted_symbols(fact)
             if _TRUNCATED_SCAN in symbols:
@@ -5498,8 +5778,9 @@ class ContractVerifier:
 
         A quantified premise is inside the fragment exactly when the screen
         installed it with a REGIME — `AxiomKind.RANK`, dropped by stage 2 and
-        gated on symbol disjointness, or `AxiomKind.TOTALITY`, instantiated by
-        stage 2 on the ground terms the kept premises mention.  Either way the
+        gated on symbol disjointness, or `AxiomKind.TOTALITY` or
+        `AxiomKind.ELEMENT`, instantiated by stage 2 on the ground terms the
+        kept premises mention.  Either way the
         screen can answer about it.  An UNTAGGED quantifier is foreign and
         puts the premises outside: §2.6.1 lists quantifiers outside the
         fragment for a refinement predicate, and a premise the screen has no
@@ -9523,9 +9804,12 @@ class ContractVerifier:
         violation: object,
         result: SmtResult,
         assumptions: list[object],
+        *,
+        in_range: bool = False,
     ) -> bool:
         """Whether a failed narrowing of *value* was refuted only over a
         placeholder, so it is Tier 3 rather than a violation (#1480 review).
+        *in_range* is the row's own query's (`SmtContext.check_valid`).
 
         The `@Nat` narrowing's twin of the #1460 re-ask
         `_check_refined_binding_obligation` makes: a *value* that is, or
@@ -9541,7 +9825,8 @@ class ContractVerifier:
                 value):
             return False
         return smt.check_valid(
-            violation, list(assumptions)).status != "verified"
+            violation, list(assumptions),
+            in_range=in_range).status != "verified"
 
     def _check_subtraction_obligation(
         self,
@@ -9572,13 +9857,16 @@ class ContractVerifier:
             return
 
         obligation = lhs >= rhs
-        result = smt.check_valid(obligation, list(assumptions))
+        # #1928: a `Nat` row asks what a type states of a value, so it
+        # requires a call's whole guard, the range parts included.
+        result = smt.check_valid(obligation, list(assumptions), in_range=True)
 
         if (
             result.status != "verified"
             and (self._contains_opaque_shadow(lhs)
                  or self._contains_opaque_shadow(rhs))
-            and smt.check_valid(lhs < rhs, list(assumptions)).status
+            and smt.check_valid(
+                lhs < rhs, list(assumptions), in_range=True).status
             != "verified"
         ):
             # A compound operand embeds an opaque shadow (`shadow + 1`): the
@@ -9953,7 +10241,7 @@ class ContractVerifier:
         lo, hi = z3.IntVal(_I64_MIN), z3.IntVal(_I64_MAX)
 
         in_range = z3.And(result >= lo, result <= hi)
-        safe = smt.check_valid(in_range, list(assumptions))
+        safe = smt.check_valid(in_range, list(assumptions), in_range=True)
         if safe.status == "verified":
             self._record_obligation(decl.name, "int_overflow", expr, "verified")
             return
@@ -9961,7 +10249,7 @@ class ContractVerifier:
         # Not provably in range.  Distinguish a real, statically-decidable bug
         # (provably OUT of range) from dynamic operands we cannot decide.
         out_of_range = z3.Or(result < lo, result > hi)
-        bad = smt.check_valid(out_of_range, list(assumptions))
+        bad = smt.check_valid(out_of_range, list(assumptions), in_range=True)
         if bad.status == "verified":
             self._record_obligation(
                 decl.name, "int_overflow", expr, "violated",
@@ -10000,11 +10288,12 @@ class ContractVerifier:
             self._record_obligation(decl.name, "int_overflow", expr, "tier3")
             return
         overflow = z3.And(left == z3.IntVal(_I64_MIN), right == z3.IntVal(-1))
-        safe = smt.check_valid(z3.Not(overflow), list(assumptions))
+        safe = smt.check_valid(
+            z3.Not(overflow), list(assumptions), in_range=True)
         if safe.status == "verified":
             self._record_obligation(decl.name, "int_overflow", expr, "verified")
             return
-        bad = smt.check_valid(overflow, list(assumptions))
+        bad = smt.check_valid(overflow, list(assumptions), in_range=True)
         if bad.status == "verified":
             self._record_obligation(
                 decl.name, "int_overflow", expr, "violated",
@@ -10535,10 +10824,11 @@ class ContractVerifier:
             return
 
         obligation = val >= 0
-        result = smt.check_valid(obligation, list(assumptions))
+        # #1928: as a `nat_sub` row, the whole guard.
+        result = smt.check_valid(obligation, list(assumptions), in_range=True)
 
         if self._refuted_only_over_a_placeholder(
-                smt, val, val < 0, result, assumptions):
+                smt, val, val < 0, result, assumptions, in_range=True):
             self._record_nat_bind_tier3(
                 decl, value_node, site, "tier3",
                 reason=_PLACEHOLDER_NARROWING_REASON)
@@ -10597,10 +10887,11 @@ class ContractVerifier:
         gives the diagnostic location.
         """
         obligation = term >= 0  # type: ignore[operator]
-        result = smt.check_valid(obligation, list(assumptions))
+        # #1928: as a `nat_sub` row, the whole guard.
+        result = smt.check_valid(obligation, list(assumptions), in_range=True)
         if self._refuted_only_over_a_placeholder(
                 smt, term, term < 0,  # type: ignore[operator]
-                result, assumptions):
+                result, assumptions, in_range=True):
             self._record_nat_bind_tier3(
                 decl, node, site, "tier3",
                 reason=_PLACEHOLDER_NARROWING_REASON)
@@ -11203,6 +11494,10 @@ class ContractVerifier:
         if isinstance(element_ty, RefinedType):
             pred = self._translate_refined_predicate(
                 smt, element_ty, element_term)
+            if pred is not None and not self._per_element(pred, element_term):
+                # A predicate that calls a helper would share the helper's
+                # one result across every element (`_per_element`).
+                pred = None
             if pred is None:
                 complete = False
             else:
@@ -11212,8 +11507,9 @@ class ContractVerifier:
         # quantifier covers every depth rather than one per level.
         sub_facts, sub_complete = self._nested_refinement_facts(
             smt, element_ty, element_term, _seen)
-        body.extend(sub_facts)
-        complete = complete and sub_complete
+        own = [f for f in sub_facts if self._per_element(f, element_term)]
+        body.extend(own)
+        complete = complete and sub_complete and len(own) == len(sub_facts)
         if not body:
             return [], complete
         inner = z3.And(*body) if len(body) > 1 else body[0]
@@ -11266,6 +11562,242 @@ class ContractVerifier:
             return [], False
         pred = smt.refines_predicate(self._type_key(base), term_sort)
         return [pred(term)], True
+
+    # -----------------------------------------------------------------
+    # #1814 — what a type states of a value, at every position
+    # -----------------------------------------------------------------
+
+    def _type_invariant(
+        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
+        standing: bool = True, ranges: set[int] | None = None,
+    ) -> list[z3.ExprRef]:
+        """What *ty* states of a value *term* of it that the head and nested
+        refinement walks do not (#1814): an `Int`'s i64 range and a `Nat`'s
+        `0 .. 2^63 - 1` (spec §2.2) at the head and at every position inside
+        the type, a refinement over a data type at a position inside it, an
+        `Array`'s elements under the bounded index quantifier, and a
+        recursive position unfolded `_RECURSIVE_UNFOLDING` times (a `match`
+        arm's binder reads the levels below from its own declared type).
+
+        Assumed only of a constant whose value the program checked before any
+        reader sees it: a parameter, a predicate's binder, a node's stand-in
+        (each caller says which check).  A fact of the head and of a nested
+        refinement over a primitive base is stated where it was before (`declare_nat`,
+        `_type_facts`, `_nested_refinement_facts`); this walk states the rest,
+        so a fact is never missing at a position, and a duplicate is
+        harmless.
+
+        An element range standing as a fact of its own is tagged
+        `AxiomKind.ELEMENT` for the premise screen (#1451); one under a
+        constructor's recognizer is not, and stays foreign to it; nor is one
+        a call's guard holds (*standing* False, #1928), which stands under
+        an implication.
+
+        *ranges*, when given, receives the ids of what the type states of
+        a value by representation or by construction (#1928;
+        :py:attr:`ParameterPremise.ranges`): an `Int`'s range, a `Nat`'s
+        upper bound, a `Nat`'s `>= 0` inside the type, an element
+        quantifier every fact of which is one, and a constructor field's
+        fact under its recognizer where the inner fact is one.  Not a head
+        `Nat`'s `>= 0`, nor a refinement over a data type inside the type."""
+        ranged: dict[int, tuple[z3.ExprRef, str]] = {}
+        facts = self._invariant_at(
+            smt, ty, term, head=True, seen=frozenset(), ranged=ranged,
+            ranges=ranges)
+        for fact in facts:
+            if standing and fact.get_id() in ranged:
+                smt.tag_axiom(fact, AxiomKind.ELEMENT,
+                              ranged[fact.get_id()][1])
+        return facts
+
+    def _invariant_at(
+        self, smt: SmtContext, ty: Type | None, term: z3.ExprRef, *,
+        seen: frozenset[str], head: bool = False,
+        ranged: dict[int, tuple[z3.ExprRef, str]] | None = None,
+        ranges: set[int] | None = None,
+    ) -> list[z3.ExprRef]:
+        """One position of :py:meth:`_type_invariant`'s walk.  With
+        *ranged* None the walk states ranges alone: no refinement over a
+        data type, no array's elements.  *ranges* receives the ids of the
+        range parts (:py:meth:`_type_invariant`)."""
+        if ty is None or not smt.type_is_regular(ty):
+            return []
+        facts: list[z3.ExprRef] = []
+        if ranged is not None and isinstance(ty, RefinedType) and not head:
+            # A refinement over a data type: `_nested_refinement_facts`
+            # states a nested refinement over a primitive base only.
+            chain = self._refined_chain(ty)
+            if chain is not None and isinstance(chain[0], AdtType):
+                predicate = self._translate_refined_predicate(smt, ty, term)
+                if predicate is not None:
+                    # Required of every query (#1928): its rows can have no
+                    # check where it is constructed (E506), so it is not
+                    # what the type states of a value by construction.
+                    facts.append(predicate)
+        base = self._strip_refinements(ty)
+        try:
+            sort = term.sort()
+        except (AttributeError, z3.Z3Exception):  # pragma: no cover
+            return facts
+        if sort == z3.IntSort():
+            if base == NAT:
+                floor, ceiling = term >= 0, term <= _I64_MAX
+                # A head `Nat`'s `>= 0` is what every query requires of an
+                # argument (#1928); inside the type it is what the type
+                # states of a value by construction, as a range is.
+                bounds = [ceiling] if head else [floor, ceiling]
+                facts.extend([floor, ceiling])
+            elif base == INT:
+                bounds = [term >= _I64_MIN, term <= _I64_MAX]
+                facts.extend(bounds)
+            else:
+                bounds = []
+            if ranges is not None:
+                ranges.update(b.get_id() for b in bounds)
+            return facts
+        if not isinstance(base, AdtType):
+            return facts
+        if base.name == "Array" and len(base.type_args) == 1:
+            if ranged is not None:
+                facts.extend(self._element_invariant(
+                    smt, base.type_args[0], term, seen, ranged, ranges))
+            return facts
+        if not isinstance(sort, z3.DatatypeSortRef):
+            return facts
+        key = self._type_key(base)
+        if key in seen:
+            # A recursive position: unfolded a bounded number of times.
+            entered = sum(1 for k in seen
+                          if k == key or k.startswith(key + "#"))
+            if entered > _RECURSIVE_UNFOLDING:
+                return facts
+            key = f"{key}#{len(seen)}"
+        deeper = seen | {key}
+        count = sort.num_constructors()
+        for i in range(count):
+            ctor = sort.constructor(i)
+            if ctor.arity() == 0:
+                continue
+            field_types = self._payload_field_types(ctor.name(), base)
+            if field_types is None or len(field_types) != ctor.arity():
+                continue
+            recognizer = sort.recognizer(i)(term) if count > 1 else None
+            for j, field_ty in enumerate(field_types):
+                for fact in self._invariant_at(
+                        smt, field_ty, sort.accessor(i, j)(term),
+                        seen=deeper, ranged=ranged,
+                        ranges=ranges):
+                    held = (fact if recognizer is None
+                            else z3.Implies(recognizer, fact))
+                    if ranges is not None and fact.get_id() in ranges:
+                        ranges.add(held.get_id())
+                    facts.append(held)
+        return facts
+
+    def _element_invariant(
+        self, smt: SmtContext, element_ty: Type, term: z3.ExprRef,
+        seen: frozenset[str], ranged: dict[int, tuple[z3.ExprRef, str]],
+        ranges: set[int] | None = None,
+    ) -> list[z3.ExprRef]:
+        """An `Array`'s element positions: the bounded index quantifier
+        `_element_facts` states for a refined element, over what the
+        element's type states.  The ranges stand in a quantifier of their
+        own, recorded in *ranged* with its `index` symbol (`AxiomKind.ELEMENT`);
+        the rest, a refinement over a data type or a nested array's
+        elements, in a second."""
+        if not self._states_anything(element_ty, frozenset()):
+            return []
+        observers = smt.carrier_elements(
+            term, None,
+            element_ty,  # pragma: no mutate — equivalent: `carrier_elements` reads the element type only for a projection, and this call takes none (the sequence's sort gives the element sort)
+        )
+        if observers is None:
+            return []
+        sequence, index_fn, length_fn, _element_sort = observers
+        idx = z3.Const(
+            self._fresh_quantifier_name(  # pragma: no mutate — equivalent: the quantifier binds the constant object, so its name changes no fact (measured: a `None` name passes the instruments)
+                "elt_idx",  # pragma: no mutate — equivalent: as above, the stem only names the bound constant
+            ),
+            z3.IntSort())
+        element = index_fn(sequence, idx)
+        inner: set[int] = set()
+        body = [fact for fact in self._invariant_at(
+            smt, element_ty, element, seen=seen, ranged=ranged,
+            ranges=inner)
+            if self._per_element(fact, element)]
+        element_ranges = {fact.get_id() for fact in self._invariant_at(
+            smt, element_ty, element, seen=seen)}
+        in_range = z3.And(idx >= 0, idx < length_fn(sequence))
+        out: list[z3.ExprRef] = []
+        for part, tag in (
+                ([f for f in body if f.get_id() in element_ranges], True),
+                ([f for f in body if f.get_id() not in element_ranges],
+                 False)):
+            if not part:
+                continue
+            axiom = z3.ForAll([idx], z3.Implies(in_range, z3.And(*part)))
+            if tag:
+                ranged[axiom.get_id()] = (axiom, index_fn.name())
+            if ranges is not None and (
+                    tag or all(f.get_id() in inner for f in part)):
+                # An element quantifier every fact of which is a range part
+                # (the ranges, a `Nat` element's `>= 0`), whole: no call's
+                # guard required it before #1928.  One holding a refinement
+                # over a data type is required of every query.
+                ranges.add(axiom.get_id())
+            out.append(axiom)
+        return out
+
+    @staticmethod
+    def _per_element(fact: z3.ExprRef, element: z3.ExprRef) -> bool:
+        """Whether *fact* is about the quantified *element* alone: every
+        uninterpreted constant it mentions is one of the element term's own.
+        A predicate that calls a helper, or reads a stand-in, is translated
+        to a constant minted once for the call and its argument's term, so
+        under the index quantifier every element would share it (a helper
+        `ident(x) == x` would make every element equal).  Such a fact is not
+        stated of the elements."""
+        def constants(root: z3.ExprRef) -> set[int]:
+            found: set[int] = set()
+            stack = [root]
+            visited: set[int] = set()
+            while stack:
+                e = stack.pop()
+                if e.get_id() in visited:
+                    continue
+                visited.add(e.get_id())  # pragma: no mutate — equivalent: the set only spares a revisit, and a revisit finds the same constants; measured (W172): with `add(None)`, every `_per_element` answer and every obligation row over 361 programs is unchanged
+                if (z3.is_const(e)
+                        and e.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+                    found.add(e.get_id())
+                stack.extend(e.children())
+            return found
+        return constants(fact) <= constants(element)
+
+    def _states_anything(self, ty: Type | None, seen: frozenset[str]) -> bool:
+        """Whether :py:meth:`_invariant_at` states something at some position
+        of *ty*: an `Int` or `Nat` anywhere, or a refinement over a data
+        type."""
+        base = self._strip_refinements(ty)
+        if isinstance(ty, RefinedType):
+            # The chain's base: a refinement over a data type is stated
+            # whatever the type's own fields hold.
+            if isinstance(base, AdtType):
+                return True
+        if base in (INT, NAT):
+            return True
+        if not isinstance(base, AdtType):
+            return False
+        key = self._type_key(base)
+        if key in seen:
+            return False
+        deeper = seen | {key}
+        if any(self._states_anything(arg, deeper) for arg in base.type_args):
+            return True
+        for ctor in self._adt_constructor_names(base):
+            fields = self._payload_field_types(ctor, base)
+            if fields and any(self._states_anything(f, deeper) for f in fields):
+                return True
+        return False
 
     def _fresh_quantifier_name(self, stem: str) -> str:
         """A binder name unique within this run.
@@ -11808,9 +12340,10 @@ class ContractVerifier:
 
         The generic path skips full SMT (TypeVar params/contracts can't be
         represented), but a concrete refined return obligation is independent
-        of the type parameters, so a minimal context — TypeVar params falling
-        back to ``declare_int`` — suffices to translate the body and discharge
-        the predicate.  Verified at Tier 1; a counterexample is an E505; an
+        of the type parameters, so the declaration context every check shares
+        (`_fresh_smt`), with TypeVar params as ``Int`` stand-ins stating
+        nothing, suffices to translate the body and discharge the predicate.
+        Verified at Tier 1; a counterexample is an E505; an
         untranslatable body or predicate falls to the runtime guard (E506,
         ``tier3``), exactly as on the non-generic path."""
         if decl.body is None:  # pragma: no cover — caller guards this
@@ -11828,99 +12361,30 @@ class ContractVerifier:
         # `_fn_naming_scope` calls from disagreeing if that ever changes.
         fn_env = self._fn_naming_scope(
             self._current_alias_env, decl, enclosing)
-        smt = SmtContext(timeout_ms=self.timeout_ms)
-        # #1455, second site: the SAME lexical chain the main path binds.  The
-        # flat registry stood here, and since #1378 it holds no `where` helper,
-        # so a generic function whose concrete refined return is produced by a
-        # helper call lost the helper's contract: `tier3`/E506 where the
-        # identical top-level spelling proves at Tier 1.  Honest, but a
-        # precision loss with no reason behind it, and it is the one call-site
-        # resolution left reading the flat table where a lexical scope applies.
-        self._bind_smt_scope(
-            smt, CalleeScope(fn_env, self._scoped_fn_lookup(decl, enclosing)))
-        for adt_info in self._program_data_types():
-            smt.register_adt(adt_info)
-        # CR PR-review: the generic refined-return fast path translates the body
-        # too, so it needs the same sub-pattern source-fact hook as the main
-        # path (line 742) — a generic fn returning a refined ADT payload from a
-        # `match` arm would otherwise false-E505/E501 (the arm accessor is
-        # translated without the field's source refinement fact).
-        smt._subpattern_fact_hook = self._subpattern_source_facts
-        # #1406/#1407: and let it record a DISCLOSED call's result term, so
-        # the taint follows the value into every binding, projection and
-        # branch that value reaches.  The terms it causes to be recorded are
-        # per-function state, which `SmtContext.reset()` clears — so the warm
-        # (shared) smt is safe for the same reason `_tainted_facts` is.
-        smt._disclosed_call_hook = self._disclosed_call_for_value
-        # #1706: the same binding guard as the main path, for the calls this
-        # fast path's body translation models.
-        smt._call_binding_hook = self._call_binding_facts
-        smt._call_result_facts_hook = self._call_result_facts
-        smt._generic_callee_hook = self._generic_callee_info
-        # #1525: the same types as the main path, a construction's and an
-        # opaque stand-in's.
-        smt._recorded_type_hook = self._resolved_type_of  # pragma: no mutate — equivalent: a generic function's refined return is decided by its clones' verification, so this fast path's record is never the one read
-        smt._constructed_type_hook = self._constructed_type_of  # pragma: no mutate — equivalent: as the line above, the clone path decides the record
-        # #1480 review: and let a call-site check ask whether its goal rests
-        # on a placeholder one of the walks bound.  A bound method, so it
-        # reads the live `_opaque_shadows`, which each walk resets.
-        smt._placeholder_hook = self._contains_opaque_shadow
-        # #1480 review: and let the SMT `match` translation bind an arm's
-        # guarded refined binders the way the walks do (`_enter_match_arm`).
-        smt._guarded_binder_hook = self._guarded_binder_values
+        # #1928 review: the prologue every declaration check shares, so this
+        # path holds every hook the main path's context holds (a stand-in's
+        # type facts, its ranges, whether a row producing its value has a
+        # check, a refuted call's clause) and cannot fall behind it.  Safe on
+        # the warm shared context: the caller returns before any other
+        # context of this function is built, and a parent's check finishes
+        # before its `where` helpers are verified (`_verify_fn` step 9).
+        # #1455, second site: the SAME lexical chain the main path binds.
+        smt = self._fresh_smt(
+            CalleeScope(fn_env, self._scoped_fn_lookup(decl, enclosing)))
         slot_env = SlotEnv()
         assumptions: list[object] = []
         slot_refs = self._parameter_slots(decl, fn_env)
         for param_te, z3_name in zip(decl.params, slot_refs, strict=True):
             param_ty = self._written_type(param_te)
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
-            if self._is_nat_type(param_ty):
-                var = smt.declare_nat(z3_name)
-            elif self._is_bool_type(param_ty):
-                var = smt.declare_bool(z3_name)
-            elif self._is_string_type(param_ty):
-                var = smt.declare_string(z3_name)
-            elif self._is_float64_type(param_ty):
-                var = smt.declare_float64(z3_name)  # Real sort, as non-generic
-            elif self._is_array_type(param_ty):
-                # Concrete Array param — declare a proper array sort (as the
-                # non-generic path does) so a refined return proven via
-                # `array_length(...)` / `arr[i]` keeps Tier 1 instead of
-                # falling to a false E506.  Falls back to declare_int when the
-                # element type isn't Z3-representable, exactly as non-generic.
-                array_var = self._declare_array_var(smt, z3_name, param_ty)
-                var = array_var if array_var is not None else smt.declare_int(
-                    z3_name)
-            elif self._is_adt_type(param_ty):
-                # Concrete ADT param — declare an ADT sort so projections used
-                # by the return predicate translate (mirrors non-generic).
-                adt_var = smt.declare_adt(z3_name, param_ty)
-                var = adt_var if adt_var is not None else smt.declare_int(
-                    z3_name)
-            else:
-                var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
+            # The main path's declaration and premise (`_verify_fn` step 1):
+            # a concrete parameter's range, `Nat` components and refinements
+            # (#746, #1430, #1814); a parameter of a type variable is an
+            # `Int` stand-in of which nothing is stated.
+            var = self._declare_value(smt, z3_name, param_ty)
             smt.declare_input(z3_name, var, param_ty)
             slot_env = slot_env.push(type_name, var)
-            # Assume a refined param's predicate (parallel to the non-generic
-            # param-assume), so a return justified by `@PosInt` etc. proves.
-            if self._is_refined_type(param_ty):
-                pred = self._translate_refined_predicate(smt, param_ty, var)
-                if pred is not None:
-                    assumptions.append(pred)
-            # #1430: and the refinements written INSIDE the parameter's type
-            # — an `Array<PosInt>` element, an ADT payload — under the same
-            # R1 licence.  Every caller is obligated to discharge them at the
-            # argument position (#1410's `refine_bind`), so assuming them here
-            # closes the same modular loop the parameter's own refinement
-            # uses.  Facts are assumed even when the walk reports itself
-            # INCOMPLETE: each fact returned is true of the value, and a
-            # partial set is a weaker assumption, never an over-assumption.
-            # Through the same gate as the non-generic path above, so the two
-            # parameter-assumption sites cannot answer differently.
-            nested_facts, _ = self._nested_refinement_facts(
-                smt, param_ty, var)
-            assumptions.extend(self._established_facts(
-                nested_facts, source=None, term=var, smt=smt))
+            assumptions.extend(self._declared_type_facts(smt, param_ty, var))
         # Assume translatable preconditions too — a `requires(...)` may imply
         # the return predicate.
         for contract in decl.contracts:
@@ -12301,6 +12765,85 @@ class ContractVerifier:
                 sites = list(self._result_disclosed_fns.get(
                     self._result_disclosed_key(name, is_helper=True), ()))
         return hit, sites
+
+    def _produces_unchecked(self, node: ast.Node) -> bool:
+        """Whether a row that produces the value of *node* has no check
+        (#1928): a narrowing row under *node* whose guard emits none, or an
+        operation call under it with a handler clause holding such a row
+        among `_answering_clauses`.  A row with no check is counted
+        whatever its proof: its status is settled after the stand-in that
+        asks is made."""
+        for sub in fold.walk(node):
+            parts: list[ast.Node] = [sub]
+            if isinstance(sub, ast.FnCall):
+                for clause in self._answering_clauses(sub):
+                    parts.extend(fold.walk(clause))
+            for part in parts:
+                if any(r.kind in ("refine_bind", "nat_bind")
+                       and not r.guard.check
+                       for r in self._table.rows_at(part)):
+                    return True
+        return False
+
+    def _answering_clauses(
+        self, call: ast.FnCall,
+    ) -> tuple[ast.HandlerClause, ...]:
+        """The handler clauses of *call*'s name whose rows decide whether
+        its value is checked (#1928).
+
+        A call inside a handler's body is answered by that handler's
+        clause: the lexical map, keyed by the call's own node (a call
+        inside an instance clone by the clone's node, whose ids are
+        fresh).  A call outside every handler performs the intrinsic
+        operation and reads the cell (spec 7.5.2: a clause's transform does
+        not cross a call boundary), so no clause's ``resume`` answers it;
+        for it the name map's clauses of that name are read all the same,
+        a conservative over-approximation (a clause's ``with`` override
+        writes the cell such an operation reads, and the cell's other
+        writes are #1897's rows), uniform across the entry program, every
+        linked module and every instance clone.  Built once per verifier
+        (`_build_answers`)."""
+        if self._answers is None:
+            self._answers = self._build_answers()
+        lexical, named = self._answers
+        found = lexical.get(obligation_table.ObligationTable._key(call))
+        return found if found else named.get(call.name, ())
+
+    def _build_answers(self) -> tuple[
+            dict[object, tuple[ast.HandlerClause, ...]],
+            dict[str, tuple[ast.HandlerClause, ...]]]:
+        """`_answering_clauses`'s two maps over its roots, the entry
+        program's declarations, every linked module's and every instance
+        clone: ``lexical``, a call's key to the clauses of its name of the
+        handlers whose body it stands in, and ``named``, an operation's
+        name to every clause of that name."""
+        key = obligation_table.ObligationTable._key
+        lexical: dict[object, tuple[ast.HandlerClause, ...]] = {}
+        named: dict[str, tuple[ast.HandlerClause, ...]] = {}
+        linked = self._typed.linked
+        roots: list[ast.Node] = [tld.decl for tld in
+                                 linked.program.declarations]
+        roots.extend(tld.decl for m in linked.modules
+                     for tld in m.program.declarations)
+        roots.extend(inst.clone for inst in self._typed.instances
+                     if inst.clone is not None)
+        stack: list[tuple[ast.Node, tuple[ast.HandlerClause, ...]]] = [
+            (r, ()) for r in roots]
+        while stack:
+            cur, scope = stack.pop()
+            if isinstance(cur, ast.FnCall):
+                lexical[key(cur)] = tuple(
+                    c for c in scope if c.op_name == cur.name)
+            inner = scope  # pragma: no mutate — equivalent: `inner` is read only when `cur` is a `HandleExpr`, where the next line reassigns it; measured (W172): with None, every obligation row over 361 programs is unchanged
+            if isinstance(cur, ast.HandleExpr):
+                inner = scope + cur.clauses
+                for c in cur.clauses:
+                    named[c.op_name] = named.get(c.op_name, ()) + (c,)
+            stack.extend(
+                (child, inner if (isinstance(cur, ast.HandleExpr)
+                                  and child is cur.body) else scope)
+                for child in fold.children(cur))
+        return lexical, named
 
     def _established_facts(
         self,
@@ -13477,7 +14020,7 @@ class ContractVerifier:
         smt._path_conditions.clear()
         try:
             verdict = smt.check_valid(
-                z3.Or(on_path, in_range), list(assumptions))
+                z3.Or(on_path, in_range), list(assumptions), in_range=True)
         finally:
             smt._path_conditions.extend(path)
         return verdict.status == "verified"
@@ -14907,22 +15450,37 @@ class ContractVerifier:
         when the refined-first gate routes a refinement-over-``@Nat`` here
         rather than down the bare-``@Nat`` ``nat_bind`` path.
 
-        Returns None when the base isn't a primitive or the predicate falls
-        outside the decidable fragment (caller treats None as Tier 3, #746).
+        A refinement over a data type (#1814) binds the value under the
+        predicate's own binder alone, the datatype term carrying its base's
+        meaning whole.
+
+        Returns None when the base is a primitive the solver does not model
+        (`Byte`, `Unit`), a data type whose value has no datatype term, or the
+        predicate falls outside the decidable fragment (caller treats None as
+        Tier 3, #746).
         """
         parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:
             return None
         base, predicates = parts
         base_name = ContractVerifier._base_slot_name(base)
-        if base_name is None:
+        # #1814: a refinement over a data type is a membership of a value
+        # the solver models whole (a datatype term), so its predicate is
+        # decided as written, bound under the predicate's own binder, as the
+        # assumption side (`SmtContext._type_facts`) already reads it.  An
+        # unmodelled primitive (`Byte`, `Unit`) still declines.
+        over_data = (base_name is None and isinstance(base, AdtType)
+                     and isinstance(value_term.sort(), z3.DatatypeSortRef))
+        if base_name is None and not over_data:
             return None
         conjuncts: list[z3.ExprRef] = []
         for predicate in predicates:
             # One env per LEVEL: each predicate binds its own name — the
             # inner `{ @Int | @Int.0 > 0 }` binds `@Int`, the outer
             # `{ @Pos | @Pos.0 < 10 }` binds `@Pos` — over the same value.
-            inner_env = SlotEnv().push(base_name, value_term)
+            inner_env = (
+                SlotEnv() if base_name is None  # pragma: no mutate — equivalent: `and False` pushes a data type's value under the key None, and every reader looks a slot up by its written type name, a string (`SlotEnv.resolve`, `tester`), so none reads it (measured: the instruments pass)
+                else SlotEnv().push(base_name, value_term))
             # The predicate may reference its binder by a syntactic alias
             # (`@Age.0` for `type Age = Nat`) that differs from the resolved
             # primitive `base_name`; bind the value under that key too so the
@@ -14937,8 +15495,11 @@ class ContractVerifier:
                 predicate, smt._alias_env)
             if binder_key is not None and binder_key != base_name:
                 inner_env = inner_env.push(binder_key, value_term)
+            # A key of None is a predicate that holds no slot reference
+            # (`naming.predicate_binder_key`): over a data type (`{ @Box |
+            # false }`) it is decided as written, with no binder bound.
             translated = smt.translate_expr(predicate, inner_env)
-            if translated is None:
+            if translated is None or translated.sort() != z3.BoolSort():
                 # One untranslatable level makes the whole membership
                 # undecidable: the conjunction is only as strong as its
                 # weakest conjunct, and dropping one would ASSERT a

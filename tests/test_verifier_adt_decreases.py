@@ -828,8 +828,12 @@ private fn sum(@List<Int> -> @Int)
         # `requires(@Nat.0 <= 20)` (#1635) is a call precondition at its
         # recursive call (12) and at `test_factorial`'s (22): +2 T1.
         # +5 T1: 478/105/583 -> 483/105/588.
-        assert t1 == 483, f"Expected 483 T1, got {t1}"
-        assert t3 == 105, f"Expected 105 T3, got {t3}"
+        #
+        # #1814: a parameter's i64 range proves `gc_pressure.vera`'s
+        # `@Int.0 - 1` under `@Int.0 > 0` at 22 and 60: +2 T1, -2 T3:
+        # 483/105/588 -> 485/103/588.
+        assert t1 == 485, f"Expected 485 T1, got {t1}"
+        assert t3 == 103, f"Expected 103 T3, got {t3}"
         assert total == 588, f"Expected 588 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance

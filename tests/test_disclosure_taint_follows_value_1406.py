@@ -1115,9 +1115,19 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     #: translation, which assumes the callee's facts only under them.  It
     #: assumes nothing; a guard read through the gate would be WEAKER, and a
     #: weaker guard assumes the callee's facts where they are not promised.
+    #: `_parameter_premise` builds what a function's proof assumes of a
+    #: parameter (#1928) and hands it back to its two readers, assuming
+    #: nothing itself: `_declared_type_facts`, which asks the gate, and
+    #: `_call_binding_facts`, whose facts over an argument's term stand only
+    #: as the ANTECEDENT of the callee's facts (`SmtContext._call_binding`,
+    #: `_under_call_bindings`), so a fact over a disclosed argument is asked,
+    #: never assumed.  Measured: a disclosed `Option<PosInt>` passed to a
+    #: callee whose ensures rests on its payload, directly and `let`-bound,
+    #: leaves the caller's ensures Tier 3 (E534) beside a run that traps.
     producers = {"_term_source_fact", "_subpattern_source_facts_term",
                  "_nested_refinement_facts", "_carrier_element_facts",
-                 "_element_facts", "_call_binding_facts"}
+                 "_element_facts", "_call_binding_facts",
+                 "_parameter_premise"}
 
     # Both modules (#1418 review F5).  Every producer lives in the verifier
     # today, so the SMT half of this walk currently finds none and is
@@ -1166,22 +1176,22 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # producer roster — the very omission that let the fourth reader in —
     # still satisfied it.  A new reader is a deliberate edit here, and so is
     # a deleted one.
-    # `_check_generic_refined_return` and `_declared_type_facts` are the two
-    # R1 parameter-assumption sites (#1430): each states the refinements
-    # written INSIDE a parameter's type and assumes them, so each is a reader
-    # and each asks the gate.  A parameter has no producer inside its own
-    # function, so the gate answers "established" on every program measured —
-    # it is asked because the rule is that a reader is a call to the gate,
-    # and because a term can acquire a disclosed site through cross-module
-    # widening.  `_declared_type_facts` is `_verify_fn`'s per-parameter
+    # `_declared_type_facts` is the one R1 parameter-assumption site (#1430):
+    # it states the refinements written INSIDE a parameter's type and assumes
+    # them, so it is a reader and asks the gate.  A parameter has no producer
+    # inside its own function, so the gate answers "established" on every
+    # program measured — it is asked because the rule is that a reader is a
+    # call to the gate, and because a term can acquire a disclosed site
+    # through cross-module widening.  It is `_verify_fn`'s per-parameter
     # reading, factored out when a refinement predicate's binder came to need
-    # the same facts about its base type (#1480).  `_call_result_facts` is a
+    # the same facts about its base type (#1480), and the generic
+    # refined-return path's since #1928 (it was a second reader of its own,
+    # missing what a parameter's type states).  `_call_result_facts` is a
     # call result's: the refinements inside its return type, assumed of the
     # result at the call (#1706).
     assert readers == [
         "verifier:_binding_block",
         "verifier:_call_result_facts",
-        "verifier:_check_generic_refined_return",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_declared_type_facts",
         "verifier:_nested_refinement_discharge",

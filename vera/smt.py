@@ -307,6 +307,22 @@ class AxiomKind(enum.Enum):
     its refutation-completeness for the slice without needing disjointness.
     """
 
+    ELEMENT = "element"  # pragma: no mutate — equivalent: members are compared by identity and no code reads a kind's value (grep: no `.value`, `.name` or `AxiomKind(...)` lookup); measured (W172): with the value None, "XXelementXX" or "ELEMENT", every obligation row and every stated fact over 361 programs is unchanged
+    """Constrains each element of ONE sequence, pointwise, by ranges alone:
+    `forall i. 0 <= i < length(s) => lo <= index(s, i) <= hi`, the range an
+    `Array<Int>` or `Array<Nat>` parameter's type states of its elements
+    (#1814), at any depth of a data type the element holds.
+
+    Stage 2 carries its instances at every index term `index(_, t)` the kept
+    premises read.  A model of the kept premises and those instances extends
+    to the axiom: `index` is uninterpreted, so its value at a point no ground
+    term names is free, and an element whose every `Int` position is `0`
+    satisfies every range at once, whichever sequences share the point.  The
+    symbol is the `index` function the instances are taken at.  Only a body
+    of ranges qualifies: a refinement's predicate may have no value, and a
+    nested array's quantifier is not ground once instantiated.
+    """
+
 
 @dataclass(frozen=True)
 class QuantifiedAxiom:
@@ -453,6 +469,23 @@ def strip_refinements(ty: Type) -> Type:
     while isinstance(ty, RefinedType):
         ty = ty.base
     return ty
+
+
+#: The operators whose `int_overflow` row asks the operation's own result to
+#: be in range (#798).  Not `/`: a quotient's row asks of its operands
+#: (`a == INT_MIN && b == -1`, #1598), so a division's stand-in carries the
+#: range, which the value a division leaves always has.
+_RANGED_OPS = frozenset({ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL})
+
+
+def _is_arithmetic(node: object) -> bool:
+    """Whether *node* is an operation whose exact integer result a row asks
+    to be in range: `+ - *`, a negation, `abs` (#1814, #1875)."""
+    if isinstance(node, ast.BinaryExpr):
+        return node.op in _RANGED_OPS
+    if isinstance(node, ast.UnaryExpr):
+        return node.op == ast.UnaryOp.NEG
+    return isinstance(node, ast.FnCall) and node.name == "abs"
 
 
 def _holds_a_chosen_value(term: z3.ExprRef) -> bool:
@@ -740,6 +773,18 @@ class SmtContext:
         #: warm context) has none, and a fix offers no clause there.
         self.entry_scope: tuple[
             SlotEnv, tuple[tuple[str, object], ...]] | None = None
+        #: The facts the function's proof assumes of its parameters, as
+        #: they reached its premises (#1928): asserted into the base context
+        #: and held by every query the function asks.  Recorded by the
+        #: verifier beside :attr:`entry_scope` and cleared by :meth:`reset`;
+        #: a call's guard omits a fact this holds (`A and (A implies F)` is
+        #: `A and F`).
+        self.standing_premises: tuple[z3.ExprRef, ...] = ()
+        #: The function's parameters, each constant with its declared type
+        #: (#1928): a call's guard also omits what the caller's premise
+        #: states of a component of one, read off the parameter's type.
+        #: Recorded and cleared with :attr:`standing_premises`.
+        self.standing_parameters: tuple[tuple[z3.ExprRef, Type], ...] = ()
         self._call_violations: list[CallViolation] = []
         # #1696: the stand-ins this function's model holds, one per node the
         # translation has no term for (`_stand_in`), keyed by the node's
@@ -787,6 +832,16 @@ class SmtContext:
         # argument cannot be discharged by the facts of the call it feeds.
         # Empty outside a call's translation, where nothing reads it.
         self._call_bindings: list[z3.ExprRef] = []
+        # #1928: the one decision of which import a query sees.  A call's
+        # binding holds what its arguments' types state of a value by
+        # representation or by construction (ranges, a `Nat`'s `>= 0` inside
+        # the type; never a refinement) under this constant (`_call_binding`), and
+        # every query fixes it (`_premises`): true for a query asking what a
+        # type states of a value (`check_valid`'s *in_range*: an
+        # `int_overflow`, `nat_sub` or `nat_bind` row's), false for every
+        # other.  One translation of the call, one import, two guards.
+        self._range_premise = z3.Bool("$call_range_premise")
+        self._asking_range = False
         # #1363: declared-type facts whose OWN obligation resolved
         # not-proved-not-guarded.  Held apart from the solver rather than
         # asserted into it, so a goal is first asked WITHOUT them: anything
@@ -862,7 +917,8 @@ class SmtContext:
         # resolution (a refinement, a `@Nat`, a refinement nested in the
         # type), which its binding-obligation walk reads too.  Signature:
         # (call_node, callee_info, [term or None per argument], smt) ->
-        # [z3 fact].  None when no verifier is driving (pure-SMT tests).
+        # ([z3 fact], [z3 range fact]).  None when no verifier is driving
+        # (pure-SMT tests).
         self._call_binding_hook: Any = None
         # Optional hook (injected by the verifier) returning what a call's
         # declared return type says about its result beyond its head
@@ -874,6 +930,22 @@ class SmtContext:
         # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
         # driving (pure-SMT tests).
         self._call_result_facts_hook: Any = None
+        # #1814: what a type states of a value at every position the head
+        # and nested-refinement facts do not reach (an `Int`'s range, a
+        # `Nat` component, an `Array` element, a recursive position), as
+        # the verifier reads it (`ContractVerifier._type_invariant`).
+        # Signature: (smt, type, term) -> list of facts.  None when no
+        # verifier is driving.
+        self._type_invariant_hook: Any = None
+        # #1928: the ranges alone of that walk (an `Int`'s i64 range, a
+        # `Nat`'s), which hold of a value by representation whatever row
+        # produced it.  Signature: (smt, type, term) -> list of facts.
+        self._type_ranges_hook: Any = None
+        # #1928: whether a row that produces the value of a node has no
+        # check (`ContractVerifier._produces_unchecked`), asked through the
+        # obligation table.  Signature: (node) -> bool.  None when no
+        # verifier is driving.
+        self._unchecked_producer_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -1811,6 +1883,17 @@ class SmtContext:
         self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
             kind=kind, symbol=symbol,
         )
+
+    def tag_axiom(
+        self, axiom: z3.ExprRef, kind: AxiomKind, symbol: str,
+    ) -> None:
+        """Record the regime of a quantified fact the verifier asserts
+        itself, through the gate its facts pass (an element range, #1814).
+        The term is held, so its id names it until the next reset."""
+        self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
+            kind=kind, symbol=symbol,
+        )
+        self._id_holders.append(axiom)
 
     def registered_axiom(self, fact: object) -> QuantifiedAxiom | None:
         """The axiom record for *fact*, or ``None`` if this context did not
@@ -3560,7 +3643,20 @@ class SmtContext:
         resolves each formal the way its binding-obligation walk does; this
         layer hands it one term per argument, ``None`` at a zero-size
         position, whose argument :meth:`_translate_call_args` translated and
-        dropped (#1214).
+        dropped (#1214).  The hook's second list, what the arguments' types
+        state of a value by representation or by construction (a range, a
+        `Nat`'s `>= 0` inside the type; a refinement inside it is in the
+        first list), is held under ``_range_premise`` (#1928):
+        required by a query that asks what a type states of a value, and by
+        no other, since an argument that reaches its call is a value its
+        own evaluation and constructions checked.
+
+        Only the first list goes through :meth:`_statable_part`.  The second
+        is held whole: a range part mentions a stand-in only where the
+        argument's own term holds one, and it is no conjunct the callee's
+        prologue checks; stripped, it would leave the callee's facts
+        unguarded, so a postcondition proved from the parameter's range
+        would prove the argument's own range rows.
         """
         if self._call_binding_hook is None:
             return None
@@ -3569,11 +3665,12 @@ class SmtContext:
             None if (i < len(zero_size) and zero_size[i]) else next(translated)
             for i in range(len(args))
         ]
-        facts = [
-            part for fact in
-            self._call_binding_hook(call_node, callee_info, terms, self)
-            if (part := self._statable_part(fact)) is not None
-        ]
+        owed, ranges = self._call_binding_hook(
+            call_node, callee_info, terms, self)
+        facts = [part for fact in owed
+                 if (part := self._statable_part(fact)) is not None]
+        if ranges:
+            facts.append(z3.Implies(self._range_premise, z3.And(*ranges)))
         if not facts:
             return None
         return facts[0] if len(facts) == 1 else z3.And(*facts)
@@ -3592,6 +3689,10 @@ class SmtContext:
         on a continuation that exists only where the prologue's check held.
         An implication keeps its antecedent (a constructor's recognizer) and
         is stripped in its consequent.
+
+        Applied to the binding hook's first list alone (what the arguments
+        owe the parameters' refinements); the second list, the ranges, is
+        never stripped (#1928, :meth:`_call_binding`).
         """
         if z3.is_and(fact):
             kept = [c for c in fact.children()
@@ -3756,11 +3857,49 @@ class SmtContext:
         const = z3.Const(self._named(f"_opaque_{tag}", node, key), sort)
         self._stand_ins[key] = const
         self._taint(const)
-        for stated in (self._base_facts(const, ty) if base_only
-                       else self._type_facts(const, ty)):
+        facts = (self._base_facts(const, ty) if base_only
+                 else self._type_facts(const, ty))
+        if not _is_arithmetic(node):
+            # An arithmetic node's stand-in is the value the operation
+            # leaves, and its own `int_overflow` row asks whether the
+            # operation's exact result is in range: the range stated of the
+            # stand-in would answer that row with its own goal (#1814).
+            facts = facts + self._invariant_facts(const, ty)
+        if self._inherit_disclosure(node, const):
+            # #1928: a value is established only when every row that
+            # produces it has a check.  What holds by representation (the
+            # base's `>= 0`, the ranges) is stated; the rest is withheld as
+            # `ContractVerifier._established_facts` withholds it, offered on
+            # the second attempt only.
+            stated_ids = {f.get_id() for f in (
+                *self._base_facts(const, ty), *self._ranges(const, ty))}
+            self._tainted_facts.extend(
+                f for f in facts if f.get_id() not in stated_ids)
+            facts = [f for f in facts if f.get_id() in stated_ids]
+        for stated in facts:
             self.assume(stated)
-        self._inherit_disclosure(node, const)
         return const
+
+    def _ranges(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """The ranges *ty* states of *term* (#1928), through the verifier's
+        hook; nothing with no verifier driving."""
+        hook = self._type_ranges_hook
+        if hook is None:
+            return []
+        return list(hook(self, ty, term))
+
+    def _invariant_facts(
+        self, term: z3.ExprRef, ty: Type,
+    ) -> list[z3.ExprRef]:
+        """What *ty* states of *term* at every position (#1814), through the
+        verifier's hook; nothing with no verifier driving.  A stand-in's
+        value comes from a producer the program checks where it builds the
+        value (a store's, a `put`'s, a bind's row), and the constant is
+        fresh, so its facts constrain no term minted before it."""
+        hook = self._type_invariant_hook
+        if hook is None:
+            return []
+        return list(hook(self, ty, term))
 
     def _literal_satisfies(self, leaf: ast.Expr, ty: Type) -> bool:
         """Whether every fact *ty* states (`_type_facts`) is true of the
@@ -3868,8 +4007,15 @@ class SmtContext:
         reach = self.reach_conditions()
         if hook is None or reach is None:  # pragma: no mutate — equivalent: the verifier sets the hook on every context whose translation knows where it stands, so one is never present without the other
             return components
+        # A destructure binds its value's one constructor (E311 refuses one
+        # over a type with several), the one the caller projected, by the
+        # sort's own name for it, as
+        # `ContractVerifier._destructure_ctor_name` resolves it: under a
+        # shape named by its type or an alias (`let Box<…>`) the hook would
+        # find no constructor and record no guard.
+        name = term.sort().constructor(0).name()
         pattern = ast.ConstructorPattern(
-            name=stmt.constructor,
+            name=name,
             sub_patterns=tuple(
                 ast.BindingPattern(type_expr=te, span=te.span)  # pragma: no mutate — equivalent: the hook reads a pattern's shape and types, never its spans
                 for te in stmt.type_bindings),
@@ -3981,25 +4127,29 @@ class SmtContext:
             return [term >= 0]
         return []
 
+    def head_facts(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """A value *term* DECLARED at *ty*: its head refinement's predicates
+        over *term*, whatever the base (#1696, R2), as the verifier states
+        its base's `>= 0`.  An unrefined value carries nothing here."""
+        return (self._type_facts(term, ty)
+                if isinstance(ty, RefinedType) else [])
+
     def declared_facts(
-        self, term: z3.ExprRef, ty: Type,
+        self, term: z3.ExprRef, head: Sequence[z3.ExprRef],
         nested: Sequence[z3.ExprRef] = (),
     ) -> list[z3.ExprRef]:
         """The facts a value *term* DECLARED at *ty* carries — a parameter's,
         a predicate's binder's (`ContractVerifier._declared_type_facts`):
-        its head refinement's predicates over *term*, whatever the base
-        (#1696, R2), as the verifier states its base's `>= 0`.
+        its *head* facts (:py:meth:`head_facts`), returned as given.
 
         A declared value whose refinement is not fully stated — a predicate
         of its head, or one of the *nested* facts the verifier derived for
         the positions inside its type, holding a stand-in — is registered
         as a value no refutation may rest on (#1470, R4): the solver may
         choose a value the type forbids, and a `sat` over such a value is
-        undecided, never a counterexample.  An unrefined value carries
-        nothing here.
+        undecided, never a counterexample.
         """
-        facts = (self._type_facts(term, ty)
-                 if isinstance(ty, RefinedType) else [])
+        facts = list(head)
         if any(self._mentions_stand_in(f) for f in (*facts, *nested)):
             self._taint(term)
         return facts
@@ -4010,7 +4160,7 @@ class SmtContext:
         self._id_holders.append(term)
         self._opaque_tainted = True
 
-    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
+    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> bool:
         """A stand-in term inherits the disclosure of the value it replaces.
 
         #1363's asymmetry, one layer down (#1418 review F1).  Where the SMT
@@ -4027,16 +4177,25 @@ class SmtContext:
         Called at every mint rather than at the two known callers, so a
         future stand-in is covered by existing code.  The walk is over ONE
         expression's subtree and runs only when a verifier is driving.
+
+        #1928: the one place a stand-in's disclosure is decided.  A value
+        is established only when every row that produces it has a check, so
+        a node holding a narrowing row with none, or an operation call a
+        handler clause with one answers, discloses the stand-in as a
+        disclosed call does (the verifier asks the obligation table).
+        Returns whether *stand_in* is disclosed.
         """
-        if self._disclosed_call_hook is None:
-            return
-        found, sites = self._disclosed_calls_in(node)
-        if not found:
-            return
+        found, sites = (self._disclosed_calls_in(node)
+                        if self._disclosed_call_hook is not None
+                        else (False, []))
+        if not found and not (self._unchecked_producer_hook is not None
+                              and self._unchecked_producer_hook(node)):
+            return False
         self._disclosed_terms.append(stand_in)
         if sites:
             self._disclosed_term_sites.setdefault(
                 stand_in.get_id(), []).extend(sites)
+        return True
 
     def _disclosed_calls_in(self, node: object) -> tuple[bool, list[Any]]:
         """Whether *node*'s subtree contains a disclosed call, and its sites.
@@ -4196,6 +4355,18 @@ class SmtContext:
                     if val is not None:
                         idx = self._find_ctor_index(
                             val.sort(), stmt.constructor)
+                        if (idx is None
+                                and isinstance(val.sort(), z3.DatatypeSortRef)
+                                and val.sort().num_constructors() == 1):
+                            # The shape named by its TYPE (`let Box<…>`, an
+                            # alias of it, an imported type by its link
+                            # name `mod$lib$Box`), which the checker
+                            # accepted for the value's one constructor: a
+                            # linked name that is no constructor of the sort
+                            # is a type's or an alias's.  A shape named by
+                            # its constructor is found above under the link
+                            # name the linker gave it (#1924).
+                            idx = 0
                         if (idx is not None
                                 and val.sort().constructor(idx).arity()
                                 != len(stmt.type_bindings)):
@@ -4492,13 +4663,15 @@ class SmtContext:
     def _find_ctor_index(
         self, sort: z3.SortRef, ctor_name: str,
     ) -> int | None:
-        """Find the index of a constructor by name in a Z3 ADT sort."""
+        """Find the index of a constructor by name in a Z3 ADT sort; None
+        where the sort has no constructor of that name (a destructure that
+        names its shape by the type, `let Box<…>`)."""
         if not isinstance(sort, z3.DatatypeSortRef):
             return None
         for i in range(sort.num_constructors()):
             if sort.constructor(i).name() == ctor_name:
                 return i
-        return None  # pragma: no cover
+        return None
 
     def _pattern_condition(
         self, scrutinee: z3.ExprRef, pattern: ast.Pattern
@@ -4732,6 +4905,8 @@ class SmtContext:
         self,
         goal: z3.ExprRef,
         assumptions: list[z3.ExprRef],
+        *,
+        in_range: bool = False,
     ) -> SmtResult:
         """Check if assumptions ⟹ goal is valid.
 
@@ -4752,11 +4927,23 @@ class SmtContext:
         Asking in that order is what distinguishes "proved" from "proved from
         something we admitted we could not establish", which asserting them
         into the base context makes indistinguishable.
+
+        *in_range*: the goal asks what a type states of a value (an
+        `int_overflow`, `nat_sub` or `nat_bind` row, #1928), so a call's
+        facts are assumed only where its arguments meet their parameters'
+        whole premise, ranges and a `Nat` inside the type included
+        (``_range_premise``): a callee's postcondition proved from its
+        parameter's range is not evidence of the argument's.
         """
-        result = self._check_refutation(goal, assumptions, tainted=False)
-        if result.status == "verified" or not self._tainted_facts:
-            return result
-        with_tainted = self._check_refutation(goal, assumptions, tainted=True)
+        saved, self._asking_range = self._asking_range, in_range
+        try:
+            result = self._check_refutation(goal, assumptions, tainted=False)
+            if result.status == "verified" or not self._tainted_facts:
+                return result
+            with_tainted = self._check_refutation(
+                goal, assumptions, tainted=True)
+        finally:
+            self._asking_range = saved
         if with_tainted.status == "verified":
             return SmtResult(status="disclosed")
         return result
@@ -4978,9 +5165,12 @@ class SmtContext:
     ) -> Iterator[None]:
         """A solver scope holding one refutation's premises: *assumptions*,
         the path conditions, the tainted facts when *tainted*, and the
-        recorded facts of every placeholder the query reads."""
+        recorded facts of every placeholder the query reads, and the call
+        bindings' range premise fixed by the query's kind (#1928)."""
         self.solver.push()
         try:
+            self.solver.add(self._range_premise if self._asking_range
+                            else z3.Not(self._range_premise))
             for a in assumptions:
                 self.solver.add(a)
             for pc in self._path_conditions:
@@ -5230,6 +5420,8 @@ class SmtContext:
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
         self.entry_scope = None  # #1858: the previous function's entry
+        self.standing_premises = ()  # #1928: and its parameters' premises
+        self.standing_parameters = ()  # and the parameters themselves
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

@@ -2597,7 +2597,9 @@ def test_1451_a_totality_slice_still_certifies_on_stage_two(
 
     The other direction of the same regime: a TOTALITY axiom is instantiated,
     not treated as foreign, so a slice carrying one is INSIDE the fragment and
-    a stage-2 `sat` establishes its premises.  Stage 1 is forced undecided so
+    a stage-2 `sat` establishes its premises.  The `Array<Int>` parameter's
+    element range (#1814) is the slice's other quantifier, an ELEMENT axiom,
+    instantiated the same way.  Stage 1 is forced undecided so
     the verdict has to come from stage 2 — without that the cell would pass on
     a stage-1 `sat` and say nothing about the regime.
 
@@ -2637,12 +2639,190 @@ public fn f(@Array<Int> -> @Int)
         vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
 
     assert outside and not any(outside), (
-        "a slice carrying only a TOTALITY axiom must be INSIDE the fragment")
+        "a slice carrying a TOTALITY axiom and an ELEMENT range must be "
+        "INSIDE the fragment")
     assert not [
         d for d in result.diagnostics  # type: ignore[attr-defined]
         if d.error_code in ("E538", "E539", "E540")
     ], [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
     assert result.summary.tier1_verified > 0, result.summary  # type: ignore[attr-defined]
+
+
+# An `Array<Int>` or `Array<Nat>` parameter's type states each element's range
+# under a bounded index quantifier (#1814).  The screen handles it under the
+# ELEMENT regime: stage 2 instantiates it at the index terms the kept premises
+# read.  Untagged, the quantifier was foreign, and a slice holding one left
+# the fragment.
+
+def _measure_over(ty: str, requires: str) -> str:
+    """A recursive measure, whose rank axioms leave stage 1 undecided, beside
+    an array parameter the precondition reads."""
+    return f"""\
+private data List<T> {{
+  Nil,
+  Cons(T, List<T>)
+}}
+
+public fn f(@List<Int>, @{ty} -> @Nat)
+  requires({requires})
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{{
+  match @List<Int>.0 {{
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + f(@List<Int>.0, @{ty}.0)
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("ty", [
+    "Array<Int>", "Array<Nat>", "Array<Option<Nat>>"])
+def test_1451_an_element_range_keeps_an_undecided_slice_inside(
+    tmp_path: Path, ty: str,
+) -> None:
+    """RED with the element quantifier untagged: stage 1 gives up on the rank
+    axioms, stage 2 finds a model, the halves share the array, and a foreign
+    quantifier read the slice as outside the fragment, withholding Tier 1
+    (`E540`) from a function main's tree certified.  The verdict is asserted
+    beside it, so the cell cannot pass on a stage-1 `sat`.  The recursive
+    call passes `f`'s own array parameter on, whose element range `f`
+    already holds as a premise, so the call's guard omits it (#1928); held
+    there, it was a quantifier under an implication that no regime covers,
+    and the slice was outside the fragment again (E540)."""
+    seen, result = _premise_verdicts(_write(
+        tmp_path, _measure_over(ty, f"array_length(@{ty}.0) > 2")))
+    assert "unknown" in seen, seen
+    assert not [
+        d for d in result.diagnostics  # type: ignore[attr-defined]
+        if d.error_code in ("E538", "E539", "E540")
+    ], [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert result.summary.tier1_verified > 0, result.summary  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("ty", "below"), [
+    ("Array<Int>", "0 - 9223372036854775807 - 1"), ("Array<Nat>", "0")])
+def test_1451_a_premise_below_an_element_range_is_refused_on_stage_two(
+    tmp_path: Path, ty: str, below: str,
+) -> None:
+    """A precondition that puts an element below its type's range has no
+    model, and stage 2 refutes it through the ELEMENT axiom's instance at
+    `index(a, 0)`.  Stage 1 is forced undecided so the verdict comes from
+    stage 2.  RED with the instances dropped (stage 2 finds a model of the
+    quantifier-free part, and the axiom asks for no disjointness: a vacuous
+    Tier 1) and with the quantifier untagged (`E540`, not the refusal)."""
+    from vera import verifier as vmod
+
+    source = f"""\
+public fn f(@{ty} -> @Int)
+  requires(array_length(@{ty}.0) > 0 && @{ty}.0[0] < {below})
+  ensures(@Int.result == 42)
+  effects(pure)
+{{
+  0
+}}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E538" in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+
+
+def test_1451_an_element_refinement_is_not_an_element_range(
+    tmp_path: Path,
+) -> None:
+    """Only ranges are ELEMENT.  `Box`'s field is a refinement no value has,
+    so an `Array<Box>` of positive length admits no argument.  Its predicate
+    is stated of the elements under quantifiers the screen has no regime for
+    (the refinement walk's, `_element_facts`, and the invariant walk's
+    second one), so an undecided screen withholds Tier 1 (`E540`).  Tagged
+    ELEMENT, the predicate would be instantiated at no index term (the
+    premises read none), stage 2 would find a model, and a vacuous Tier 1
+    would stand: an ELEMENT body may not hold a predicate that can have no
+    value."""
+    from vera import verifier as vmod
+
+    source = """\
+private data Color {
+  Red,
+  Green
+}
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+private data Box {
+  MkBox(NoColor)
+}
+
+public fn f(@Array<Box> -> @Int)
+  requires(array_length(@Array<Box>.0) > 0)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E540" in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+
+
+def test_repro_an_element_refinement_read_at_an_index_is_not_an_element_range(
+    tmp_path: Path,
+) -> None:
+    """The cell above with the premise reading `a[0]`, the one index term
+    stage 2 instantiates an ELEMENT axiom at.  The refinement over `Color`
+    stays out of the range quantifier, so the screen stays undecided
+    (`E540`).  RED with the ranges-only walk stating the refinement too
+    (`_invariant_at` without its `ranged is not None` test): the predicate
+    lands in the ELEMENT quantifier, which is then a body that can have no
+    value, and its instance at `a[0]` is refused (`E538`)."""
+    from vera import verifier as vmod
+
+    source = """\
+private data Color {
+  Red,
+  Green
+}
+
+type NoColor = { @Color | @Color.0 != @Color.0 };
+
+private data Box {
+  MkBox(NoColor)
+}
+
+public fn f(@Array<Box> -> @Int)
+  requires(array_length(@Array<Box>.0) > 0 && @Array<Box>.0[0] == @Array<Box>.0[0])
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E540" in codes and "E538" not in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -3189,6 +3369,42 @@ def test_1451_a_truncated_scan_denies_the_licence_too() -> None:
     whole = verifier._uninterpreted_symbols(deep)
     assert vmod._TRUNCATED_SCAN not in whole, whole
     assert verifier._premise_halves_disjoint(smt, []) is True
+
+
+def test_repro_the_halves_skip_the_instantiated_axioms_and_scan_the_rank_one() -> None:
+    """Stage 2 instantiates a TOTALITY or ELEMENT axiom and drops a RANK
+    one, so the disjointness test skips the first two and scans the third.
+    The one quantified fact here shares `f` with the ground premise: tagged
+    TOTALITY or ELEMENT the halves are disjoint, tagged RANK or untagged
+    they are not.  RED with the test inverted (`record.kind is
+    AxiomKind.RANK`): every answer flips; and with the record never read
+    (`record = None`): the instantiated kinds read as shared."""
+    from types import SimpleNamespace
+
+    import z3
+
+    from vera import verifier as vmod
+    from vera.smt import AxiomKind
+
+    x = z3.Int("x")
+    f = z3.Function("f", z3.IntSort(), z3.IntSort())
+    axiom = z3.ForAll([x], f(x) >= 0)
+    verifier = object.__new__(vmod.ContractVerifier)
+
+    def disjoint(kind: AxiomKind | None) -> bool:
+        def registered(fact: object) -> object:
+            if kind is None or not axiom.eq(fact):
+                return None
+            return SimpleNamespace(kind=kind, symbol="f")
+        smt = SimpleNamespace(solver=z3.Solver(), registered_axiom=registered)
+        smt.solver.add(axiom)
+        smt.solver.add(f(z3.Int("y")) > 0)
+        return bool(verifier._premise_halves_disjoint(smt, []))
+
+    assert disjoint(AxiomKind.TOTALITY) is True
+    assert disjoint(AxiomKind.ELEMENT) is True
+    assert disjoint(AxiomKind.RANK) is False
+    assert disjoint(None) is False
 
 
 def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(

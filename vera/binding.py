@@ -601,11 +601,14 @@ _TYPE_PARAM_SCOPES: dict[type, str] = {
     ast.AbilityDecl: "type_params",
 }
 
-#: The constructor spellings: in an expression, in a pattern, and in a
-#: ``data`` declaration.
+#: The constructor spellings: in an expression, in a pattern, in a
+#: ``data`` declaration, and a destructure's shape (`let MkBox<…>`).  A
+#: shape named by its type (`let Wrap<…>`) is in no constructor table, so
+#: it keeps its spelling, and the SMT layer reads it by the value's sort
+#: (#1924).
 _CTOR_NODES = (
     ast.ConstructorCall, ast.NullaryConstructor, ast.ConstructorPattern,
-    ast.NullaryPattern, ast.Constructor,
+    ast.NullaryPattern, ast.Constructor, ast.LetDestruct,
 )
 
 
@@ -652,6 +655,8 @@ def _renamed_field(node: ast.Node) -> str | None:
         return "name"
     if isinstance(node, (ast.SlotRef, ast.ResultRef)):
         return "type_name"
+    if isinstance(node, ast.LetDestruct):
+        return "constructor"
     if isinstance(node, _CTOR_NODES):
         # A constructor the compiler wrote with its owner stated is the
         # prelude's (`compare`'s `Less`, #1414), whatever the program holds.

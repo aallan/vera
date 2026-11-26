@@ -156,8 +156,13 @@ class _Repr:
     def __init__(
         self, *, decls: str, base: str, good: str, bad: str,
         repr_class: str, safe: str, witness: str,
-        producer: str | None = None,
+        producer: str | None = None, data_type: bool = False,
     ) -> None:
+        #: Whether the base is a DATA type (`Tuple`, `Option`).  A refinement
+        #: over one is decided where a value is given the type (spec §6.4.2,
+        #: #1814), so at a position no guard can reach, a value the solver
+        #: names is proved or refuted rather than disclosed.
+        self.data_type = data_type
         #: Declarations every program of this row needs: the `type R = { … }`
         #: and any helper its predicate calls.
         self.decls = decls
@@ -258,24 +263,31 @@ _REPRS: dict[str, _Repr] = {
     # A `Tuple` value is not Eq-comparable (E243 at the base tip), so the
     # predicate reads a component through a helper.  A vacuous `| true` would
     # read as coverage, which TESTING.md § Class Instruments calls worse than
-    # an absent row.
+    # an absent row.  The helper's `ensures` states its value: a refinement
+    # over a data type is decided where a value is given the type (spec
+    # §6.4.2), as `{ @Int | g(@Int.0) > 0 }` always was, so a helper ensuring
+    # `true` would have the satisfying value refused (E505).  The composite
+    # bases' helpers below state theirs for the same reason.
     "tuple": _Repr(
         decls=(
             "type R = { @Tuple<Int, Int> | fst(@Tuple<Int, Int>.0) > 0 };\n\n"
             "private fn fst(@Tuple<Int, Int> -> @Int)\n"
-            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "  requires(true)\n"
+            "  ensures(match @Tuple<Int, Int>.0 {"
+            " Tuple(@Int, @Int) -> @Int.result == @Int.1 })\n"
+            "  effects(pure)\n"
             "{\n  let Tuple<@Int, @Int> = @Tuple<Int, Int>.0;\n  @Int.1\n}\n"
         ),
         base="Tuple<Int, Int>", good="Tuple(1, 1)", bad="Tuple(0 - 1, 1)",
         repr_class="handle", safe="Tuple(1, 1)",
-        witness="fst(@Tuple<Int, Int>.0) > 0",
+        witness="fst(@Tuple<Int, Int>.0) > 0", data_type=True,
     ),
     # The trap quotes a constructor call in a predicate as written (#1573).
     "option": _Repr(
         decls=_R % ("Option<Int>", "@Option<Int>.0 == Some(1)"),
         base="Option<Int>", good="Some(1)", bad="None",
         repr_class="handle", safe="Some(1)",
-        witness="@Option<Int>.0 == Some(1)",
+        witness="@Option<Int>.0 == Some(1)", data_type=True,
     ),
 }
 
@@ -1524,8 +1536,11 @@ _MODULAR_REFUSALS: dict[tuple[str, int, str], str] = {
     # implicit `0 <= @Byte.0 <= 255` range, and the producer's unconstrained
     # result leaves the solver unable to refute `< 10` outright — so that
     # product stays a live cell and its guard is what answers.
+    # `tuple` and `option` joined them with #1814: a refinement over a data
+    # type is decided where the value is given the type, as a primitive's
+    # always was.
     for route in (1, 2, 3)
-    for repr_name in ("int", "nat", "float64", "bool")
+    for repr_name in ("int", "nat", "float64", "bool", "tuple", "option")
 }
 
 #: (position, route index, representation) -> a defect this matrix finds that
@@ -1696,7 +1711,7 @@ def test_a_violating_value_is_refused(
     """
     _disposition(cell)
     expected = _expected_record(cell)
-    if expected != _GUARDED:
+    if expected not in (_GUARDED, _DECIDED):
         pytest.skip(f"the record discloses this position for this base: "
                     f"{expected}")
     m = _measure(cell, tmp_path)
@@ -1704,6 +1719,19 @@ def test_a_violating_value_is_refused(
         f"{_ids(cell)}: the violating value is refused by nothing — not by "
         f"verification, and not by the artifact:\n{m['bad_output']}"
     )
+    if expected == _DECIDED:
+        # The value decides the refinement, so verification refuses the
+        # violating twin, whatever the artifact does with it; or the checker
+        # refuses it first (a `None` where the position's type is written
+        # without one: E121, E213), before any verification is asked.
+        bad_errors = m["bad_errors"] or _errors(
+            _envelope(_write(tmp_path, _sources(cell)[1], "bad.vera")))
+        assert bad_errors and set(bad_errors) <= {
+            "E121", "E213", "E505"}, (
+            f"{_ids(cell)}: the value decides this data type's refinement, "
+            f"and verification says {bad_errors}"
+        )
+        return
     if m["bad_refused_at_run"] and "Refinement violation" in m["bad_output"]:
         witness = _REPRS[cell[2]].witness
         assert witness in m["bad_output"], (
@@ -1729,18 +1757,32 @@ def test_a_violating_value_is_refused(
 
 _GUARDED = "guarded-or-proved"
 
+#: A position no guard reaches, over a data-type base: the value the route
+#: writes decides the refinement, so the record is a proof (the satisfying
+#: twin) and the violating twin is refused at verification.
+_DECIDED = "decided-by-the-value"
+
 _CONSTRUCTION_POSITIONS = frozenset(
     site for sites in binders.CONSTRUCTION_SITES.values() for site in sites
 )
 
 
 def _expected_record(cell: tuple[str, int, str]) -> str:
-    """What the obligation stream must say about this cell's position."""
+    """What the obligation stream must say about this cell's position.
+
+    The rule: a position a guard can reach claims a check or a proof; one
+    whose store cannot be guarded discloses the narrowing, unless the base is
+    a data type, whose refinement is decided where the value is given the
+    type (spec §6.4.2), so the record is a proof.
+    """
     position, index, repr_name = cell
-    base = _REPRS[repr_name].base
+    r = _REPRS[repr_name]
+    base = r.base
     stores = (position in _CONSTRUCTION_POSITIONS
               or _ALL_ROUTES[position][index].constructs)
     if stores and base not in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES:
+        if r.data_type:
+            return _DECIDED
         return (
             "disclosed: a construction store tees the value into one scalar "
             "local, and this base has no scalar representation "
@@ -1807,6 +1849,14 @@ def test_the_record_matches_the_rule(
         assert statuses & {"tier3", "verified"}, (
             f"{_ids(cell)}: a guard can be emitted for this base at this "
             f"position, and the stream says {sorted(statuses)}"
+        )
+    elif expected == _DECIDED:
+        # Membership again: a `match` over the built value binds it at a
+        # guarded position of its own, which claims its check (`tier3`).
+        assert "verified" in statuses and "tier3_unguarded" not in statuses, (
+            f"{_ids(cell)}: no guard reaches this position and the value "
+            f"decides this data type's refinement, so the record is a proof; "
+            f"the stream says {sorted(statuses)}"
         )
     else:
         assert "tier3_unguarded" in statuses, (
@@ -1932,7 +1982,10 @@ _COMPOSITE_BASES: dict[str, tuple[str, str, str]] = {
         "type R = { @Tuple<Tuple<Int, Int>, Int> | "
         "fst2(@Tuple<Tuple<Int, Int>, Int>.0) > 0 };\n\n"
         "private fn fst2(@Tuple<Tuple<Int, Int>, Int> -> @Int)\n"
-        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "  requires(true)\n"
+        "  ensures(match @Tuple<Tuple<Int, Int>, Int>.0 {"
+        " Tuple(Tuple(@Int, @Int), @Int) -> @Int.result == @Int.2 })\n"
+        "  effects(pure)\n"
         "{\n  let Tuple<@Tuple<Int, Int>, @Int> = "
         "@Tuple<Tuple<Int, Int>, Int>.0;\n"
         "  let Tuple<@Int, @Int> = @Tuple<Int, Int>.0;\n  @Int.1\n}\n",
@@ -1942,7 +1995,11 @@ _COMPOSITE_BASES: dict[str, tuple[str, str, str]] = {
         "private data Pairish {\n  MkPairish(String, Int)\n}\n\n"
         "type R = { @Pairish | width(@Pairish.0) > 0 };\n\n"
         "private fn width(@Pairish -> @Int)\n"
-        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "  requires(true)\n"
+        "  ensures(match @Pairish.0 {"
+        " MkPairish(@String, @Int) ->"
+        " @Int.result == string_length(@String.0) + @Int.0 })\n"
+        "  effects(pure)\n"
         "{\n  match @Pairish.0 {\n"
         "    MkPairish(@String, @Int) -> string_length(@String.0) + @Int.0\n"
         "  }\n}\n",
@@ -2231,8 +2288,13 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     The cells above read the statuses and the two verdicts; this one reads
     the ARTIFACT, because a record and a run can agree for a reason other
     than a guard, and what was missing was the guard.
+
+    Read over `Map`, a handle base whose predicate the solver leaves to the
+    guard: a `Tuple` base stood here until #1814, and a refinement over a
+    data type is now decided at verification, so the opaque producer's
+    `ensures(true)` has the write refused (E505) before any guard is asked.
     """
-    cell = ("State write boundary", 1, "tuple")
+    cell = ("State write boundary", 1, "map")
     m = _measure(cell, tmp_path)
     assert not m["errors"], m["errors"]
     assert "tier3" in m["statuses"], sorted(m["statuses"])
