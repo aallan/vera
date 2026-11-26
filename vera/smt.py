@@ -15,7 +15,7 @@ import hashlib
 
 import contextlib
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -793,6 +793,34 @@ class SmtContext:
         # that needs one is provable only from something this run admitted it
         # could not establish, which is a Tier-3 truth and not a Tier-1 proof.
         self._tainted_facts: list[z3.ExprRef] = []
+        # #1897: the values a narrowing in this function gave a type whose
+        # refinements below its head their own type does not state (the
+        # verifier's `_narrowing_hook` records them as they translate).  A
+        # fact read off such a value's declared type is published by the
+        # narrowing's own obligation, so it is withheld like a disclosed
+        # producer's (`ContractVerifier._established_facts`), and each fact
+        # withheld for one is keyed here, by the fact's id, to the narrowed
+        # values it rests on: the narrowing's own query never reads it
+        # (`check_valid`'s *own*).
+        self._narrowed_terms: list[z3.ExprRef] = []
+        self._narrowed_ids: set[int] = set()
+        # The narrowed values some unchecked narrowing row gave their type:
+        # a fact over one is established only by that row's own proof.
+        self._unestablished_ids: set[int] = set()
+        # Each noted id to the narrowed ids it was made from (its lineage):
+        # a term made from a narrowed value (an array literal holding it, a
+        # `handle`'s stand-in whose leaves are it) holds that value by no
+        # occurrence, so its facts are that narrowing's own by this link.
+        self._narrowed_parents: dict[int, set[int]] = {}
+        # The facts read off a type only checked narrowings gave the value:
+        # established, so every query reads them but the narrowing's own.
+        self._narrowed_facts: list[tuple[z3.ExprRef, frozenset[int]]] = []
+        # Each walked term's id to the term and the narrowed ids under it
+        # (`narrowed_ids_in`).
+        self._narrowed_below: dict[int, tuple[Any, frozenset[int]]] = {}
+        self._withheld_owners: dict[int, frozenset[int]] = {}
+        self._own_excluded: frozenset[int] = frozenset()
+        self._narrowing_hook: Any = None
         # #1480 review: what a placeholder's binder guarantees about it.  A
         # refined binder whose value does not translate is bound to a fresh
         # value, and codegen's §2.6.5 guard at the bind establishes the
@@ -874,6 +902,12 @@ class SmtContext:
         # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
         # driving (pure-SMT tests).
         self._call_result_facts_hook: Any = None
+        # Optional hook (injected by the verifier) that notes a call's fresh
+        # result where an unchecked narrowing may have made it (#1897),
+        # asked before the callee's facts about the result are read, which
+        # follow that note.  Signature: (call_node, result_z3, smt) -> None.
+        # None when no verifier is driving (pure-SMT tests).
+        self._call_result_note_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -1898,6 +1932,8 @@ class SmtContext:
         term = None if arm is None else arm(self, expr, env)
         if term is None and not isinstance(expr, (ast.SlotRef, ast.ResultRef)):
             term = self._stand_in(expr, env)
+        if term is not None and self._narrowing_hook is not None:
+            self._narrowing_hook(expr, term, env, self)
         return term
 
     def _translate_slot_ref(
@@ -3616,7 +3652,25 @@ class SmtContext:
         """Assume the callee's postconditions, its refined return's
         predicate and the refinements written inside its return type, about
         the fresh result *ret_var* — each through :meth:`_guard_fact`, which
-        scopes it to the branch and to the call's binding (#1706)."""
+        scopes it to the branch and to the call's binding (#1706).
+
+        They follow the result's note (#1897): the callee drew them from
+        what its parameters' types state, so where the verifier notes the
+        result unestablished (``_call_result_note_hook``, asked before any
+        of them is read) each is held apart, in the form it would be
+        assumed in, owned by the narrowings the result is made from, and a
+        proof that needs one is disclosed rather than proved."""
+        if self._call_result_note_hook is not None:
+            self._call_result_note_hook(call_node, ret_var, self)
+        owners = self.narrowed_ids_in(ret_var)
+        held = owners if owners & self._unestablished_ids else None
+
+        def take(fact: z3.ExprRef) -> None:
+            if held is None:
+                self.assume(self._guard_fact(fact))
+            else:
+                self.withhold_narrowed([self._guard_fact(fact)], held)
+
         # Assume callee postconditions about the return variable
         saved_result = self._result_var
         self._result_var = ret_var
@@ -3630,7 +3684,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 z3_post = self.translate_expr(contract.expr, callee_env)
             if z3_post is not None:
-                self.assume(self._guard_fact(z3_post))
+                take(z3_post)
         self._result_var = saved_result
 
         # #746: a refined return type is an implicit postcondition — assume
@@ -3668,7 +3722,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 facts = self._type_facts(ret_var, callee_info.return_type)
             for fact in facts:
-                self.assume(self._guard_fact(fact))
+                take(fact)
             if any(self._mentions_stand_in(fact) for fact in facts):
                 self._taint(ret_var)
 
@@ -3682,9 +3736,21 @@ class SmtContext:
         # disclosed that obligation instead, so a proof that needs them is
         # Tier 3.
         if self._call_result_facts_hook is not None:
+            withheld_from = len(self._tainted_facts)
             for fact in self._call_result_facts_hook(
                     callee_info, call_node, ret_var, self):
                 self.assume(self._guard_fact(fact))
+            # The hook's gate withholds them bare where the result is noted
+            # unestablished; held as the kept ones are assumed, under the
+            # branch and the call's binding.
+            for i in range(withheld_from, len(self._tainted_facts)):
+                fact = self._tainted_facts[i]
+                key = self._withheld_owners.get(fact.get_id())
+                if key is None:
+                    continue  # a disclosed producer's, held as #1363 holds it
+                guarded = self._guard_fact(fact)
+                self._tainted_facts[i] = guarded
+                self._withheld_owners[guarded.get_id()] = key
 
     # -----------------------------------------------------------------
     # Stand-ins: what the translation has no term for (#1696)
@@ -4264,18 +4330,42 @@ class SmtContext:
 
     def _arm_source_facts(
         self, scrutinee_ast: ast.Expr, scrutinee_z3: z3.ExprRef,
-        pattern: ast.Pattern,
+        pattern: ast.Pattern, guard: z3.ExprRef | None,
     ) -> list[z3.ExprRef]:
         """Source-type facts to assume while translating *pattern*'s arm body —
         via the verifier-injected ``_subpattern_fact_hook`` — so a call
         precondition inside the arm sees a refined sub-pattern binding's
         invariant (CR PR-review).  Empty when no hook is set (pure-SMT tests)
-        or the pattern is not a constructor pattern."""
+        or the pattern is not a constructor pattern.  *guard* is the
+        condition the arm is taken under (None for an irrefutable one)."""
         if (self._subpattern_fact_hook is None
                 or not isinstance(pattern, ast.ConstructorPattern)):
             return []
+        withheld_from = len(self._tainted_facts)
+        kept_from = len(self._narrowed_facts)
         facts = self._subpattern_fact_hook(
             scrutinee_ast, scrutinee_z3, pattern, self)
+        # #1897: a fact the hook keeps (`assume_narrowed`) or withholds
+        # because a narrowing gave the scrutinee its type is the fact the
+        # arm would assume, so it is held in the form the arm assumes it
+        # (below): under the arm's condition and the bindings of the calls
+        # being modelled.  Held bare, a callee's `requires` `match` read it
+        # of the argument outright: a kept one on the first attempt of every
+        # later query (PR #1933 review), a withheld one on the second, as
+        # #1706 closed for the facts the arm returns.
+        for i in range(kept_from, len(self._narrowed_facts)):
+            fact, kept_by = self._narrowed_facts[i]
+            self._narrowed_facts[i] = (self._under_call_bindings(
+                fact if guard is None else z3.Implies(guard, fact)), kept_by)
+        for i in range(withheld_from, len(self._tainted_facts)):
+            fact = self._tainted_facts[i]
+            owners = self._withheld_owners.get(fact.get_id())
+            if owners is None:
+                continue  # a disclosed producer's, held as #1363 holds it
+            held = self._under_call_bindings(
+                fact if guard is None else z3.Implies(guard, fact))
+            self._tainted_facts[i] = held
+            self._withheld_owners[held.get_id()] = owners
         return list(facts) if facts else []
 
     def _translate_match(
@@ -4326,7 +4416,9 @@ class SmtContext:
         for pc in preceding_conds:
             self.branch_premise(z3.Not(pc))
         last_facts = self._arm_source_facts(
-            expr.scrutinee, scrutinee, arms[-1].pattern)
+            expr.scrutinee, scrutinee, arms[-1].pattern,
+            z3.And(*[z3.Not(pc) for pc in preceding_conds])
+            if preceding_conds else None)
         for f in last_facts:
             self._path_conditions.append(f)
             # Global implication: the fact holds whenever THIS (default) arm is
@@ -4375,7 +4467,7 @@ class SmtContext:
             self.branch_premise(z3.And(*earlier, cond) if earlier else cond)
             self._reach_extras.append(self._arm_reach(conds, index))
             arm_facts = self._arm_source_facts(
-                expr.scrutinee, scrutinee, arm.pattern)
+                expr.scrutinee, scrutinee, arm.pattern, cond)
             for f in arm_facts:
                 # Global implication `arm-matched => fact` (see the default-arm
                 # note) so the refined-return goal sees it after the path
@@ -4732,8 +4824,15 @@ class SmtContext:
         self,
         goal: z3.ExprRef,
         assumptions: list[z3.ExprRef],
+        *,
+        own: object = None,
     ) -> SmtResult:
         """Check if assumptions ⟹ goal is valid.
+
+        *own* is the value a NARROWING's obligation is over (#1897): the
+        facts withheld because a narrowing of that value published them are
+        its own goal, so they are left out of its second attempt as well, and
+        a narrowing nothing else establishes is refuted, not demoted.
 
         Uses refutation: assert assumptions and ¬goal.
         Also includes any accumulated ``_path_conditions`` from
@@ -4753,13 +4852,136 @@ class SmtContext:
         something we admitted we could not establish", which asserting them
         into the base context makes indistinguishable.
         """
-        result = self._check_refutation(goal, assumptions, tainted=False)
-        if result.status == "verified" or not self._tainted_facts:
-            return result
-        with_tainted = self._check_refutation(goal, assumptions, tainted=True)
+        saved = self._own_excluded
+        if own is not None:
+            # #1897: a narrowing's own query is never offered a fact read
+            # off the type that narrowing gave its value, on either attempt:
+            # established (a checked row's) or withheld (an unchecked one's).
+            # Its OWN value only: a narrowing of a component read off
+            # another narrowed value reads that value's facts as any query
+            # does.
+            own_id = self._term_id(own)
+            self._own_excluded = (
+                self._made_from(own_id) if own_id in self._narrowed_ids
+                else frozenset())
+        try:
+            result = self._check_refutation(goal, assumptions, tainted=False)
+            if result.status == "verified" or not self._tainted_facts:
+                return result
+            with_tainted = self._check_refutation(
+                goal, assumptions, tainted=True)
+        finally:
+            self._own_excluded = saved
         if with_tainted.status == "verified":
             return SmtResult(status="disclosed")
         return result
+
+    def _made_from(self, own_id: int) -> frozenset[int]:
+        """*own_id* and every noted id whose lineage reaches it
+        (`_narrowed_parents`): the values made from that narrowed one."""
+        found = {own_id}
+        grew = True
+        while grew:
+            grew = False
+            for tid, parents in self._narrowed_parents.items():
+                if tid not in found and parents & found:
+                    found.add(tid)
+                    grew = True
+        return frozenset(found)
+
+    def narrowed_ids_in(self, term: object) -> set[int]:
+        """The ids of the narrowed values (`_narrowed_terms`, #1897) that
+        occur in *term*."""
+        if term is None or not self._narrowed_terms:
+            return set()
+        try:
+            top = term.get_id()  # type: ignore[attr-defined]
+        except (AttributeError, z3.Z3Exception):
+            return set()
+        # Each subterm's answer is kept (`_narrowed_below`, with the term
+        # itself, so its id is not reused while the answer stands), so a
+        # chain of terms each holding the last is walked once, not once per
+        # link: the hook asks this of every node it meets.
+        cache = self._narrowed_below
+        wanted = self._narrowed_ids
+        stack: list[tuple[Any, bool]] = [(term, False)]
+        while stack:
+            cur, children_done = stack.pop()
+            try:
+                cur_id = cur.get_id()
+                kids = cur.children()
+            except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                continue
+            if cur_id in cache:
+                continue
+            if not children_done:
+                stack.append((cur, True))
+                stack.extend((k, False) for k in kids)
+                continue
+            found = {cur_id} & wanted
+            for k in kids:
+                try:
+                    found |= cache.get(k.get_id(), (None, frozenset()))[1]
+                except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                    continue
+            cache[cur_id] = (cur, frozenset(found))
+        return set(cache.get(top, (None, frozenset()))[1])
+
+    @staticmethod
+    def _term_id(term: object) -> int | None:
+        try:
+            return int(term.get_id())  # type: ignore[attr-defined]
+        except (AttributeError, z3.Z3Exception):
+            return None
+
+    def unestablished_narrowed_ids(self) -> set[int]:
+        """The narrowed values (#1897) an unchecked narrowing row gave their
+        type, whose reader facts only that row's proof establishes."""
+        return self._unestablished_ids
+
+    def assume_narrowed(
+        self, facts: Sequence[z3.ExprRef], owners: set[int],
+    ) -> None:
+        """Take *facts*, read off a type checked narrowings gave the values
+        *owners* (#1897), as premises of every query but the narrowings'
+        own (`check_valid`'s *own*)."""
+        key = frozenset(owners)
+        for fact in facts:
+            self._narrowed_facts.append((fact, key))
+
+    def note_narrowed(
+        self, term: z3.ExprRef, established: bool = True,
+        parents: Iterable[int] = (),
+    ) -> None:
+        """Record *term* as a value a narrowing in this function gave a type
+        its own does not state (#1897); *established* is False where the
+        row is not checked, and a value any such row gave stays so.
+        *parents* are the narrowed ids *term* was made from: THE one record
+        of a term's lineage, which `check_valid`'s *own* follows."""
+        tid = term.get_id()
+        lineage = set(parents) - {tid}
+        if lineage:
+            self._narrowed_parents.setdefault(tid, set()).update(lineage)
+        if not established:
+            self._unestablished_ids.add(tid)
+        if tid in self._narrowed_ids:
+            return
+        self._narrowed_terms.append(term)
+        self._narrowed_ids.add(tid)
+        if tid in self._narrowed_below:
+            # A term walked before holds this one only if this one was
+            # walked with it, so the answers kept stand unless it was.
+            self._narrowed_below.clear()
+
+    def withhold_narrowed(
+        self, facts: Sequence[z3.ExprRef], owners: set[int],
+    ) -> None:
+        """Hold *facts* apart as `_tainted_facts`, each keyed to the narrowed
+        values *owners* it was read off (#1897)."""
+        key = frozenset(owners)
+        for fact in facts:
+            self._tainted_facts.append(fact)
+            self._withheld_owners[fact.get_id()] = key
 
     def term_is_disclosed(self, term: object) -> bool:
         """Whether *term* is, or is built from, a disclosed call's result.
@@ -4985,8 +5207,15 @@ class SmtContext:
                 self.solver.add(a)
             for pc in self._path_conditions:
                 self.solver.add(pc)
+            for nf, nf_owners in self._narrowed_facts:
+                if nf_owners & self._own_excluded:
+                    continue  # #1897: the narrowing's own goal
+                self.solver.add(nf)
             if tainted:
                 for tf in self._tainted_facts:
+                    owners = self._withheld_owners.get(tf.get_id())
+                    if owners and owners & self._own_excluded:
+                        continue  # #1897: the narrowing's own goal
                     self.solver.add(tf)
             for vf in self._facts_of_values_read(goal, assumptions):
                 self.solver.add(vf)
@@ -5224,6 +5453,14 @@ class SmtContext:
         self._path_conditions.clear()
         self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
+        self._narrowed_terms.clear()  # #1897: per function, as the taint is
+        self._narrowed_ids.clear()
+        self._narrowed_below.clear()
+        self._unestablished_ids.clear()
+        self._narrowed_parents.clear()
+        self._narrowed_facts.clear()
+        self._withheld_owners.clear()
+        self._own_excluded = frozenset()
         self._value_facts.clear()  # #1480 review: per-function placeholders
         self._guarded_values.clear()  # and the guarded binders' projections
         self._reach_extras.clear()

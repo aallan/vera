@@ -34,14 +34,13 @@ has no position here; `put`'s resume is `Unit`, and an `Exn` clause does
 not resume.
 
 Each cell asserts its verdict, its rows' statuses and the run at a
-violating and a satisfying argument.  The verdicts that stay open are
-pinned as they stand, so the fix that moves them moves them knowingly:
-a refinement below a composite's head is checked only where a boundary
-decomposes the value (#1542's remaining class), so a refined tuple
-component at a `State` write boundary, at a `get` resume and at a handle's
-value bound by a `let` is listed as checked and is not (`E541`, the same
-verdict the value has at a `let` written directly); a refined `Option`
-payload and a binder's component are disclosed (`E506`, spec §2.6.5).
+violating and a satisfying argument.  A refinement below a composite's
+head is checked only where a boundary decomposes the value, so by rule 2
+(spec §2.6.5) a refined tuple component at a `State` write boundary, at a
+`get` resume and at a handle's value bound by a `let` is disclosed (`E506`,
+the verdict the value has at a `let` written directly), as a refined
+`Option` payload and a binder's component are; no cell is a row listed as
+checked that no check answers (`E541`).
 
 A composite built at the position is held in one of three ways, each a
 source: where the position's type reaches the construction (#1812: a
@@ -251,10 +250,10 @@ def _program(shape: str, position: str, source: str = "call") -> str:
 # REFUSED: the solver refutes the narrowing (E503, E505), and the compiled
 # program traps.  REFUSED_UNCHECKED: refuted, and a component the refusal
 # answers runs through.  DISCLOSED: accepted with a row no check guards
-# (E504, E506), and the value runs through.  OPEN: a row listed as checked
-# that no check answers (E541), and the value runs through.
+# (E504, E506), and the value runs through.  No cell is a row listed as
+# checked that no check answers (E541): rule 2, spec §2.6.5.
 CHECKED, REFUSED, REFUSED_UNCHECKED = "checked", "refused", "refused_unchecked"
-DISCLOSED, OPEN = "disclosed", "open"
+DISCLOSED = "disclosed"
 #: PROVED: `vera verify` accepts with every narrowing row verified (a value
 #: built from `pr`, whose `ensures` proves the component, where the
 #: position's type reaches the construction).
@@ -279,13 +278,11 @@ def _verdicts() -> dict[tuple[str, str], str]:
     v.update({("option_short", p): DISCLOSED for p in _ALL})
     # A refined tuple component: checked where a boundary decomposes the
     # value (a closure argument, a function's return), disclosed at a
-    # binder, listed checked and not checked anywhere else (OPEN).
-    v.update({("tuple_short", p): OPEN for p in _ALL})
-    v.update({("tuple_short", p): DISCLOSED for p in _BINDERS})
+    # binder and everywhere else (rule 2, spec §2.6.5).
+    v.update({("tuple_short", p): DISCLOSED for p in _ALL})
     v.update({("tuple_short", p): CHECKED
               for p in ("state_value_apply", "state_value_return")})
-    v.update({("tuple_small", p): OPEN for p in _ALL})
-    v.update({("tuple_small", p): DISCLOSED for p in _BINDERS})
+    v.update({("tuple_small", p): DISCLOSED for p in _ALL})
     v.update({("tuple_small", p): REFUSED_UNCHECKED
               for p in _DECIDED})
     v.update({("tuple_small", p): REFUSED
@@ -318,9 +315,8 @@ def _joins() -> dict[tuple[str, str, str], str]:
     are checked (refused where the verifier decides a `Nat` or a `Small`); a
     refined payload from a call is disclosed where it is not refuted; a
     refined tuple component from a call is checked where a boundary
-    decomposes it (a call's argument), disclosed at a constructor's field
-    (a store checks no tuple component below it) and listed checked with no
-    check anywhere else (OPEN, the `let`'s verdict)."""
+    decomposes it (a call's argument) and disclosed everywhere else (rule
+    2, spec §2.6.5: the `let`'s verdict)."""
     v: dict[tuple[str, str, str], str] = {}
     j = tuple(JOIN_POSITIONS)
     for shape in ("nat", "small"):
@@ -330,10 +326,9 @@ def _joins() -> dict[tuple[str, str, str], str]:
     v.update({("option_short", "call", p): DISCLOSED for p in j})
     v.update({("option_small", "call", p): DISCLOSED if p in _UNDECIDED
               else REFUSED_UNCHECKED for p in j})
-    v.update({("tuple_short", "call", p): OPEN for p in j})
+    v.update({("tuple_short", "call", p): DISCLOSED for p in j})
     v[("tuple_short", "call", "call_argument")] = CHECKED
-    v[("tuple_short", "call", "ctor_field")] = DISCLOSED
-    v.update({("tuple_small", "call", p): OPEN if p in _UNDECIDED
+    v.update({("tuple_small", "call", p): DISCLOSED if p in _UNDECIDED
               else REFUSED_UNCHECKED for p in j})
     v[("tuple_small", "call", "call_argument")] = REFUSED
     return v
@@ -421,7 +416,7 @@ def test_a_handler_position_holds_its_value_to_its_type(
     # where `pr` maps it into the type, the value it maps it to.
     through = SATISFYING if source == "proved" else bad
     if source == "proved":
-        assert verdict not in (REFUSED, REFUSED_UNCHECKED, OPEN), verdict
+        assert verdict not in (REFUSED, REFUSED_UNCHECKED), verdict
         assert ran.trap is None and ran.value == through, (ran.trap, ran.value)
     if verdict == PROVED:
         # Proved where it is built: no narrowing row is left to a check or
@@ -444,14 +439,10 @@ def test_a_handler_position_holds_its_value_to_its_type(
             assert ran.trap is not None, ran.value
         else:
             assert ran.value == through
-    elif verdict == DISCLOSED:
+    else:
+        assert verdict == DISCLOSED
         assert verified.ok, errors
         assert "tier3_unguarded" in statuses and mismatches == [], statuses
-        assert ran.value == through
-    else:
-        assert verdict == OPEN
-        assert errors == {"E541"}, errors
-        assert mismatches, statuses
         assert ran.value == through
 
 

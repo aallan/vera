@@ -316,6 +316,27 @@ class _FnFrame:
     #: function is done (`_leave_hand_down_rows`).
     hand_down: list[tuple[ast.Expr, list[obligation_table.Row]]] = field(
         default_factory=list)
+    #: The narrowing rows' values, by the key of the node the translation
+    #: meets them at, each with the constructor steps down to the narrowed
+    #: component (#1897, `ContractVerifier._note_narrowing`).
+    narrowed_at: dict[
+        object, list[tuple[tuple[tuple[str, int], ...], bool]]] | None = None
+    #: The nodes whose term holds a narrowed value, as the translation meets
+    #: them, so a built-in's result over one is narrowed too, each with
+    #: whether every narrowed value it holds is established (checked).
+    narrowed_nodes: dict[object, bool] = field(default_factory=dict)
+    #: The term each node translated to, by the node's key and the identity
+    #: of the environment it was translated under (the same node translates
+    #: under several where a clause or a callee body is inlined), with that
+    #: environment kept alive beside it (`ContractVerifier._holds_narrowed`).
+    met: dict[tuple[object, int], tuple[SlotEnv, object]] = field(
+        default_factory=dict)
+    #: Whether the table holds a narrowing row with no check
+    #: (`_holds_unchecked_narrowing`), computed once.
+    unchecked_narrowing: bool | None = None
+    #: The ids of the call results `_note_minted`'s call rule decided at the
+    #: call, which a reference to the result reads as the call left them.
+    linked_results: set[int] = field(default_factory=set)
 
 
 class _Path(NamedTuple):
@@ -974,6 +995,10 @@ UNESTABLISHED_PHRASE: dict[str, str] = {
     "disclosed": "a fact this run could neither prove nor guard",
     "refuted": "a fact this run proved FALSE",
     "undecided": "a fact this run could not decide within the budget",
+    # #1897: a fact read off a type a narrowing in this function gave the
+    # value, which only that narrowing's own obligation establishes.
+    "narrowed": "a fact a narrowing in this function states and does not "
+                "establish",
 }
 
 
@@ -1159,6 +1184,59 @@ def _site_span(node: ast.Node) -> ast.Span | None:
     node's span (the obligation table's rows stand at the same place)."""
     stage = getattr(node, "stage_span", None)
     return stage if stage is not None else node.span
+
+
+def _narrowed_at(
+    frame: _FnFrame,
+) -> dict[object, list[tuple[tuple[tuple[str, int], ...], bool]]]:
+    """*frame*'s narrowing rows (#1897): each ``refine_bind`` row below the
+    head, by the key of the value it takes, with the constructor steps down
+    to the narrowed component (none for a row at the value itself) and
+    whether code generation checks the row (``row.guard.check``).  A
+    checked row's check runs where the narrowing gives the value its type,
+    before any reader of that type, so the facts a reader takes off it are
+    established; an unchecked row's are established only by its own proof,
+    which is discharged without them."""
+    if frame.narrowed_at is None:
+        at: dict[object, list[tuple[tuple[tuple[str, int], ...], bool]]] = {}
+        for row in frame.rows or ():
+            if row.kind != "refine_bind" or not row.path:
+                continue
+            if row.source is None:
+                at.setdefault(
+                    obligation_table.ObligationTable._key(row.node), []
+                ).append(((), row.guard.check))
+            else:
+                at.setdefault(
+                    obligation_table.ObligationTable._key(row.source.value),
+                    [],
+                ).append((row.source.steps, row.guard.check))
+        frame.narrowed_at = at
+    return frame.narrowed_at
+
+
+def _holds_unchecked_narrowing(frame: _FnFrame) -> bool:
+    """Whether *frame*'s table holds a narrowing (a ``refine_bind`` or a
+    ``nat_bind`` row) that code generation does not check (#1897): the
+    static form, known before any term is minted, of "a value in this
+    function may carry a type only that row's proof establishes"."""
+    if frame.unchecked_narrowing is None:
+        frame.unchecked_narrowing = any(
+            row.kind in ("refine_bind", "nat_bind") and not row.guard.check
+            for row in frame.rows or ())
+    return frame.unchecked_narrowing
+
+
+def _minted(term: object, smt: SmtContext) -> bool:
+    """Whether *term* is a value the solver minted (#1897): an uninterpreted
+    symbol that is not one of the function's inputs, a stand-in or a
+    binder (0-ary), or a call's result (a non-generic callee's, applied to
+    its arguments)."""
+    if not (isinstance(term, z3.ExprRef) and z3.is_app(term)
+            and term.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+        return False
+    tid = term.get_id()
+    return all(var.get_id() != tid for _, var, _ in smt._inputs)
 
 
 def _source_component(source: obligation_table.Source) -> ast.Node | None:
@@ -1780,6 +1858,10 @@ class ContractVerifier:
         ret_ty = getattr(callee, "return_type", None)
         if ret_ty is None or not self._has_nested_refinement(ret_ty):
             return []
+        # The callee's guarantee holds under what it assumed of its
+        # arguments; in a function with an unchecked narrowing, one may be
+        # that narrowing's value, and the result is noted so before this is
+        # asked (`SmtContext._call_result_note_hook`).
         with smt._callee_contract_scope(callee):
             facts, _ = self._nested_refinement_facts(smt, ret_ty, result)
         return cast("list[z3.ExprRef]", self._established_facts(
@@ -2413,6 +2495,14 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1897: and note a call's result before the callee's facts about
+        # it are assumed, so they follow the note (`_note_minted`).
+        smt._call_result_note_hook = self._note_minted
+        # #1897: and let the translation record each value a narrowing row of
+        # the function under verification gives a type its own does not
+        # state, so a fact read off that type is withheld from the
+        # narrowing's own obligation (`_established_facts`).
+        smt._narrowing_hook = self._note_narrowing
         # #1468: and let a generic call's precondition be read off the clone
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
@@ -6117,6 +6207,10 @@ class ContractVerifier:
             # the tail of a longer list); with no outer there is nothing a
             # later reference could read in its place.
             val = self._fresh_slot_var(smt, stmt.type_expr)
+            if val is not None:
+                # #1897: the stand-in a narrowing binds is the narrowed value
+                # (a handler clause's binder the walk cannot read, say).
+                self._note_narrowed_binder(stmt.value, (), val, smt)
             if val is None and type_name is not None:
                 stale = env.resolve(type_name, 0)
                 if stale is not None:
@@ -9227,6 +9321,12 @@ class ContractVerifier:
                         # Non-literal / untranslatable component: a fresh var
                         # invalidates the stale outer binding (PR #748).
                         slot_val = self._fresh_slot_var(smt, te)
+                        if slot_val is not None:
+                            # #1897: a narrowed component is the narrowed
+                            # value, whatever stands in for it here.
+                            self._note_narrowed_binder(
+                                stmt.value, ((stmt.constructor, i),),
+                                slot_val, smt)
                     if slot_val is not None:
                         pushed.append((type_name, slot_val))
                         # #746: seed the source component type's fact over
@@ -10535,7 +10635,7 @@ class ContractVerifier:
             return
 
         obligation = val >= 0
-        result = smt.check_valid(obligation, list(assumptions))
+        result = smt.check_valid(obligation, list(assumptions), own=val)
 
         if self._refuted_only_over_a_placeholder(
                 smt, val, val < 0, result, assumptions):
@@ -10597,7 +10697,8 @@ class ContractVerifier:
         gives the diagnostic location.
         """
         obligation = term >= 0  # type: ignore[operator]
-        result = smt.check_valid(obligation, list(assumptions))
+        result = smt.check_valid(
+            obligation, list(assumptions), own=term)
         if self._refuted_only_over_a_placeholder(
                 smt, term, term < 0,  # type: ignore[operator]
                 result, assumptions):
@@ -10731,7 +10832,7 @@ class ContractVerifier:
                 )
             return
 
-        result = smt.check_valid(goal, list(assumptions))
+        result = smt.check_valid(goal, list(assumptions), own=val)
 
         if result.status == "verified":
             # #1460: the PROOF is taken first, and the opaque-shadow gate
@@ -11431,7 +11532,7 @@ class ContractVerifier:
         # obligation asks, where the type stated one arm's refinement.
         premises = list(assumptions)
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
-        result = smt.check_valid(goal, premises)
+        result = smt.check_valid(goal, premises, own=val)
         if self._refuted_only_over_a_placeholder(
                 smt, val, z3.Not(goal), result, premises):
             # As at every narrowing (#1480 review): a payload refuted only
@@ -11856,6 +11957,8 @@ class ContractVerifier:
         # fast path's body translation models.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        smt._call_result_note_hook = self._note_minted
+        smt._narrowing_hook = self._note_narrowing
         smt._generic_callee_hook = self._generic_callee_info
         # #1525: the same types as the main path, a construction's and an
         # opaque stand-in's.
@@ -11944,7 +12047,7 @@ class ContractVerifier:
 
                 reason=self._refined_bail_reason(ret_type, body_expr))
             return
-        result = smt.check_valid(goal, list(assumptions))
+        result = smt.check_valid(goal, list(assumptions), own=body_expr)
         if result.status == "verified":
             self._record_obligation(
                 decl.name, "refine_bind", decl.body, "verified")
@@ -12016,7 +12119,7 @@ class ContractVerifier:
                 # Tier-3 E506 with `_undecided_reason("disclosed")`'s wording.
                 local_assumptions.extend(self._established_facts(
                     [src_fact], source=node, term=term, smt=smt))
-        result = smt.check_valid(goal, local_assumptions)
+        result = smt.check_valid(goal, local_assumptions, own=term)
         if self._refuted_only_over_a_placeholder(
                 smt, term, z3.Not(goal), result, local_assumptions):
             # The `@Nat` twin's gate (#1480 review): a sub-pattern bind over
@@ -12332,8 +12435,33 @@ class ContractVerifier:
         Either may be absent; they answer different halves of the same
         question (see :py:meth:`_value_is_disclosed`).
         """
-        if not facts or not self._value_is_disclosed(source, term, smt):
+        if not facts:
             return facts
+        owners = smt.narrowed_ids_in(term)
+        if not self._value_is_disclosed(source, term, smt):
+            # #1897: the value's type here may be one a narrowing in this
+            # function gave it.  Then the fact is that narrowing's own goal,
+            # and the narrowing's own query never reads it
+            # (`SmtContext.check_valid`'s *own*).  Every other query reads
+            # it where the narrowing's row is checked, since the check runs
+            # before any reader of the type it gives; where the row is not
+            # checked, only the narrowing's own proof establishes it, so it
+            # is withheld as a disclosed producer's is.
+            if not owners:
+                return facts
+            if not owners & smt.unestablished_narrowed_ids():
+                smt.assume_narrowed(cast("list[z3.ExprRef]", facts), owners)
+                return []
+            smt.withhold_narrowed(
+                cast("list[z3.ExprRef]", facts), owners)
+            self._tainted_reasons.add("narrowed")
+            return []
+        if owners:
+            # Disclosed and narrowed: withheld as disclosed, and kept from
+            # the narrowing's own query as well.
+            smt.withhold_narrowed(cast("list[z3.ExprRef]", facts), owners)
+            self._tainted_sites.extend(smt.disclosed_term_sites(term))
+            return []
         # Attribute it.  A syntactic hit recorded its own site as it consulted
         # the manifest; a TERM hit's site was parked on the value when the
         # call produced it (`_disclosed_call_for_value`), so bring it across
@@ -12342,6 +12470,327 @@ class ContractVerifier:
         self._tainted_sites.extend(smt.disclosed_term_sites(term))
         smt._tainted_facts.extend(facts)
         return []
+
+    def _note_narrowing(
+        self, expr: ast.Expr, term: object, env: SlotEnv, smt: SmtContext,
+    ) -> None:
+        """The SMT layer's hook (``SmtContext._narrowing_hook``, #1897):
+        record *term*, the value *expr* translated to, where a narrowing row
+        of the function under verification takes it, so a fact read off the
+        type that row gives the value is withheld from the row's own query.
+
+        A narrowing row is a ``refine_bind`` row below the head: the table
+        lists one exactly where the value's own type does not state the
+        refinement its position's type writes there (`_refined_paths`), at a
+        `let`, a field, a tuple component, a store, a `put`, an argument and
+        a return, and at a binder over the value it takes apart (*steps*
+        down to the component).  A head refinement takes no record here: its
+        binder reads a fresh guarded value (`_guarded_binder_values`)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or not frame.rows:
+            return
+        narrowed_at = _narrowed_at(frame)
+        key = obligation_table.ObligationTable._key(expr)
+        parts: Sequence[ast.Expr] = ()
+        if isinstance(expr, ast.ArrayLit):
+            parts = expr.elements
+        elif (isinstance(expr, ast.FnCall)
+              and expr.name in _builtin_fn_names()):
+            parts = expr.args
+        leaves = (narrowing.value_leaves(expr)
+                  if narrowing.flow_arms(expr) is not None else ())
+        for made_of in (leaves, parts):
+            # A term made from narrowed values: a join's (a block's tail, an
+            # `if`, a `match`, a `handle`), whose leaves they are, where a
+            # requirement handed down narrows at the leaves and the join's
+            # term (a stand-in, for a `handle`) holds none of them by
+            # occurrence; or a built-in's (an array literal or a store
+            # holding one, a read back out of that store), whose parts hold
+            # them, related to its parts by an axiom or not at all.  Its
+            # type is theirs, so it is established no further than they
+            # are, and its lineage is theirs: the narrowed ids it was made
+            # from, which keep a fact read off it from those narrowings'
+            # own queries (`SmtContext.check_valid`'s *own*).
+            held = [self._holds_narrowed(p, env, smt, frame)
+                    for p in made_of]
+            if any(h for h, _, _ in held):
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term),
+                    all(est for h, est, _ in held if h),
+                    parents=set().union(*(ids for _, _, ids in held)))
+        for steps, checked in narrowed_at.get(key, ()):
+            component = term
+            for ctor, i in steps:
+                try:
+                    sort = component.sort()  # type: ignore[attr-defined]
+                    idx = smt._find_ctor_index(sort, ctor)
+                except z3.Z3Exception:  # pragma: no cover — not a datatype
+                    idx = None
+                if idx is None:
+                    component = None
+                    break
+                component = sort.accessor(idx, i)(component)
+            if component is not None:
+                smt.note_narrowed(cast("z3.ExprRef", component), checked)
+        ids = smt.narrowed_ids_in(term)
+        if ids:
+            frame.narrowed_nodes[key] = frame.narrowed_nodes.get(
+                key, True) and not ids & smt.unestablished_narrowed_ids()
+        # The term this node translated to under *env*, for a parent built-in
+        # to read (`_holds_narrowed`); the env is kept with it, so an id a
+        # collected env leaves free is never read as another's.
+        frame.met[(key, id(env))] = (env, term)
+        self._note_minted(expr, term, smt, env)
+
+    def _note_minted(
+        self, expr: ast.Expr, term: object, smt: SmtContext,
+        env: SlotEnv | None = None,
+    ) -> None:
+        """THE rule for a minted term (#1897): in a function whose table
+        holds a narrowing with no check, a term the solver mints for a value
+        (a stand-in, a clause binder, `apply_fn`'s result, a call's result)
+        may stand for that narrowing's value carried where the lineage
+        cannot follow (a thrown value, a closure's capture, a function
+        value's result), so its type is established no further than that
+        row's proof, which is discharged without its readers' facts.  It is
+        noted as made from every unestablished narrowing noted so far.
+
+        Two kinds of term leave that function-wide rule.  A call to a
+        declared callee whose effect row is pure and none of whose
+        parameters may hold a function returns a value made from its
+        arguments or from its own rows, and its own table answers for
+        those: its result is noted only where an argument holds an
+        unestablished narrowed value, as made from the ids its arguments
+        hold (`_call_lineage`).  An effect operation's result (a `get`, any
+        operation call) is not noted: an unchecked narrowing whose row the
+        solver proves (a handler's initial value) and one it does not are
+        told apart only after the facts are assumed, so the function-wide
+        rule would withdraw a `get`'s facts wherever a refined cell starts
+        from a proved value.  What that leaves open, a value written to a
+        `State` cell by an unchecked narrowing and read back by `get`, is
+        pinned in `tests/test_reader_fact_1897.py`.
+
+        An array literal and a built-in other than `apply_fn` are exempt:
+        `_note_narrowing` reads them through their parts.  So is a reference
+        (a slot, ``@T.result``) to a call's result the call rule decided:
+        the rule is the producer's, and a reference keeps the note the call
+        left, clean or made from its arguments' narrowings.
+
+        Asked by `_note_narrowing`, the hook every translated term passes
+        through, with the term's *env*, and, without one, by the SMT
+        layer's call translation (``SmtContext._call_result_note_hook``)
+        before it reads the callee's facts about the result: its
+        postconditions, its refined return's predicate and the refinements
+        inside its return type follow this note, held apart where the
+        result is noted unestablished, as the result's type facts are."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if (frame is not None and frame.rows
+                and _holds_unchecked_narrowing(frame)
+                and _minted(term, smt)
+                and cast("z3.ExprRef", term).get_id() not in smt._narrowed_ids
+                and not isinstance(expr, ast.ArrayLit)
+                and not (isinstance(expr, ast.FnCall)
+                         and expr.name in _builtin_fn_names()
+                         and expr.name != "apply_fn")
+                and not self._performs_an_operation(expr, smt)):
+            tid = cast("z3.ExprRef", term).get_id()
+            if (isinstance(expr, (ast.SlotRef, ast.ResultRef))
+                    and tid in frame.linked_results):
+                return
+            linked = self._call_lineage(expr, term, env, smt, frame)
+            if linked is not None:
+                frame.linked_results.add(tid)
+            if linked is None:
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term), False,
+                    parents=set(smt.unestablished_narrowed_ids()))
+            elif linked[0]:
+                smt.note_narrowed(
+                    cast("z3.ExprRef", term), False, parents=linked[1])
+
+    def _performs_an_operation(
+        self, expr: ast.Expr, smt: SmtContext,
+    ) -> bool:
+        """Whether *expr* performs an effect operation (`_note_minted`): a
+        qualified operation call, or a bare call whose name no built-in and
+        no declared function takes and an operation in scope does."""
+        if isinstance(expr, ast.QualifiedCall):
+            return True
+        return (isinstance(expr, ast.FnCall)
+                and expr.name not in _builtin_fn_names()
+                and not smt._is_user_fn(expr.name)
+                and self.env.lookup_effect_op(expr.name) is not None)
+
+    def _call_lineage(
+        self, expr: ast.Expr, term: object, env: SlotEnv | None,
+        smt: SmtContext, frame: _FnFrame,
+    ) -> tuple[bool, set[int]] | None:
+        """The call rule of `_note_minted`: for a call to a declared callee
+        whose effect row is pure and none of whose parameters holds a
+        function, whether an argument holds an unestablished narrowed value
+        and the narrowed ids the arguments hold; ``None`` for any other
+        term, and for a call whose arguments' terms cannot all be read (the
+        function-wide rule then holds).
+
+        The arguments are read as `_holds_narrowed` reads a built-in's
+        parts, off the terms the translation made of them: under *env*
+        where the hook asks, and otherwise under the environment whose
+        terms the result is named by (`SmtContext._named`'s key for a call
+        is its arguments' term ids)."""
+        if (not isinstance(expr, (ast.FnCall, ast.ModuleCall))
+                or smt._fn_lookup is None
+                or expr.name in _builtin_fn_names()):
+            return None
+        info = smt._fn_lookup(expr.name)
+        if (info is None or not isinstance(info.effect, PureEffectRow)
+                or any(self._may_hold_function(t, set())
+                       for t in info.param_types)):
+            return None
+        args = [a for a in expr.args if not isinstance(a, ast.UnitLit)]
+        if not args:
+            return False, set()
+        if env is None:
+            env = self._call_env(expr, term, smt, frame)
+            if env is None:
+                return None
+        unestablished = False
+        ids: set[int] = set()
+        for arg in args:
+            met = frame.met.get(
+                (obligation_table.ObligationTable._key(arg), id(env)))
+            if met is None or met[0] is not env:
+                return None
+            held, established, found = self._holds_narrowed(
+                arg, env, smt, frame)
+            unestablished = unestablished or (held and not established)
+            ids |= found
+        return unestablished, ids
+
+    @staticmethod
+    def _call_env(
+        expr: ast.FnCall | ast.ModuleCall, term: object,
+        smt: SmtContext, frame: _FnFrame,
+    ) -> SlotEnv | None:
+        """The environment *expr*'s arguments were translated under, found
+        by the term ids *term*, the call's result, is named by
+        (`SmtContext._named`'s key: one id per argument the translation
+        kept, a zero-size position dropped as `_translate_call_args` drops
+        it); ``None`` where no environment met every kept argument at the
+        id its position holds.  The whole vector, position by position: an
+        environment that met one argument at its id may be another
+        translation of the same node, one that shares that argument's term
+        and holds another value in the rest."""
+        name = cast("z3.ExprRef", term).decl().name()  # an app: `_minted`
+        arg_ids: tuple[int, ...] | None = None
+        for key, spelled in smt._names.get(
+                f"_call_{expr.name}_{expr.span.line}_{expr.span.column}"
+                if expr.span is not None else f"_call_{expr.name}",
+                {}).items():
+            if spelled == name and isinstance(key, tuple):
+                arg_ids = key
+        info = smt._fn_lookup(expr.name) if smt._fn_lookup else None
+        if arg_ids is None or info is None:
+            return None
+        zero_size = smt._zero_size_params(info)
+        kept = [obligation_table.ObligationTable._key(a)
+                for i, a in enumerate(expr.args)
+                if not (i < len(zero_size) and zero_size[i])]
+        if not kept or len(kept) != len(arg_ids):
+            return None
+        for (key, env_id), (env, _) in frame.met.items():
+            if key != kept[0]:
+                continue
+            if all((met := frame.met.get((k, env_id))) is not None
+                   and met[0] is env
+                   and cast("z3.ExprRef", met[1]).get_id() == want
+                   for k, want in zip(kept, arg_ids)):
+                return env
+        return None
+
+    def _may_hold_function(self, ty: Type, seen: set[str]) -> bool:
+        """Whether a value of *ty* may hold a function (`_call_lineage`): a
+        function type, or a type whose arguments, base or constructors'
+        fields may; a data type this namespace does not know is taken as
+        one that may."""
+        if isinstance(ty, FunctionType):
+            return True
+        if isinstance(ty, RefinedType):
+            return self._may_hold_function(ty.base, seen)
+        if not isinstance(ty, AdtType):
+            return False
+        if any(self._may_hold_function(t, seen) for t in ty.type_args):
+            return True
+        if ty.name in seen or ty.name in ("Tuple", "Array", "Map", "Set"):
+            return False
+        seen.add(ty.name)
+        adt = self.env.lookup_type(ty.name)
+        if adt is None:
+            return True
+        return any(self._may_hold_function(f, seen)
+                   for c in adt.constructors.values()
+                   for f in c.field_types or ())
+
+    def _note_narrowed_binder(
+        self, value: ast.Expr, steps: tuple[tuple[str, int], ...],
+        stand_in: object, smt: SmtContext,
+    ) -> None:
+        """Record *stand_in*, what a walk binds where it cannot read the
+        value, as narrowed when a narrowing row takes *value* at *steps*
+        or below them (#1897): the binder's type is that narrowing's, and it
+        is established where every such row is checked."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or not frame.rows:
+            return
+        at = _narrowed_at(frame).get(
+            obligation_table.ObligationTable._key(value))
+        below = [checked for s, checked in at or ()
+                 if s[:len(steps)] == steps]
+        if below:
+            smt.note_narrowed(cast("z3.ExprRef", stand_in), all(below))
+
+    def _holds_narrowed(
+        self, part: ast.Expr, env: SlotEnv, smt: SmtContext, frame: _FnFrame,
+    ) -> tuple[bool, bool, set[int]]:
+        """Whether *part*'s value holds a narrowed one (#1897), whether every
+        narrowed value it holds is established, and the narrowed ids it
+        holds, read off the term the translation made of it under *env*
+        (`_FnFrame.met`), never by translating it again: a second
+        translation mints stand-ins and asserts facts afresh, and running
+        the hook on the part's own parts doubled the cost at each level of
+        nested built-ins.  A part a narrowing row takes holds the value the
+        row narrows, established where every row at it is checked.  A part
+        the translation did not reach (a built-in it reads as a stand-in
+        does not translate its arguments, nor does a `handle` its leaves)
+        is read by its nodes: one a narrowing row takes or one met
+        narrowed, or a slot reference whose value holds a narrowed one;
+        such a part is taken as not established."""
+        key = obligation_table.ObligationTable._key(part)
+        narrowed_at = _narrowed_at(frame)
+        rows = narrowed_at.get(key, ())
+        if not smt._narrowed_terms and not rows:
+            return False, True, set()
+        met = frame.met.get((key, id(env)))
+        if met is not None and met[0] is env:
+            ids = smt.narrowed_ids_in(met[1])
+            return (bool(ids) or bool(rows) or key in frame.narrowed_nodes,
+                    not ids & smt.unestablished_narrowed_ids()
+                    and all(checked for _, checked in rows)
+                    and frame.narrowed_nodes.get(key, True),
+                    ids)
+        if key in frame.narrowed_nodes:
+            return True, frame.narrowed_nodes[key], set()
+        held = False
+        ids = set()
+        for node in fold.walk(part):
+            node_key = obligation_table.ObligationTable._key(node)
+            if node_key in narrowed_at or node_key in frame.narrowed_nodes:
+                held = True
+            elif isinstance(node, ast.SlotRef):
+                found = smt.narrowed_ids_in(
+                    smt._translate_slot_ref(node, env))
+                held = held or bool(found)
+                ids |= found
+        return held, not held, ids
 
     def _disclosure_is_live(self, smt: SmtContext) -> bool:
         """Whether this run has disclosed anything at all.
@@ -12625,6 +13074,16 @@ class ContractVerifier:
             "A declared-type fact is sound to assume once the obligation "
             "establishing it is discharged. "
         )
+        if not self._tainted_sites and self._tainted_reasons == {"narrowed"}:
+            # #1897: the producer is a narrowing in this very function, whose
+            # own obligation is the one that must establish the fact.
+            return (
+                opening
+                + "This one is read off a type a narrowing in this function "
+                "gave the value, and only that narrowing's own obligation, "
+                "discharged without it, establishes it — so a proof resting "
+                "on it is a Tier-3 truth, not a Tier-1 proof."
+            )
         if not self._tainted_sites:
             return (
                 opening

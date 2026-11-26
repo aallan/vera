@@ -2247,7 +2247,10 @@ class TestANonVerdictIsAttributedToTheRightOutcome:
 
         monkeypatch.setattr(
             SmtContext, "check_valid",
-            lambda self, goal, assumptions: SmtResult(status="opaque"),
+            # `**kwargs`: a narrowing's query also names its value (`own=`,
+            # #1897), which the forced verdict ignores.
+            lambda self, goal, assumptions, **kwargs: SmtResult(
+                status="opaque"),
         )
         result = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
