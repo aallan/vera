@@ -2147,3 +2147,51 @@ def test_repro_a_callees_int_postcondition_a_later_row_needs() -> None:
     assert _at_line(verified, nat, "nat_bind") != ["verified"]
     ran = pipeline.run(source, "main_go", [0], file=FILE)
     assert ran.trap is not None, ran.value
+
+
+_KEPT_IN_A_CALL = POS + textwrap.dedent("""\
+    private fn need(@Tuple<Pos, Int> -> @Int)
+      requires(match @Tuple<Pos, Int>.0 { Tuple(@Pos, @Int) -> true })
+      ensures(true)
+      effects(pure)
+    {
+      1
+    }
+
+    public fn go(@Tuple<Int, Int>, @Int -> @Int)
+      requires(match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 > 0 || @Int.2 <= 5 })
+      ensures(@Int.result > 0)
+      effects(pure)
+    {
+      let @Tuple<Nat, Int> = @Tuple<Int, Int>.0;
+      let @Int = if @Int.0 > 5 then { need(@Tuple<Int, Int>.0) } else { 0 };
+      match @Tuple<Nat, Int>.0 {
+        Tuple(@Nat, @Int) -> nat_to_int(@Nat.0)
+      }
+    }
+
+    public fn main_go(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      go(Tuple(@Int.0, 0), @Int.0)
+    }
+    """)
+
+
+def test_repro_a_kept_fact_read_in_a_call_holds_under_its_binding() -> None:
+    """PR #1933 review (c4702825865): the argument's narrowing at `need` is
+    checked, so the fact `need`'s `requires` `match` reads off its formal,
+    `0 < fst`, is kept; it holds only under the call's binding, as a
+    withheld one is held (rule 3).  Kept bare, it proved `go`'s `ensures`
+    on the `else` branch, where `need` is never called: `verified` beside a
+    run that returns 0.  `main` refutes it (E500)."""
+    source = _KEPT_IN_A_CALL
+    verified = pipeline.verify(source, file=FILE)
+    ensures = [_status(o) for o in verified.obligations
+               if o.fn_name == "go" and o.kind == "ensures"]
+    assert ensures == ["violated"], ensures
+    ran = pipeline.run(source, "main_go", [0], file=FILE)
+    assert ran.trap is not None, ran.value
+    assert str(ran.trap).startswith("Postcondition violation in"), str(ran.trap)

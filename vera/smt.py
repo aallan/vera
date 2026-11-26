@@ -4342,14 +4342,21 @@ class SmtContext:
                 or not isinstance(pattern, ast.ConstructorPattern)):
             return []
         withheld_from = len(self._tainted_facts)
+        kept_from = len(self._narrowed_facts)
         facts = self._subpattern_fact_hook(
             scrutinee_ast, scrutinee_z3, pattern, self)
-        # #1897: a fact the hook withholds because a narrowing gave the
-        # scrutinee its type is the fact the arm would assume, so it is
-        # held in the form the arm assumes it (below): under the arm's
-        # condition and the bindings of the calls being modelled.  Held
-        # bare, a callee's `requires` `match` read it of the argument
-        # outright on the second attempt, as #1706 closed for the first.
+        # #1897: a fact the hook keeps (`assume_narrowed`) or withholds
+        # because a narrowing gave the scrutinee its type is the fact the
+        # arm would assume, so it is held in the form the arm assumes it
+        # (below): under the arm's condition and the bindings of the calls
+        # being modelled.  Held bare, a callee's `requires` `match` read it
+        # of the argument outright: a kept one on the first attempt of every
+        # later query (PR #1933 review), a withheld one on the second, as
+        # #1706 closed for the facts the arm returns.
+        for i in range(kept_from, len(self._narrowed_facts)):
+            fact, kept_by = self._narrowed_facts[i]
+            self._narrowed_facts[i] = (self._under_call_bindings(
+                fact if guard is None else z3.Implies(guard, fact)), kept_by)
         for i in range(withheld_from, len(self._tainted_facts)):
             fact = self._tainted_facts[i]
             owners = self._withheld_owners.get(fact.get_id())
